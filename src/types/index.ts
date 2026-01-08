@@ -40,6 +40,21 @@ export interface Attachment {
   size: number;
 }
 
+// Draft attachment - can be from original email or newly added
+export interface DraftAttachment {
+  // For existing attachments (from Gmail)
+  messageId?: string;       // The message this attachment came from
+  attachmentId?: string;    // Gmail attachment ID (for fetching)
+  // For new attachments (uploaded by user)
+  data?: string;            // Base64 encoded content
+  // Common fields
+  filename: string;
+  mimeType: string;
+  size: number;
+  // UI state
+  isFromOriginal?: boolean; // True if from reply/forward source
+}
+
 // Draft Types
 export type EmailDraftType = 'reply' | 'forward' | 'new';
 
@@ -55,6 +70,7 @@ export interface EmailDraft {
   type: EmailDraftType;
   inReplyTo?: string;     // The Message-ID of the email being replied to
   references?: string;    // Chain of Message-IDs for threading
+  attachments?: DraftAttachment[]; // Attachments to include
 }
 
 // Chat Types

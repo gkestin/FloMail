@@ -1,15 +1,29 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
-import { motion } from 'framer-motion';
-import { Send, X, Loader2, Reply, Forward, Mail, Plus } from 'lucide-react';
-import { EmailDraft } from '@/types';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Send, X, Loader2, Reply, Forward, Mail, Plus, Paperclip, File, Image, FileText, Trash2, AlertTriangle, ArrowLeftRight } from 'lucide-react';
+import { EmailDraft, DraftAttachment, EmailDraftType } from '@/types';
 
 interface DraftCardProps {
   draft: EmailDraft;
   onSend: (updatedDraft: EmailDraft) => void;
   onCancel: () => void;
   isSending?: boolean;
+}
+
+// Format file size for display
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+// Get icon for file type
+function getFileIcon(mimeType: string) {
+  if (mimeType.startsWith('image/')) return Image;
+  if (mimeType.includes('pdf') || mimeType.includes('document')) return FileText;
+  return File;
 }
 
 export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps) {
@@ -22,12 +36,64 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const quotedRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Update editedDraft when draft prop changes
   useEffect(() => {
     setEditedDraft(draft);
     setShowCcBcc((draft.cc && draft.cc.length > 0) || (draft.bcc && draft.bcc.length > 0));
   }, [draft]);
+
+  // Handle file selection
+  const handleFileSelect = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+
+    // Process each selected file
+    const newAttachments: DraftAttachment[] = [];
+    
+    Array.from(files).forEach(file => {
+      // Check size limit (25MB for Gmail)
+      if (file.size > 25 * 1024 * 1024) {
+        alert(`File "${file.name}" is too large (max 25MB)`);
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = reader.result as string;
+        // Remove the data URL prefix (e.g., "data:image/png;base64,")
+        const base64Data = base64.split(',')[1];
+        
+        const attachment: DraftAttachment = {
+          filename: file.name,
+          mimeType: file.type || 'application/octet-stream',
+          size: file.size,
+          data: base64Data,
+          isFromOriginal: false,
+        };
+
+        setEditedDraft(prev => ({
+          ...prev,
+          attachments: [...(prev.attachments || []), attachment],
+        }));
+      };
+      reader.readAsDataURL(file);
+    });
+
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }, []);
+
+  // Remove attachment
+  const removeAttachment = useCallback((index: number) => {
+    setEditedDraft(prev => ({
+      ...prev,
+      attachments: prev.attachments?.filter((_, i) => i !== index),
+    }));
+  }, []);
 
   // Auto-resize textarea: set to 1px, measure scrollHeight, apply
   const autoResize = (textarea: HTMLTextAreaElement | null) => {
@@ -68,33 +134,84 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
     focus:bg-slate-700/50 focus:border-purple-500/50 focus:outline-none focus:ring-1 focus:ring-purple-500/30
   `;
 
+  // Switch draft type
+  const switchToReply = () => {
+    setEditedDraft(prev => ({
+      ...prev,
+      type: 'reply',
+      subject: prev.subject.startsWith('Re: ') ? prev.subject : `Re: ${prev.subject.replace(/^Fwd:\s*/i, '')}`,
+    }));
+  };
+
+  const switchToForward = () => {
+    setEditedDraft(prev => ({
+      ...prev,
+      type: 'forward',
+      subject: prev.subject.startsWith('Fwd: ') ? prev.subject : `Fwd: ${prev.subject.replace(/^Re:\s*/i, '')}`,
+      to: [], // Clear recipients for forward
+    }));
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className="bg-slate-800/60 rounded-lg border-l-2 border-cyan-500/50"
+      className={`bg-slate-800/60 rounded-lg border-l-2 ${
+        editedDraft.type === 'new' ? 'border-amber-500/70' :
+        editedDraft.type === 'forward' ? 'border-orange-500/50' :
+        'border-cyan-500/50'
+      }`}
     >
-      {/* Header - compact */}
-      <div className="flex items-center gap-2 px-3 py-2">
-        <div className={`p-1 rounded ${
-          editedDraft.type === 'reply' ? 'bg-blue-500/20' : 
-          editedDraft.type === 'forward' ? 'bg-orange-500/20' : 
-          'bg-cyan-500/20'
-        }`}>
-          {editedDraft.type === 'reply' ? (
-            <Reply className="w-3.5 h-3.5 text-blue-400" />
-          ) : editedDraft.type === 'forward' ? (
-            <Forward className="w-3.5 h-3.5 text-orange-400" />
-          ) : (
-            <Mail className="w-3.5 h-3.5 text-cyan-400" />
-          )}
+      {/* Header - prominent for new messages */}
+      {editedDraft.type === 'new' ? (
+        // NEW MESSAGE - Very prominent with switch button
+        <div className="px-3 py-2 bg-amber-500/10 border-b border-amber-500/20">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 rounded bg-amber-500/20">
+                <Mail className="w-4 h-4 text-amber-400" />
+              </div>
+              <div>
+                <span className="text-sm font-semibold text-amber-300">New Email</span>
+                <span className="text-xs text-amber-400/70 ml-2">(not a reply)</span>
+              </div>
+            </div>
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={switchToReply}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 text-xs font-medium transition-colors border border-blue-500/30"
+            >
+              <Reply className="w-3.5 h-3.5" />
+              Make Reply
+            </motion.button>
+          </div>
         </div>
-        <span className="text-sm font-medium text-slate-200">
-          {editedDraft.type === 'reply' ? 'Reply' : 
-           editedDraft.type === 'forward' ? 'Forward' : 
-           'New Email'}
-        </span>
-      </div>
+      ) : editedDraft.type === 'forward' ? (
+        // FORWARD - Somewhat prominent
+        <div className="flex items-center justify-between px-3 py-2 bg-orange-500/5 border-b border-orange-500/10">
+          <div className="flex items-center gap-2">
+            <div className="p-1 rounded bg-orange-500/20">
+              <Forward className="w-3.5 h-3.5 text-orange-400" />
+            </div>
+            <span className="text-sm font-medium text-orange-300">Forward</span>
+          </div>
+          <button
+            onClick={switchToReply}
+            className="text-xs text-slate-500 hover:text-blue-400 transition-colors"
+          >
+            Switch to Reply
+          </button>
+        </div>
+      ) : (
+        // REPLY - Subtle, expected default
+        <div className="flex items-center gap-2 px-3 py-2">
+          <div className="p-1 rounded bg-blue-500/20">
+            <Reply className="w-3.5 h-3.5 text-blue-400" />
+          </div>
+          <span className="text-sm font-medium text-slate-300">Reply</span>
+        </div>
+      )}
 
       {/* Content */}
       <div className="px-3 py-2 space-y-2">
@@ -204,7 +321,56 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
             </div>
           )}
         </div>
+
+        {/* Attachments section */}
+        {(editedDraft.attachments && editedDraft.attachments.length > 0) && (
+          <div className="mt-3 pt-3 border-t border-slate-700/50">
+            <div className="flex items-center gap-2 mb-2">
+              <Paperclip className="w-3.5 h-3.5 text-slate-500" />
+              <span className="text-xs text-slate-500 uppercase tracking-wide">
+                Attachments ({editedDraft.attachments.length})
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {editedDraft.attachments.map((att, index) => {
+                const FileIcon = getFileIcon(att.mimeType);
+                return (
+                  <div
+                    key={index}
+                    className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm ${
+                      att.isFromOriginal 
+                        ? 'bg-purple-500/10 border border-purple-500/20' 
+                        : 'bg-slate-700/50 border border-slate-600/30'
+                    }`}
+                  >
+                    <FileIcon className={`w-4 h-4 ${att.isFromOriginal ? 'text-purple-400' : 'text-slate-400'}`} />
+                    <span className="text-slate-300 max-w-[150px] truncate">{att.filename}</span>
+                    <span className="text-xs text-slate-500">{formatFileSize(att.size)}</span>
+                    <button
+                      onClick={() => removeAttachment(index)}
+                      disabled={isSending}
+                      className="p-0.5 hover:bg-red-500/20 rounded transition-colors"
+                      title="Remove attachment"
+                    >
+                      <X className="w-3.5 h-3.5 text-slate-500 hover:text-red-400" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        onChange={handleFileSelect}
+        className="hidden"
+        accept="*/*"
+      />
 
       {/* Actions - compact row */}
       <div className="flex items-center gap-2 px-3 py-2">
@@ -215,6 +381,19 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
         >
           Cancel
         </button>
+        
+        {/* Add attachment button */}
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={isSending}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-400 hover:text-cyan-400 transition-colors disabled:opacity-50"
+          title="Add attachment"
+        >
+          <Paperclip className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Attach</span>
+        </button>
+        
+        <div className="flex-1" />
         
         <motion.button
           whileHover={{ scale: 1.02 }}

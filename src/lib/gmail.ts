@@ -1,6 +1,126 @@
-import { EmailMessage, EmailThread, EmailDraft, EmailAddress } from '@/types';
+import { EmailMessage, EmailThread, EmailDraft, EmailAddress, DraftAttachment } from '@/types';
+import { createMimeMessage } from 'mimetext';
 
 const GMAIL_API_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
+
+// ============================================================================
+// EMAIL BUILDING WITH MIMETEXT (RFC-COMPLIANT)
+// ============================================================================
+// Using mimetext library for proper RFC 5322, 2047, 2045-2049 compliance.
+// This handles all the edge cases: UTF-8 headers, line wrapping, encoding, etc.
+
+/**
+ * Convert plain text to HTML, preserving line breaks and paragraphs.
+ * This prevents Gmail API from inserting unwanted line wraps.
+ */
+function textToHtml(text: string): string {
+  // Escape HTML special characters
+  const escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  
+  // Normalize to \n, then process
+  const normalized = escaped.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  
+  // Split by double newlines (paragraphs)
+  const paragraphs = normalized.split(/\n\n+/);
+  
+  // Wrap each paragraph and convert single newlines to <br>
+  const htmlParagraphs = paragraphs.map(p => {
+    const withBreaks = p.replace(/\n/g, '<br>\n');
+    return `<p style="margin: 0 0 1em 0;">${withBreaks}</p>`;
+  });
+  
+  return `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; line-height: 1.5; color: #333;">
+${htmlParagraphs.join('\n')}
+</body>
+</html>`;
+}
+
+/**
+ * Build a properly formatted email using mimetext library.
+ * Returns base64url encoded string ready for Gmail API.
+ */
+function buildEmailForGmail(draft: EmailDraft): string {
+  const msg = createMimeMessage();
+  
+  // Set sender (will be overwritten by Gmail to authenticated user)
+  msg.setSender({ addr: 'me@gmail.com' });
+  
+  // Set recipients
+  msg.setRecipients(draft.to.map(addr => ({ addr })));
+  
+  // Set CC if present
+  if (draft.cc && draft.cc.length > 0) {
+    msg.setCc(draft.cc.map(addr => ({ addr })));
+  }
+  
+  // Set BCC if present
+  if (draft.bcc && draft.bcc.length > 0) {
+    msg.setBcc(draft.bcc.map(addr => ({ addr })));
+  }
+  
+  // Set subject (mimetext handles RFC 2047 encoding automatically)
+  msg.setSubject(draft.subject);
+  
+  // Set threading headers if replying/forwarding
+  if (draft.inReplyTo) {
+    msg.setHeader('In-Reply-To', draft.inReplyTo);
+  }
+  if (draft.references) {
+    msg.setHeader('References', draft.references);
+  }
+  
+  // Prepare body content
+  const rawBody = draft.quotedContent 
+    ? draft.body.trim() + '\n\n' + draft.quotedContent.trim() 
+    : draft.body.trim();
+  
+  // Convert to HTML to prevent Gmail's line wrapping issues
+  const htmlBody = textToHtml(rawBody);
+  
+  // Add HTML content (mimetext handles encoding properly)
+  msg.addMessage({
+    contentType: 'text/html',
+    data: htmlBody,
+  });
+  
+  // Add attachments if present
+  if (draft.attachments && draft.attachments.length > 0) {
+    for (const attachment of draft.attachments) {
+      if (attachment.data) {
+        // Attachment data is already base64 encoded
+        msg.addAttachment({
+          filename: attachment.filename,
+          contentType: attachment.mimeType,
+          data: attachment.data,
+          encoding: 'base64',
+        });
+      }
+    }
+  }
+  
+  // Get the raw MIME message and encode for Gmail API
+  const rawMessage = msg.asRaw();
+  
+  // Convert to base64url for Gmail API
+  const bytes = new TextEncoder().encode(rawMessage);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64 = btoa(binary);
+  
+  return base64
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
 
 // Helper to parse email address string
 function parseEmailAddress(str: string): EmailAddress {
@@ -82,6 +202,39 @@ function hasAttachments(payload: any): boolean {
     }
   }
   return false;
+}
+
+// Extract attachment details from message payload
+interface AttachmentInfo {
+  id: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+}
+
+function extractAttachments(payload: any): AttachmentInfo[] {
+  const attachments: AttachmentInfo[] = [];
+  
+  function processPayload(part: any) {
+    // Check if this part is an attachment
+    if (part.filename && part.filename.length > 0 && part.body?.attachmentId) {
+      attachments.push({
+        id: part.body.attachmentId,
+        filename: part.filename,
+        mimeType: part.mimeType || 'application/octet-stream',
+        size: part.body.size || 0,
+      });
+    }
+    // Recursively process nested parts
+    if (part.parts) {
+      for (const subpart of part.parts) {
+        processPayload(subpart);
+      }
+    }
+  }
+  
+  processPayload(payload);
+  return attachments;
 }
 
 // Fetch threads by label or query
@@ -167,6 +320,9 @@ export async function fetchThread(accessToken: string, threadId: string): Promis
     to.forEach((t) => participants.set(t.email, t));
     cc?.forEach((c) => participants.set(c.email, c));
 
+    // Extract attachment details
+    const attachments = extractAttachments(msg.payload);
+    
     messages.push({
       id: msg.id,
       threadId: msg.threadId,
@@ -181,7 +337,8 @@ export async function fetchThread(accessToken: string, threadId: string): Promis
       bodyHtml: html || undefined,
       isRead: !msg.labelIds?.includes('UNREAD'),
       labels: msg.labelIds || [],
-      hasAttachments: hasAttachments(msg.payload),
+      hasAttachments: attachments.length > 0,
+      attachments: attachments.length > 0 ? attachments : undefined,
     });
   }
 
@@ -199,33 +356,10 @@ export async function fetchThread(accessToken: string, threadId: string): Promis
   };
 }
 
-// Send email
+// Send email using mimetext library for proper RFC compliance
 export async function sendEmail(accessToken: string, draft: EmailDraft): Promise<void> {
-  // Build headers array, filtering out empty optional headers
-  // For replies/forwards, include threading headers
-  const headers = [
-    `To: ${draft.to.join(', ')}`,
-    draft.cc?.length ? `Cc: ${draft.cc.join(', ')}` : null,
-    draft.bcc?.length ? `Bcc: ${draft.bcc.join(', ')}` : null,
-    `Subject: ${draft.subject}`,
-    // Threading headers - In-Reply-To should be the Message-ID of the email being replied to
-    draft.inReplyTo ? `In-Reply-To: ${draft.inReplyTo}` : null,
-    // References should be the chain of Message-IDs for proper threading
-    draft.references ? `References: ${draft.references}` : (draft.inReplyTo ? `References: ${draft.inReplyTo}` : null),
-    'Content-Type: text/plain; charset=utf-8',
-    'MIME-Version: 1.0',
-  ].filter((h): h is string => h !== null);
-  
-  // RFC 2822: headers + blank line + body (including quoted content for replies/forwards)
-  const fullBody = draft.quotedContent 
-    ? draft.body + draft.quotedContent 
-    : draft.body;
-  const email = headers.join('\r\n') + '\r\n\r\n' + fullBody;
-
-  const encodedEmail = btoa(unescape(encodeURIComponent(email)))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
+  // Build properly formatted email using mimetext library
+  const encodedEmail = buildEmailForGmail(draft);
 
   const response = await fetch(`${GMAIL_API_BASE}/messages/send`, {
     method: 'POST',
@@ -243,6 +377,32 @@ export async function sendEmail(accessToken: string, draft: EmailDraft): Promise
     const error = await response.json();
     throw new Error(error.error?.message || 'Failed to send email');
   }
+}
+
+// Download attachment content from Gmail
+export async function getAttachment(
+  accessToken: string, 
+  messageId: string, 
+  attachmentId: string
+): Promise<string> {
+  const response = await fetch(
+    `${GMAIL_API_BASE}/messages/${messageId}/attachments/${attachmentId}`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error('Failed to download attachment');
+  }
+
+  const data = await response.json();
+  // Gmail returns base64url encoded data, convert to standard base64
+  const base64 = data.data
+    .replace(/-/g, '+')
+    .replace(/_/g, '/');
+  
+  return base64;
 }
 
 // Archive thread (remove from inbox)
@@ -368,30 +528,10 @@ export async function trashThread(accessToken: string, threadId: string): Promis
   }
 }
 
-// Create Gmail draft
+// Create Gmail draft using mimetext library for proper RFC compliance
 export async function createGmailDraft(accessToken: string, draft: EmailDraft): Promise<string> {
-  // Build headers array, filtering out empty optional headers
-  const headers = [
-    `To: ${draft.to.join(', ')}`,
-    draft.cc?.length ? `Cc: ${draft.cc.join(', ')}` : null,
-    draft.bcc?.length ? `Bcc: ${draft.bcc.join(', ')}` : null,
-    `Subject: ${draft.subject}`,
-    draft.inReplyTo ? `In-Reply-To: ${draft.inReplyTo}` : null,
-    draft.references ? `References: ${draft.references}` : (draft.inReplyTo ? `References: ${draft.inReplyTo}` : null),
-    'Content-Type: text/plain; charset=utf-8',
-    'MIME-Version: 1.0',
-  ].filter((h): h is string => h !== null);
-  
-  // RFC 2822: headers + blank line + body (including quoted content for replies/forwards)
-  const fullBody = draft.quotedContent 
-    ? draft.body + draft.quotedContent 
-    : draft.body;
-  const email = headers.join('\r\n') + '\r\n\r\n' + fullBody;
-
-  const encodedEmail = btoa(unescape(encodeURIComponent(email)))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
+  // Build properly formatted email using mimetext library
+  const encodedEmail = buildEmailForGmail(draft);
 
   const response = await fetch(`${GMAIL_API_BASE}/drafts`, {
     method: 'POST',

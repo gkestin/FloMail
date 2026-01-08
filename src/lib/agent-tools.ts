@@ -1,4 +1,4 @@
-import { EmailThread, EmailDraft } from '@/types';
+import { EmailThread, EmailDraft, DraftAttachment } from '@/types';
 
 // Tool definitions for the AI agent
 export interface AgentTool {
@@ -19,13 +19,13 @@ export interface AgentTool {
 export const AGENT_TOOLS: AgentTool[] = [
   {
     name: 'prepare_draft',
-    description: 'Prepare an email draft for the user to review before sending. Call this when the user wants to draft, compose, write, reply, or forward an email. This will show the draft in a UI card with recipient, subject, and body for user confirmation.',
+    description: 'Prepare an email draft for user review. CRITICAL: When user is viewing an email thread and asks to write/respond/draft/answer/tell them/write back, ALWAYS use type="reply". The word "reply" does NOT need to appear - if they are viewing an email and want to compose something back, it is a REPLY.',
     parameters: {
       type: 'object',
       properties: {
         type: {
           type: 'string',
-          description: 'Type of email: "reply" (responding to current thread), "forward" (forwarding current thread), or "new" (composing a new email)',
+          description: 'ALWAYS use "reply" unless: (1) user says "forward" → use "forward", or (2) user explicitly says "new email" or "new message" to someone NOT in the current thread → use "new". When in doubt, use "reply".',
           enum: ['reply', 'forward', 'new'],
         },
         to: {
@@ -260,7 +260,13 @@ export function buildDraftFromToolCall(
   args: Record<string, any>,
   thread?: EmailThread
 ): EmailDraft {
-  const draftType = args.type || 'new';
+  // Log what the AI chose
+  console.log('[buildDraftFromToolCall] AI args.type:', args.type, '| Has thread:', !!thread);
+  
+  // Default to 'reply' if viewing a thread, otherwise 'new'
+  const draftType = args.type || (thread ? 'reply' : 'new');
+  console.log('[buildDraftFromToolCall] Final draftType:', draftType);
+  
   const lastMessage = thread?.messages[thread.messages.length - 1];
   
   // For replies and forwards, set up proper threading
@@ -268,6 +274,7 @@ export function buildDraftFromToolCall(
   let references: string | undefined;
   let threadId: string | undefined;
   let quotedContent: string | undefined;
+  let attachments: DraftAttachment[] | undefined;
   
   if (draftType === 'reply' && thread && lastMessage) {
     threadId = thread.id;
@@ -290,6 +297,28 @@ export function buildDraftFromToolCall(
       .join(' ');
     // Build forward quote
     quotedContent = buildForwardQuote(thread);
+    
+    // For forwards, include all attachments from the thread
+    // These are marked as "from original" and will need to be fetched before sending
+    attachments = [];
+    for (const msg of thread.messages) {
+      if (msg.attachments && msg.attachments.length > 0) {
+        for (const att of msg.attachments) {
+          attachments.push({
+            messageId: msg.id,
+            attachmentId: att.id,
+            filename: att.filename,
+            mimeType: att.mimeType,
+            size: att.size,
+            isFromOriginal: true,
+          });
+        }
+      }
+    }
+    // Only set if there are attachments
+    if (attachments.length === 0) {
+      attachments = undefined;
+    }
   }
   // For 'new', no threading or quoted content
   
@@ -304,6 +333,7 @@ export function buildDraftFromToolCall(
     type: draftType,
     inReplyTo,
     references,
+    attachments,
   };
 }
 
