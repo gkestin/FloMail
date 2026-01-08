@@ -158,6 +158,76 @@ export function getAnthropicTools() {
   }));
 }
 
+// Format date for email quoting
+function formatQuoteDate(dateStr: string): string {
+  try {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-US', { 
+      weekday: 'short', 
+      year: 'numeric', 
+      month: 'short', 
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit'
+    });
+  } catch {
+    return dateStr;
+  }
+}
+
+// Build quoted content for replies - includes the full conversation chain
+function buildReplyQuote(thread: EmailThread): string {
+  if (thread.messages.length === 0) return '';
+  
+  // Build quotes from most recent to oldest (reverse order for display)
+  // But in email convention, the most recent is at top with older nested below
+  const quotes: string[] = [];
+  
+  // Start from the most recent message and go backwards
+  for (let i = thread.messages.length - 1; i >= 0; i--) {
+    const msg = thread.messages[i];
+    const senderName = msg.from.name || msg.from.email;
+    const date = formatQuoteDate(msg.date);
+    
+    // Add header and quoted body
+    const quotedBody = msg.body
+      .split('\n')
+      .map(line => `> ${line}`)
+      .join('\n');
+    
+    quotes.push(`On ${date}, ${senderName} wrote:\n${quotedBody}`);
+  }
+  
+  // Join all quotes - most recent first
+  return '\n\n' + quotes.join('\n\n');
+}
+
+// Build quoted content for forwards - includes full conversation chain
+function buildForwardQuote(thread: EmailThread): string {
+  if (thread.messages.length === 0) return '';
+  
+  const parts: string[] = [];
+  
+  // Include all messages in the thread (oldest to newest for forwards)
+  for (const msg of thread.messages) {
+    const from = msg.from.name 
+      ? `${msg.from.name} <${msg.from.email}>` 
+      : msg.from.email;
+    const to = msg.to.map(t => t.name ? `${t.name} <${t.email}>` : t.email).join(', ');
+    const date = formatQuoteDate(msg.date);
+    
+    parts.push(`---------- Forwarded message ----------
+From: ${from}
+Date: ${date}
+Subject: ${msg.subject}
+To: ${to}
+
+${msg.body}`);
+  }
+  
+  return '\n\n' + parts.join('\n\n');
+}
+
 // Build draft from tool call arguments
 export function buildDraftFromToolCall(
   args: Record<string, any>,
@@ -170,6 +240,7 @@ export function buildDraftFromToolCall(
   let inReplyTo: string | undefined;
   let references: string | undefined;
   let threadId: string | undefined;
+  let quotedContent: string | undefined;
   
   if (draftType === 'reply' && thread && lastMessage) {
     threadId = thread.id;
@@ -180,17 +251,20 @@ export function buildDraftFromToolCall(
       .map(m => m.messageId)
       .filter(Boolean)
       .join(' ');
+    // Build quoted content
+    quotedContent = buildReplyQuote(thread);
   } else if (draftType === 'forward' && thread && lastMessage) {
     // Forwards stay in the same thread so you can see the complete history
     threadId = thread.id;
     // For forwards, we reference the original message but don't set In-Reply-To
-    // (since we're not replying, we're forwarding)
     references = thread.messages
       .map(m => m.messageId)
       .filter(Boolean)
       .join(' ');
+    // Build forward quote
+    quotedContent = buildForwardQuote(thread);
   }
-  // For 'new', no threading headers needed
+  // For 'new', no threading or quoted content
   
   return {
     threadId,
@@ -199,6 +273,7 @@ export function buildDraftFromToolCall(
     bcc: args.bcc?.split(',').map((e: string) => e.trim()).filter(Boolean),
     subject: args.subject || '',
     body: args.body || '',
+    quotedContent,
     type: draftType,
     inReplyTo,
     references,

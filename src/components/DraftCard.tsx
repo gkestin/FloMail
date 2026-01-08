@@ -17,9 +17,11 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
   const [showCcBcc, setShowCcBcc] = useState(
     (draft.cc && draft.cc.length > 0) || (draft.bcc && draft.bcc.length > 0)
   );
-  const [focusedField, setFocusedField] = useState<string | null>(null);
+  const [showQuoted, setShowQuoted] = useState(false);
   
   const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const quotedRef = useRef<HTMLTextAreaElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   // Update editedDraft when draft prop changes
   useEffect(() => {
@@ -27,13 +29,31 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
     setShowCcBcc((draft.cc && draft.cc.length > 0) || (draft.bcc && draft.bcc.length > 0));
   }, [draft]);
 
-  // Auto-resize textarea
+  // Auto-resize textarea: set to 1px, measure scrollHeight, apply
+  const autoResize = (textarea: HTMLTextAreaElement | null) => {
+    if (!textarea) return;
+    const scrollPos = containerRef.current?.scrollTop || 0;
+    textarea.style.height = '1px';
+    textarea.style.height = textarea.scrollHeight + 'px';
+    if (containerRef.current) containerRef.current.scrollTop = scrollPos;
+  };
+
+  // Resize body textarea
   useEffect(() => {
-    if (bodyRef.current) {
-      bodyRef.current.style.height = 'auto';
-      bodyRef.current.style.height = Math.max(80, bodyRef.current.scrollHeight) + 'px';
-    }
+    const resize = () => autoResize(bodyRef.current);
+    resize();
+    // Also resize after a frame in case fonts haven't loaded
+    requestAnimationFrame(resize);
   }, [editedDraft.body]);
+
+  // Resize quoted textarea
+  useEffect(() => {
+    if (showQuoted && quotedRef.current) {
+      const resize = () => autoResize(quotedRef.current);
+      resize();
+      requestAnimationFrame(resize);
+    }
+  }, [showQuoted, editedDraft.quotedContent]);
 
   const handleSendClick = () => {
     onSend(editedDraft);
@@ -44,14 +64,6 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
     w-full bg-transparent text-slate-200 text-sm
     border border-transparent rounded-lg px-2 py-1 -mx-2
     transition-all duration-150
-    hover:bg-slate-700/30
-    focus:bg-slate-700/50 focus:border-purple-500/50 focus:outline-none focus:ring-1 focus:ring-purple-500/30
-  `;
-
-  const textareaBaseClass = `
-    w-full bg-transparent text-slate-300 text-sm
-    border border-transparent rounded-lg px-2 py-2 -mx-2
-    transition-all duration-150 resize-none
     hover:bg-slate-700/30
     focus:bg-slate-700/50 focus:border-purple-500/50 focus:outline-none focus:ring-1 focus:ring-purple-500/30
   `;
@@ -100,8 +112,6 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
                 ...editedDraft,
                 to: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
               })}
-              onFocus={() => setFocusedField('to')}
-              onBlur={() => setFocusedField(null)}
               placeholder="recipient@email.com"
               disabled={isSending}
               className={inputBaseClass}
@@ -124,8 +134,6 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
                     ...editedDraft,
                     cc: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
                   })}
-                  onFocus={() => setFocusedField('cc')}
-                  onBlur={() => setFocusedField(null)}
                   placeholder="cc@email.com"
                   disabled={isSending}
                   className={inputBaseClass}
@@ -145,8 +153,6 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
                     ...editedDraft,
                     bcc: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
                   })}
-                  onFocus={() => setFocusedField('bcc')}
-                  onBlur={() => setFocusedField(null)}
                   placeholder="bcc@email.com"
                   disabled={isSending}
                   className={inputBaseClass}
@@ -173,8 +179,6 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
               type="text"
               value={editedDraft.subject}
               onChange={(e) => setEditedDraft({ ...editedDraft, subject: e.target.value })}
-              onFocus={() => setFocusedField('subject')}
-              onBlur={() => setFocusedField(null)}
               placeholder="Email subject"
               disabled={isSending}
               className={inputBaseClass}
@@ -182,19 +186,37 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
           </div>
         </div>
 
-        {/* Body */}
-        <div className="mt-3 p-3 bg-slate-800/50 rounded-xl">
+        {/* Body - one scrollable container, textareas expand (overflow-hidden prevents internal scroll) */}
+        <div ref={containerRef} className="mt-3 rounded-xl border border-slate-600/40 bg-slate-800/20 p-4 max-h-[60vh] overflow-y-auto">
           <textarea
             ref={bodyRef}
             value={editedDraft.body}
             onChange={(e) => setEditedDraft({ ...editedDraft, body: e.target.value })}
-            onFocus={() => setFocusedField('body')}
-            onBlur={() => setFocusedField(null)}
             placeholder="Write your message..."
             disabled={isSending}
-            className={textareaBaseClass}
-            style={{ minHeight: '80px' }}
+            className="w-full bg-transparent text-slate-300 text-sm leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden"
           />
+
+          {editedDraft.quotedContent && (
+            <button
+              onClick={() => setShowQuoted(!showQuoted)}
+              className={`inline-flex items-center px-3 py-1.5 rounded-full text-base mt-4 transition-all duration-200 cursor-pointer ${showQuoted ? 'bg-slate-600/60 text-slate-200' : 'bg-slate-700/40 text-slate-400 hover:bg-slate-600/50 hover:text-slate-200'}`}
+            >
+              <span className="font-black tracking-wider">···</span>
+            </button>
+          )}
+
+          {editedDraft.quotedContent && showQuoted && (
+            <div className="mt-3 pl-3 border-l-2 border-slate-500/50">
+              <textarea
+                ref={quotedRef}
+                value={editedDraft.quotedContent}
+                onChange={(e) => setEditedDraft({ ...editedDraft, quotedContent: e.target.value })}
+                disabled={isSending}
+                className="w-full bg-transparent text-slate-400 text-sm leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden"
+              />
+            </div>
+          )}
         </div>
       </div>
 

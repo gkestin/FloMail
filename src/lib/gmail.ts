@@ -204,8 +204,11 @@ export async function sendEmail(accessToken: string, draft: EmailDraft): Promise
     'MIME-Version: 1.0',
   ].filter((h): h is string => h !== null);
   
-  // RFC 2822: headers + blank line + body
-  const email = headers.join('\r\n') + '\r\n\r\n' + draft.body;
+  // RFC 2822: headers + blank line + body (including quoted content for replies/forwards)
+  const fullBody = draft.quotedContent 
+    ? draft.body + draft.quotedContent 
+    : draft.body;
+  const email = headers.join('\r\n') + '\r\n\r\n' + fullBody;
 
   const encodedEmail = btoa(unescape(encodeURIComponent(email)))
     .replace(/\+/g, '-')
@@ -292,8 +295,11 @@ export async function createGmailDraft(accessToken: string, draft: EmailDraft): 
     'MIME-Version: 1.0',
   ].filter((h): h is string => h !== null);
   
-  // RFC 2822: headers + blank line + body
-  const email = headers.join('\r\n') + '\r\n\r\n' + draft.body;
+  // RFC 2822: headers + blank line + body (including quoted content for replies/forwards)
+  const fullBody = draft.quotedContent 
+    ? draft.body + draft.quotedContent 
+    : draft.body;
+  const email = headers.join('\r\n') + '\r\n\r\n' + fullBody;
 
   const encodedEmail = btoa(unescape(encodeURIComponent(email)))
     .replace(/\+/g, '-')

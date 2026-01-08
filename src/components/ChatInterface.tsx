@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Loader2, Settings, Sparkles, ChevronDown, X, Edit2, RotateCcw, Mic, Square } from 'lucide-react';
+import { Send, Loader2, Settings, Sparkles, ChevronDown, X, Edit2, RotateCcw, Mic, Square, Archive, Eye } from 'lucide-react';
 import { DraftCard } from './DraftCard';
 import { ThreadPreview } from './ThreadPreview';
 import { WaveformVisualizer } from './WaveformVisualizer';
@@ -64,6 +64,11 @@ interface UIMessage extends ChatMessage {
   isEditing?: boolean;
   isCancelled?: boolean;
   draftCancelled?: boolean; // Draft was cancelled but kept for history
+  isSystemMessage?: boolean; // For action confirmations (archive, navigate, etc.)
+  systemType?: 'archived' | 'sent' | 'navigated' | 'context'; // Type of system message
+  // Stored data for system messages (so we don't rely on current thread state)
+  systemSnippet?: string;
+  systemPreview?: string;
 }
 
 export function ChatInterface({
@@ -100,9 +105,66 @@ export function ChatInterface({
   const audioContextRef = useRef<AudioContext | null>(null);
   const durationIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const previousThreadIdRef = useRef<string | null>(null);
+  const pendingNavTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Get available models based on provider
   const availableModels = provider === 'openai' ? OPENAI_MODELS : CLAUDE_MODELS;
+
+  // Handle thread changes - show context message for new thread (debounced)
+  useEffect(() => {
+    if (!thread) return;
+    
+    const prevId = previousThreadIdRef.current;
+    const currentId = thread.id;
+    
+    if (prevId !== currentId) {
+      previousThreadIdRef.current = currentId;
+      
+      // Skip if this is initial load
+      if (prevId === null) {
+        return;
+      }
+      
+      // Cancel any pending navigation message (debounce)
+      if (pendingNavTimeoutRef.current) {
+        clearTimeout(pendingNavTimeoutRef.current);
+      }
+      
+      // Store the current thread data
+      const navSubject = thread.subject;
+      const navLastMsg = thread.messages[thread.messages.length - 1];
+      const navSnippet = navLastMsg?.snippet || '';
+      const navPreview = navLastMsg?.body || '';
+      
+      // Wait for state to settle before adding navigation message
+      pendingNavTimeoutRef.current = setTimeout(() => {
+        pendingNavTimeoutRef.current = null;
+        
+        setMessages(prev => {
+          // Check if we already have this exact navigation
+          const alreadyHasNav = prev.some(m => 
+            m.isSystemMessage && 
+            m.systemType === 'navigated' && 
+            m.id === `nav-${currentId}`
+          );
+          if (alreadyHasNav) {
+            return prev;
+          }
+          return [...prev, {
+            id: `nav-${currentId}`,
+            role: 'assistant' as const,
+            content: `Now viewing: "${navSubject}"`,
+            timestamp: new Date(),
+            isSystemMessage: true,
+            systemType: 'navigated' as const,
+            systemSnippet: navSnippet,
+            systemPreview: navPreview,
+          }];
+        });
+      }, 400); // Wait 400ms for state to settle
+    }
+  }, [thread]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -151,12 +213,35 @@ export function ChatInterface({
           onDraftCreated?.(draft);
           break;
         case 'archive_email':
+          // Add system message before archiving - store snippet/preview now before thread changes
+          const archiveSubject = thread?.subject || 'Email';
+          const lastMsg = thread?.messages[thread.messages.length - 1];
+          const archiveSnippet = lastMsg?.snippet || '';
+          const archivePreview = lastMsg?.body || '';
+          setMessages(prev => [...prev, {
+            id: `archive-${Date.now()}`,
+            role: 'assistant' as const,
+            content: `Archived: "${archiveSubject}"`,
+            timestamp: new Date(),
+            isSystemMessage: true,
+            systemType: 'archived' as const,
+            systemSnippet: archiveSnippet,
+            systemPreview: archivePreview,
+          }]);
           onArchive?.();
           break;
         case 'go_to_next_email':
           onNextEmail?.();
           break;
         case 'go_to_inbox':
+          setMessages(prev => [...prev, {
+            id: `action-${Date.now()}`,
+            role: 'assistant' as const,
+            content: 'Returning to inbox...',
+            timestamp: new Date(),
+            isSystemMessage: true,
+            systemType: 'navigated' as const,
+          }]);
           onGoToInbox?.();
           break;
       }
@@ -438,11 +523,14 @@ export function ChatInterface({
     try {
       await onSendEmail(updatedDraft);
       setCurrentDraft(null);
+      const recipient = updatedDraft.to[0] || 'recipient';
       const confirmMessage: UIMessage = {
         id: Date.now().toString(),
         role: 'assistant',
-        content: '✉️ Sent! Next?',
+        content: `Sent to ${recipient}`,
         timestamp: new Date(),
+        isSystemMessage: true,
+        systemType: 'sent',
       };
       setMessages(prev => [...prev, confirmMessage]);
     } catch (error) {
@@ -523,10 +611,80 @@ export function ChatInterface({
             key={message.id}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            className={`flex flex-col ${message.role === 'user' ? 'items-end' : 'items-start'}`}
+            className={`flex flex-col ${
+              message.isSystemMessage 
+                ? 'items-center' 
+                : message.role === 'user' 
+                  ? 'items-end' 
+                  : 'items-start'
+            }`}
           >
+            {/* System/Action message - horizontal divider with centered badge */}
+            {message.isSystemMessage && (
+              <div className="w-full flex items-center gap-2 py-2 group overflow-hidden">
+                {/* Left line - min width ensures visibility on narrow screens */}
+                <div className={`flex-1 min-w-12 h-px ${
+                  message.systemType === 'archived' 
+                    ? 'bg-gradient-to-r from-transparent to-blue-500/40' 
+                    : message.systemType === 'sent'
+                      ? 'bg-gradient-to-r from-transparent to-cyan-500/40'
+                      : 'bg-gradient-to-r from-transparent to-green-500/40'
+                }`} />
+                
+                {/* Center badge - shrinks on narrow screens, lines stay visible */}
+                <div className={`
+                  relative flex items-center gap-2 px-3 py-2 rounded-lg text-sm cursor-default
+                  flex-shrink min-w-0 max-w-[calc(100%-112px)]
+                  ${message.systemType === 'archived' 
+                    ? 'bg-blue-500/15 text-blue-300 border border-blue-500/25' 
+                    : message.systemType === 'sent'
+                      ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/25'
+                      : 'bg-green-500/15 text-green-300 border border-green-500/25'
+                  }
+                `}>
+                  {message.systemType === 'archived' && <Archive className="w-4 h-4 text-blue-400 flex-shrink-0" />}
+                  {message.systemType === 'sent' && <Send className="w-4 h-4 text-cyan-400 flex-shrink-0" />}
+                  {message.systemType === 'navigated' && <Eye className="w-4 h-4 text-green-400 flex-shrink-0" />}
+                  <div className="flex flex-col min-w-0 overflow-hidden">
+                    <span className="font-medium truncate">{message.content}</span>
+                    {/* Show stored snippet for navigation and archive */}
+                    {message.systemSnippet && (message.systemType === 'navigated' || message.systemType === 'archived') && (
+                      <span className="text-xs text-slate-500 leading-relaxed mt-0.5 line-clamp-2">
+                        {message.systemSnippet.slice(0, 120)}
+                        {message.systemSnippet.length > 120 && '...'}
+                      </span>
+                    )}
+                  </div>
+                  
+                  {/* Hover tooltip with more info */}
+                  {message.systemPreview && (message.systemType === 'navigated' || message.systemType === 'archived') && (
+                    <div className="absolute left-0 right-0 bottom-full mb-2 flex justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                      <div className="bg-slate-900 border border-slate-700 rounded-lg p-3 shadow-xl max-w-[280px] mx-2">
+                        <p className="text-xs text-slate-400 mb-1">
+                          {message.systemType === 'archived' ? 'Archived message:' : 'Message preview:'}
+                        </p>
+                        <p className="text-sm text-slate-200 leading-relaxed">
+                          {message.systemPreview.slice(0, 250)}
+                          {message.systemPreview.length > 250 && '...'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                
+                {/* Right line - min width ensures visibility on narrow screens */}
+                <div className={`flex-1 min-w-12 h-px ${
+                  message.systemType === 'archived' 
+                    ? 'bg-gradient-to-l from-transparent to-blue-500/40' 
+                    : message.systemType === 'sent'
+                      ? 'bg-gradient-to-l from-transparent to-cyan-500/40'
+                      : 'bg-gradient-to-l from-transparent to-green-500/40'
+                }`} />
+              </div>
+            )}
+
             {/* User message with edit/cancel controls */}
-            {message.role === 'user' && (
+            {!message.isSystemMessage && message.role === 'user' && (
               <div className="max-w-[85%] group relative">
                 {editingMessageId === message.id ? (
                   // Editing mode
@@ -607,7 +765,7 @@ export function ChatInterface({
             )}
 
             {/* Assistant message */}
-            {message.role === 'assistant' && message.content?.trim() && (
+            {!message.isSystemMessage && message.role === 'assistant' && message.content?.trim() && (
               <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-slate-800/80 text-slate-200">
                 <p className="text-sm whitespace-pre-wrap">{message.content}</p>
               </div>

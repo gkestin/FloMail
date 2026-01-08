@@ -50,10 +50,11 @@ export interface EmailDraft {
   cc?: string[];
   bcc?: string[];
   subject: string;
-  body: string;
+  body: string;           // The new content written by user/AI
+  quotedContent?: string; // Previous message(s) quoted below
   type: EmailDraftType;
-  inReplyTo?: string;  // The Message-ID of the email being replied to
-  references?: string; // Chain of Message-IDs for threading
+  inReplyTo?: string;     // The Message-ID of the email being replied to
+  references?: string;    // Chain of Message-IDs for threading
 }
 
 // Chat Types
