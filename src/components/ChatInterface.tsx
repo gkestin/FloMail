@@ -138,21 +138,20 @@ export function ChatInterface({
       const navPreview = navLastMsg?.body || '';
       
       // Wait for state to settle before adding navigation message
+      const navTimestamp = Date.now();
       pendingNavTimeoutRef.current = setTimeout(() => {
         pendingNavTimeoutRef.current = null;
         
         setMessages(prev => {
-          // Check if we already have this exact navigation
-          const alreadyHasNav = prev.some(m => 
-            m.isSystemMessage && 
-            m.systemType === 'navigated' && 
-            m.id === `nav-${currentId}`
-          );
-          if (alreadyHasNav) {
-            return prev;
+          // Check if the last message is already a nav for this thread (prevent rapid-fire duplicates)
+          const lastMsg = prev[prev.length - 1];
+          if (lastMsg?.isSystemMessage && 
+              lastMsg?.systemType === 'navigated' && 
+              lastMsg.content?.includes(navSubject)) {
+            return prev; // Just navigated here, don't duplicate
           }
           return [...prev, {
-            id: `nav-${currentId}`,
+            id: `nav-${currentId}-${navTimestamp}`,
             role: 'assistant' as const,
             content: `Now viewing: "${navSubject}"`,
             timestamp: new Date(),
