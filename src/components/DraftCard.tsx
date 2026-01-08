@@ -1,0 +1,231 @@
+'use client';
+
+import { useState, useRef, useEffect } from 'react';
+import { motion } from 'framer-motion';
+import { Send, X, User, Users, AtSign, Loader2, Reply, Forward, Mail, Plus } from 'lucide-react';
+import { EmailDraft } from '@/types';
+
+interface DraftCardProps {
+  draft: EmailDraft;
+  onSend: (updatedDraft: EmailDraft) => void;
+  onCancel: () => void;
+  isSending?: boolean;
+}
+
+export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps) {
+  const [editedDraft, setEditedDraft] = useState<EmailDraft>(draft);
+  const [showCcBcc, setShowCcBcc] = useState(
+    (draft.cc && draft.cc.length > 0) || (draft.bcc && draft.bcc.length > 0)
+  );
+  const [focusedField, setFocusedField] = useState<string | null>(null);
+  
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
+
+  // Update editedDraft when draft prop changes
+  useEffect(() => {
+    setEditedDraft(draft);
+    setShowCcBcc((draft.cc && draft.cc.length > 0) || (draft.bcc && draft.bcc.length > 0));
+  }, [draft]);
+
+  // Auto-resize textarea
+  useEffect(() => {
+    if (bodyRef.current) {
+      bodyRef.current.style.height = 'auto';
+      bodyRef.current.style.height = Math.max(80, bodyRef.current.scrollHeight) + 'px';
+    }
+  }, [editedDraft.body]);
+
+  const handleSendClick = () => {
+    onSend(editedDraft);
+  };
+
+  // Common input styles - looks like text until focused
+  const inputBaseClass = `
+    w-full bg-transparent text-slate-200 text-sm
+    border border-transparent rounded-lg px-2 py-1 -mx-2
+    transition-all duration-150
+    hover:bg-slate-700/30
+    focus:bg-slate-700/50 focus:border-purple-500/50 focus:outline-none focus:ring-1 focus:ring-purple-500/30
+  `;
+
+  const textareaBaseClass = `
+    w-full bg-transparent text-slate-300 text-sm
+    border border-transparent rounded-lg px-2 py-2 -mx-2
+    transition-all duration-150 resize-none
+    hover:bg-slate-700/30
+    focus:bg-slate-700/50 focus:border-purple-500/50 focus:outline-none focus:ring-1 focus:ring-purple-500/30
+  `;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20, scale: 0.95 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      className="bg-gradient-to-br from-slate-800/90 to-slate-900/90 rounded-2xl border border-slate-700/50 overflow-hidden shadow-xl"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-purple-500/10 to-cyan-500/10 border-b border-slate-700/50">
+        <div className="flex items-center gap-2">
+          <div className={`p-1.5 rounded-lg ${
+            editedDraft.type === 'reply' ? 'bg-blue-500/20' : 
+            editedDraft.type === 'forward' ? 'bg-orange-500/20' : 
+            'bg-purple-500/20'
+          }`}>
+            {editedDraft.type === 'reply' ? (
+              <Reply className="w-4 h-4 text-blue-400" />
+            ) : editedDraft.type === 'forward' ? (
+              <Forward className="w-4 h-4 text-orange-400" />
+            ) : (
+              <Mail className="w-4 h-4 text-purple-400" />
+            )}
+          </div>
+          <span className="font-medium text-slate-200">
+            {editedDraft.type === 'reply' ? 'Reply' : 
+             editedDraft.type === 'forward' ? 'Forward' : 
+             'New Email'}
+          </span>
+        </div>
+      </div>
+
+      {/* Content - All fields are always editable */}
+      <div className="p-4 space-y-2">
+        {/* To */}
+        <div className="flex items-start gap-3">
+          <User className="w-4 h-4 text-slate-500 mt-2.5 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <label className="text-xs text-slate-500 uppercase tracking-wide">To</label>
+            <input
+              type="text"
+              value={editedDraft.to.join(', ')}
+              onChange={(e) => setEditedDraft({
+                ...editedDraft,
+                to: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
+              })}
+              onFocus={() => setFocusedField('to')}
+              onBlur={() => setFocusedField(null)}
+              placeholder="recipient@email.com"
+              disabled={isSending}
+              className={inputBaseClass}
+            />
+          </div>
+        </div>
+
+        {/* CC/BCC - Collapsed unless has values or user expanded */}
+        {showCcBcc ? (
+          <>
+            {/* CC */}
+            <div className="flex items-start gap-3">
+              <Users className="w-4 h-4 text-slate-500 mt-2.5 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <label className="text-xs text-slate-500 uppercase tracking-wide">CC</label>
+                <input
+                  type="text"
+                  value={editedDraft.cc?.join(', ') || ''}
+                  onChange={(e) => setEditedDraft({
+                    ...editedDraft,
+                    cc: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
+                  })}
+                  onFocus={() => setFocusedField('cc')}
+                  onBlur={() => setFocusedField(null)}
+                  placeholder="cc@email.com"
+                  disabled={isSending}
+                  className={inputBaseClass}
+                />
+              </div>
+            </div>
+
+            {/* BCC */}
+            <div className="flex items-start gap-3">
+              <Users className="w-4 h-4 text-slate-500 mt-2.5 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <label className="text-xs text-slate-500 uppercase tracking-wide">BCC</label>
+                <input
+                  type="text"
+                  value={editedDraft.bcc?.join(', ') || ''}
+                  onChange={(e) => setEditedDraft({
+                    ...editedDraft,
+                    bcc: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
+                  })}
+                  onFocus={() => setFocusedField('bcc')}
+                  onBlur={() => setFocusedField(null)}
+                  placeholder="bcc@email.com"
+                  disabled={isSending}
+                  className={inputBaseClass}
+                />
+              </div>
+            </div>
+          </>
+        ) : (
+          <button
+            onClick={() => setShowCcBcc(true)}
+            className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-400 transition-colors ml-7"
+          >
+            <Plus className="w-3 h-3" />
+            Add CC/BCC
+          </button>
+        )}
+
+        {/* Subject */}
+        <div className="flex items-start gap-3">
+          <AtSign className="w-4 h-4 text-slate-500 mt-2.5 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <label className="text-xs text-slate-500 uppercase tracking-wide">Subject</label>
+            <input
+              type="text"
+              value={editedDraft.subject}
+              onChange={(e) => setEditedDraft({ ...editedDraft, subject: e.target.value })}
+              onFocus={() => setFocusedField('subject')}
+              onBlur={() => setFocusedField(null)}
+              placeholder="Email subject"
+              disabled={isSending}
+              className={inputBaseClass}
+            />
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="mt-3 p-3 bg-slate-800/50 rounded-xl">
+          <textarea
+            ref={bodyRef}
+            value={editedDraft.body}
+            onChange={(e) => setEditedDraft({ ...editedDraft, body: e.target.value })}
+            onFocus={() => setFocusedField('body')}
+            onBlur={() => setFocusedField(null)}
+            placeholder="Write your message..."
+            disabled={isSending}
+            className={textareaBaseClass}
+            style={{ minHeight: '80px' }}
+          />
+        </div>
+      </div>
+
+      {/* Actions - Just Cancel and Send */}
+      <div className="flex items-center gap-2 p-4 pt-0">
+        <motion.button
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+          onClick={onCancel}
+          disabled={isSending}
+          className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-slate-700/50 text-slate-300 hover:bg-red-500/20 hover:text-red-300 transition-colors disabled:opacity-50"
+        >
+          <X className="w-4 h-4" />
+          Cancel
+        </motion.button>
+        
+        <motion.button
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+          onClick={handleSendClick}
+          disabled={isSending || editedDraft.to.length === 0}
+          className="flex-[2] flex items-center justify-center gap-2 py-2.5 rounded-xl bg-gradient-to-r from-purple-500 to-cyan-500 text-white font-medium shadow-lg shadow-purple-500/20 disabled:opacity-50"
+        >
+          {isSending ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Send className="w-4 h-4" />
+          )}
+          {isSending ? 'Sending...' : 'Send'}
+        </motion.button>
+      </div>
+    </motion.div>
+  );
+}
