@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Loader2, Settings, Sparkles, ChevronDown, X, Edit2, RotateCcw, Mic, Square, Archive, Eye } from 'lucide-react';
+import { Send, Loader2, Settings, Sparkles, ChevronDown, ChevronRight, X, Edit2, RotateCcw, Mic, Square, Archive, Eye, Inbox } from 'lucide-react';
 import { DraftCard } from './DraftCard';
 import { ThreadPreview } from './ThreadPreview';
 import { WaveformVisualizer } from './WaveformVisualizer';
@@ -79,6 +79,9 @@ interface UIMessage extends ChatMessage {
   // Stored data for system messages (so we don't rely on current thread state)
   systemSnippet?: string;
   systemPreview?: string;
+  // Action buttons for post-send flow
+  hasActionButtons?: boolean;
+  actionButtonsHandled?: boolean; // Set to true once user clicks a button
 }
 
 export function ChatInterface({
@@ -582,13 +585,16 @@ export function ChatInterface({
       await onSendEmail(updatedDraft);
       setCurrentDraft(null);
       const recipient = updatedDraft.to[0] || 'recipient';
+      const confirmMessageId = Date.now().toString();
       const confirmMessage: UIMessage = {
-        id: Date.now().toString(),
+        id: confirmMessageId,
         role: 'assistant',
-        content: `Sent to ${recipient}`,
+        content: `✓ Sent to ${recipient}`,
         timestamp: new Date(),
         isSystemMessage: true,
         systemType: 'sent',
+        hasActionButtons: true,
+        actionButtonsHandled: false,
       };
       setMessages(prev => [...prev, confirmMessage]);
     } catch (error) {
@@ -604,6 +610,34 @@ export function ChatInterface({
       setIsSending(false);
     }
   };
+
+  // Handle action button clicks from sent confirmation
+  const handleSentActionArchiveNext = useCallback(() => {
+    // Mark the buttons as handled so they disappear
+    setMessages(prev => prev.map(m => 
+      m.hasActionButtons ? { ...m, actionButtonsHandled: true } : m
+    ));
+    // Archive and then go to next
+    archiveWithNotification();
+  }, [archiveWithNotification]);
+
+  const handleSentActionNext = useCallback(() => {
+    // Mark the buttons as handled
+    setMessages(prev => prev.map(m => 
+      m.hasActionButtons ? { ...m, actionButtonsHandled: true } : m
+    ));
+    // Just go to next
+    onNextEmail?.();
+  }, [onNextEmail]);
+
+  const handleSentActionInbox = useCallback(() => {
+    // Mark the buttons as handled
+    setMessages(prev => prev.map(m => 
+      m.hasActionButtons ? { ...m, actionButtonsHandled: true } : m
+    ));
+    // Go to inbox
+    onGoToInbox?.();
+  }, [onGoToInbox]);
 
   const handleCancelDraft = () => {
     setCurrentDraft(null);
@@ -752,6 +786,39 @@ export function ChatInterface({
                       ? 'bg-gradient-to-l from-transparent to-cyan-500/40'
                       : 'bg-gradient-to-l from-transparent to-green-500/40'
                 }`} />
+              </div>
+            )}
+
+            {/* Action buttons for sent confirmation */}
+            {message.isSystemMessage && message.systemType === 'sent' && message.hasActionButtons && !message.actionButtonsHandled && (
+              <div className="w-full flex flex-wrap items-center justify-center gap-2 py-2">
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleSentActionArchiveNext}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/30 hover:bg-purple-500/30 transition-colors text-sm font-medium"
+                >
+                  <Archive className="w-4 h-4" />
+                  Archive & Next
+                </motion.button>
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleSentActionNext}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-700/50 text-slate-300 border border-slate-600/30 hover:bg-slate-700 transition-colors text-sm font-medium"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                  Next
+                </motion.button>
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleSentActionInbox}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-700/50 text-slate-300 border border-slate-600/30 hover:bg-slate-700 transition-colors text-sm font-medium"
+                >
+                  <Inbox className="w-4 h-4" />
+                  Inbox
+                </motion.button>
               </div>
             )}
 
