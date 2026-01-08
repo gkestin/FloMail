@@ -64,83 +64,100 @@ export function ThreadPreview({ thread, defaultExpanded = false }: ThreadPreview
   };
 
   return (
-    <div className="border-b border-slate-800/50 bg-slate-900/50">
-      {/* Collapsed Header - Always visible */}
-      <button
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-800/30 transition-colors text-left"
-      >
-        <div className="p-2 rounded-lg bg-purple-500/20">
-          <Mail className="w-4 h-4 text-purple-400" />
-        </div>
+    <div>
+      {/* Main content with background */}
+      <div className="relative bg-slate-800/70">
+        {/* Top gradient overlay for purple tint */}
+        <div className="absolute inset-0 bg-gradient-to-b from-purple-950/50 via-purple-950/20 to-transparent pointer-events-none z-0"></div>
         
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-slate-200 truncate">
-              {thread.subject || '(No Subject)'}
-            </span>
-            <span className="flex-shrink-0 text-xs text-slate-500 bg-slate-800 px-2 py-0.5 rounded-full">
-              {thread.messages.length} {thread.messages.length === 1 ? 'message' : 'messages'}
-            </span>
-          </div>
-          <p className="text-sm text-slate-400 truncate mt-0.5">
-            {thread.participants.map((p) => p.name || p.email.split('@')[0]).join(', ')}
-          </p>
-        </div>
-
-        <motion.div
-          animate={{ rotate: isExpanded ? 180 : 0 }}
-          transition={{ duration: 0.2 }}
+        {/* Header row - contains subject AND expand/collapse controls */}
+        <div className="relative z-10 flex items-center gap-3 px-4 py-2.5">
+        {/* Clickable subject area */}
+        <button
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="flex items-center gap-3 flex-1 min-w-0 hover:opacity-80 transition-opacity text-left"
         >
-          <ChevronDown className="w-5 h-5 text-slate-400" />
-        </motion.div>
-      </button>
+          <div className="p-1.5 rounded-lg bg-purple-500/20">
+            <Mail className="w-4 h-4 text-purple-400" />
+          </div>
+          
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-slate-100 truncate">
+                {thread.subject || '(No Subject)'}
+              </span>
+              <span className="flex-shrink-0 text-xs text-purple-300/70 bg-purple-500/10 px-1.5 py-0.5 rounded">
+                {thread.messages.length}
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 truncate">
+              {thread.participants.map((p) => p.name || p.email.split('@')[0]).join(', ')}
+            </p>
+          </div>
 
-      {/* Expanded Content - Email Thread */}
-      <AnimatePresence>
-        {isExpanded && (
           <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
+            animate={{ rotate: isExpanded ? 180 : 0 }}
             transition={{ duration: 0.2 }}
-            className="overflow-hidden"
           >
-            {/* Controls */}
-            <div className="flex items-center justify-end gap-2 px-4 py-2 border-t border-slate-800/30">
-              <button
-                onClick={expandAll}
-                className="flex items-center gap-1 px-2 py-1 text-xs text-slate-400 hover:text-slate-300 hover:bg-slate-800/50 rounded transition-colors"
-              >
-                <Maximize2 className="w-3 h-3" />
-                Expand all
-              </button>
-              <button
-                onClick={collapseAll}
-                className="flex items-center gap-1 px-2 py-1 text-xs text-slate-400 hover:text-slate-300 hover:bg-slate-800/50 rounded transition-colors"
-              >
-                <Minimize2 className="w-3 h-3" />
-                Collapse all
-              </button>
-            </div>
-
-            {/* Messages */}
-            <div className="max-h-[50vh] overflow-y-auto">
-              {thread.messages.map((message, index) => (
-                <MessageItem
-                  key={message.id}
-                  message={message}
-                  isExpanded={expandedMessages.has(message.id)}
-                  isLast={index === thread.messages.length - 1}
-                  onToggle={() => toggleMessage(message.id)}
-                  formatDate={formatDate}
-                  getAvatarColor={getAvatarColor}
-                />
-              ))}
-            </div>
+            <ChevronDown className="w-4 h-4 text-purple-400/60" />
           </motion.div>
+        </button>
+
+        {/* Expand/Collapse controls - only show when expanded, inline */}
+        {isExpanded && thread.messages.length > 1 && (
+          <div className="flex items-center gap-1 flex-shrink-0 border-l border-slate-700/50 pl-3">
+            <button
+              onClick={(e) => { e.stopPropagation(); expandAll(); }}
+              className="p-1.5 text-slate-500 hover:text-purple-400 transition-colors"
+              title="Expand all"
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); collapseAll(); }}
+              className="p-1.5 text-slate-500 hover:text-purple-400 transition-colors"
+              title="Collapse all"
+            >
+              <Minimize2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
         )}
-      </AnimatePresence>
+      </div>
+
+        {/* Expanded Content - Email Thread */}
+        <AnimatePresence>
+          {isExpanded && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="relative z-10 overflow-hidden"
+            >
+              {/* Messages */}
+              <div className="max-h-[50vh] overflow-y-auto px-4 pb-3">
+                {thread.messages.map((message, index) => (
+                  <MessageItem
+                    key={message.id}
+                    message={message}
+                    isExpanded={expandedMessages.has(message.id)}
+                    isLast={index === thread.messages.length - 1}
+                    onToggle={() => toggleMessage(message.id)}
+                    formatDate={formatDate}
+                    getAvatarColor={getAvatarColor}
+                  />
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+      
+      {/* Bottom gradient line - in normal flow, always at bottom of content */}
+      <div className="h-[2px] bg-gradient-to-r from-purple-500/50 via-blue-500/50 to-purple-500/50"></div>
+      
+      {/* Shadow below */}
+      <div className="h-3 bg-gradient-to-b from-black/30 to-transparent"></div>
     </div>
   );
 }
@@ -165,15 +182,15 @@ function MessageItem({
   const senderInitial = senderName.charAt(0).toUpperCase();
 
   return (
-    <div className={`border-t border-slate-800/30 ${isLast ? 'bg-slate-800/20' : ''}`}>
+    <div className={`${isLast ? '' : 'border-b border-slate-800/50'}`}>
       {/* Message Header - Clickable to expand/collapse */}
       <button
         onClick={onToggle}
-        className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-800/20 transition-colors text-left"
+        className={`w-full flex items-center gap-3 py-2 hover:bg-white/5 transition-colors text-left ${isExpanded ? 'bg-white/[0.03]' : ''}`}
       >
         {/* Avatar */}
         <div
-          className={`w-8 h-8 rounded-full bg-gradient-to-br ${getAvatarColor(message.from.email)} flex items-center justify-center flex-shrink-0`}
+          className={`w-8 h-8 rounded-full bg-gradient-to-br ${getAvatarColor(message.from.email)} flex items-center justify-center flex-shrink-0 shadow-sm`}
         >
           <span className="text-white font-medium text-xs">{senderInitial}</span>
         </div>
@@ -181,7 +198,7 @@ function MessageItem({
         {/* Sender & Preview */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className={`font-medium text-sm ${isLast ? 'text-slate-200' : 'text-slate-300'}`}>
+            <span className={`font-medium text-sm ${isLast ? 'text-slate-100' : 'text-slate-300'}`}>
               {senderName}
             </span>
             <span className="text-xs text-slate-500">
@@ -214,24 +231,18 @@ function MessageItem({
             transition={{ duration: 0.15 }}
             className="overflow-hidden"
           >
-            <div className="px-4 pb-4">
-              {/* Recipients info */}
-              <div className="text-xs text-slate-500 mb-3 ml-11 space-y-0.5">
-                <p>
-                  <span className="text-slate-600">To:</span> {message.to.map((t) => t.email).join(', ')}
-                </p>
+            <div className="pl-11 pb-3">
+              {/* Recipients info - inline, minimal */}
+              <div className="text-xs text-slate-500 mb-1.5">
+                To: {message.to.map((t) => t.email).join(', ')}
                 {message.cc && message.cc.length > 0 && (
-                  <p>
-                    <span className="text-slate-600">Cc:</span> {message.cc.map((c) => c.email).join(', ')}
-                  </p>
+                  <span className="ml-2">· Cc: {message.cc.map((c) => c.email).join(', ')}</span>
                 )}
               </div>
 
-              {/* Email body */}
-              <div className="ml-11 bg-slate-800/40 rounded-xl p-4">
-                <div className="text-sm text-slate-300 whitespace-pre-wrap leading-relaxed">
-                  {message.body}
-                </div>
+              {/* Email body - left border accent */}
+              <div className="border-l-2 border-purple-500/25 pl-3 text-sm text-slate-300 whitespace-pre-wrap leading-relaxed">
+                {message.body}
               </div>
             </div>
           </motion.div>
