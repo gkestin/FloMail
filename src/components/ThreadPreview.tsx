@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, Mail, User, Clock, Maximize2, Minimize2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal } from 'lucide-react';
 import { EmailThread, EmailMessage } from '@/types';
 
 interface ThreadPreviewProps {
@@ -16,6 +16,47 @@ export function ThreadPreview({ thread, defaultExpanded = false }: ThreadPreview
     // By default, expand the last message
     new Set([thread.messages[thread.messages.length - 1]?.id])
   );
+  
+  // Resizable height state
+  const [messagesHeight, setMessagesHeight] = useState(250); // Default height in pixels
+  const isDragging = useRef(false);
+  const startY = useRef(0);
+  const startHeight = useRef(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isDragging.current = true;
+    startY.current = e.clientY;
+    startHeight.current = messagesHeight;
+    document.body.style.cursor = 'ns-resize';
+    document.body.style.userSelect = 'none';
+  }, [messagesHeight]);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging.current) return;
+      const deltaY = e.clientY - startY.current;
+      const newHeight = Math.max(80, Math.min(window.innerHeight * 0.7, startHeight.current + deltaY));
+      setMessagesHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      if (isDragging.current) {
+        isDragging.current = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
 
   const toggleMessage = (messageId: string) => {
     setExpandedMessages((prev) => {
@@ -135,7 +176,11 @@ export function ThreadPreview({ thread, defaultExpanded = false }: ThreadPreview
               className="relative z-10 overflow-hidden"
             >
               {/* Messages */}
-              <div className="max-h-[50vh] overflow-y-auto px-4 pb-3">
+              <div 
+                ref={containerRef}
+                style={{ maxHeight: `${messagesHeight}px` }}
+                className="overflow-y-auto px-4 pb-3"
+              >
                 {thread.messages.map((message, index) => (
                   <MessageItem
                     key={message.id}
@@ -153,8 +198,29 @@ export function ThreadPreview({ thread, defaultExpanded = false }: ThreadPreview
         </AnimatePresence>
       </div>
       
-      {/* Bottom gradient line - in normal flow, always at bottom of content */}
-      <div className="h-[2px] bg-gradient-to-r from-purple-500/50 via-blue-500/50 to-purple-500/50"></div>
+      {/* Draggable resize handle - only show when expanded */}
+      {isExpanded && (
+        <div
+          onMouseDown={handleMouseDown}
+          className="group relative cursor-ns-resize"
+        >
+          {/* Gradient line */}
+          <div className="h-[2px] bg-gradient-to-r from-purple-500/50 via-blue-500/50 to-purple-500/50 group-hover:from-purple-500/70 group-hover:via-blue-500/70 group-hover:to-purple-500/70 transition-colors"></div>
+          
+          {/* Drag handle indicator */}
+          <div className="absolute left-1/2 -translate-x-1/2 -top-2 opacity-0 group-hover:opacity-100 transition-opacity">
+            <GripHorizontal className="w-5 h-5 text-slate-500" />
+          </div>
+          
+          {/* Larger hit area for easier grabbing */}
+          <div className="absolute inset-x-0 -top-2 h-6"></div>
+        </div>
+      )}
+      
+      {/* Simple line when collapsed */}
+      {!isExpanded && (
+        <div className="h-[2px] bg-gradient-to-r from-purple-500/50 via-blue-500/50 to-purple-500/50"></div>
+      )}
       
       {/* Shadow below */}
       <div className="h-3 bg-gradient-to-b from-black/30 to-transparent"></div>
