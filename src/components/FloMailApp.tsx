@@ -21,6 +21,7 @@ export function FloMailApp() {
   const [showProfile, setShowProfile] = useState(false);
   const [allThreads, setAllThreads] = useState<EmailThread[]>([]);
   const currentThreadIndexRef = useRef(0);
+  const archiveHandlerRef = useRef<(() => void) | null>(null);
 
   // Load threads for navigation
   const loadThreads = useCallback(async () => {
@@ -117,6 +118,16 @@ export function FloMailApp() {
       console.error('Failed to archive:', err);
     }
   }, [selectedThread, getAccessToken, allThreads]);
+
+  // Handler for top bar archive button - uses registered handler from ChatInterface for notification
+  const handleTopBarArchive = useCallback(() => {
+    if (archiveHandlerRef.current) {
+      archiveHandlerRef.current();
+    } else {
+      // Fallback if handler not registered
+      handleArchive();
+    }
+  }, [handleArchive]);
 
   const handleNextEmail = useCallback(() => {
     if (allThreads.length === 0) {
@@ -277,7 +288,7 @@ export function FloMailApp() {
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={handleArchive}
+                onClick={handleTopBarArchive}
                 className="p-2 ml-1 rounded-lg hover:bg-slate-800 hover:text-blue-400 transition-colors"
                 title="Archive"
               >
@@ -395,6 +406,7 @@ export function FloMailApp() {
                 onArchive={handleArchive}
                 onNextEmail={handleNextEmail}
                 onGoToInbox={handleGoToInbox}
+                onRegisterArchiveHandler={(handler) => { archiveHandlerRef.current = handler; }}
               />
             </motion.div>
           )}

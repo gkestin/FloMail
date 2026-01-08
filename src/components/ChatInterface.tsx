@@ -55,6 +55,8 @@ interface ChatInterfaceProps {
   onArchive?: () => void;
   onNextEmail?: () => void;
   onGoToInbox?: () => void;
+  // Callback to register archive handler that includes notification
+  onRegisterArchiveHandler?: (handler: () => void) => void;
 }
 
 interface UIMessage extends ChatMessage {
@@ -78,6 +80,7 @@ export function ChatInterface({
   onArchive,
   onNextEmail,
   onGoToInbox,
+  onRegisterArchiveHandler,
 }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [input, setInput] = useState('');
@@ -202,6 +205,30 @@ export function ChatInterface({
     };
   }, []);
 
+  // Archive with notification - used by both agent and direct button press
+  const archiveWithNotification = useCallback(() => {
+    const archiveSubject = thread?.subject || 'Email';
+    const lastMsg = thread?.messages[thread.messages.length - 1];
+    const archiveSnippet = lastMsg?.snippet || '';
+    const archivePreview = lastMsg?.body || '';
+    setMessages(prev => [...prev, {
+      id: `archive-${Date.now()}`,
+      role: 'assistant' as const,
+      content: `Archived: "${archiveSubject}"`,
+      timestamp: new Date(),
+      isSystemMessage: true,
+      systemType: 'archived' as const,
+      systemSnippet: archiveSnippet,
+      systemPreview: archivePreview,
+    }]);
+    onArchive?.();
+  }, [thread, onArchive]);
+
+  // Register archive handler with parent so top bar button can use it
+  useEffect(() => {
+    onRegisterArchiveHandler?.(archiveWithNotification);
+  }, [archiveWithNotification, onRegisterArchiveHandler]);
+
   // Handle tool calls from the agent
   const handleToolCalls = useCallback((toolCalls: ToolCall[]) => {
     for (const toolCall of toolCalls) {
@@ -212,22 +239,7 @@ export function ChatInterface({
           onDraftCreated?.(draft);
           break;
         case 'archive_email':
-          // Add system message before archiving - store snippet/preview now before thread changes
-          const archiveSubject = thread?.subject || 'Email';
-          const lastMsg = thread?.messages[thread.messages.length - 1];
-          const archiveSnippet = lastMsg?.snippet || '';
-          const archivePreview = lastMsg?.body || '';
-          setMessages(prev => [...prev, {
-            id: `archive-${Date.now()}`,
-            role: 'assistant' as const,
-            content: `Archived: "${archiveSubject}"`,
-            timestamp: new Date(),
-            isSystemMessage: true,
-            systemType: 'archived' as const,
-            systemSnippet: archiveSnippet,
-            systemPreview: archivePreview,
-          }]);
-          onArchive?.();
+          archiveWithNotification();
           break;
         case 'go_to_next_email':
           onNextEmail?.();
@@ -245,7 +257,7 @@ export function ChatInterface({
           break;
       }
     }
-  }, [thread, onDraftCreated, onArchive, onNextEmail, onGoToInbox]);
+  }, [thread, onDraftCreated, archiveWithNotification, onNextEmail, onGoToInbox]);
 
   // Send message to AI
   const sendToAI = useCallback(async (messageId: string, content: string) => {
