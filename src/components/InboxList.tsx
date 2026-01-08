@@ -1,14 +1,12 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { motion, AnimatePresence, useMotionValue, useTransform, PanInfo } from 'framer-motion';
 import { 
   RefreshCw, 
   Mail, 
   MailOpen, 
   Archive, 
-  Trash2,
-  ChevronRight,
   Loader2,
   Paperclip,
   Send,
@@ -18,7 +16,7 @@ import {
 } from 'lucide-react';
 import { EmailThread } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
-import { fetchInbox, archiveThread, trashThread, markAsRead } from '@/lib/gmail';
+import { fetchInbox, archiveThread, markAsRead } from '@/lib/gmail';
 
 // Available mail folders/views
 export type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'archive';
@@ -104,19 +102,6 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
       setThreads((prev) => prev.filter((t) => t.id !== threadId));
     } catch (err) {
       console.error('Failed to archive:', err);
-    }
-  };
-
-  const handleTrash = async (e: React.MouseEvent, threadId: string) => {
-    e.stopPropagation();
-    try {
-      const token = await getAccessToken();
-      if (!token) return;
-      
-      await trashThread(token, threadId);
-      setThreads((prev) => prev.filter((t) => t.id !== threadId));
-    } catch (err) {
-      console.error('Failed to trash:', err);
     }
   };
 
@@ -259,91 +244,186 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
         ) : (
           <AnimatePresence>
             {threads.map((thread, index) => (
-              <motion.div
+              <SwipeableEmailRow
                 key={thread.id}
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 20 }}
-                transition={{ delay: index * 0.03 }}
-                onClick={() => handleSelect(thread)}
-                className={`
-                  relative group cursor-pointer
-                  ${selectedThreadId === thread.id ? 'bg-purple-500/10' : 'hover:bg-slate-800/50'}
-                  ${!thread.isRead ? 'bg-slate-800/30' : ''}
-                  transition-colors
-                `}
-              >
-                <div className="flex items-start gap-3 px-4 py-3 border-b border-slate-800/30">
-                  {/* Unread indicator */}
-                  <div className="flex-shrink-0 pt-1">
-                    {thread.isRead ? (
-                      <MailOpen className="w-5 h-5 text-slate-600" />
-                    ) : (
-                      <Mail className="w-5 h-5 text-purple-400" />
-                    )}
-                  </div>
-
-                  {/* Content */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <span className={`font-medium truncate ${!thread.isRead ? 'text-slate-100' : 'text-slate-300'}`}>
-                          {getSenderNames(thread)}
-                        </span>
-                        {/* Message count - Gmail style */}
-                        {thread.messages.length > 1 && (
-                          <span className="flex-shrink-0 text-xs text-slate-500 font-medium">
-                            ({thread.messages.length})
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-1.5 flex-shrink-0">
-                        {/* Attachment indicator */}
-                        {thread.messages.some(m => m.hasAttachments) && (
-                          <Paperclip className="w-3.5 h-3.5 text-slate-500" />
-                        )}
-                        <span className="text-xs text-slate-500">
-                          {formatDate(thread.lastMessageDate)}
-                        </span>
-                      </div>
-                    </div>
-                    <p className={`text-sm truncate mb-1 ${!thread.isRead ? 'text-slate-200' : 'text-slate-400'}`}>
-                      {thread.subject || '(No Subject)'}
-                    </p>
-                    <p className="text-xs text-slate-500 truncate">
-                      {thread.snippet}
-                    </p>
-                  </div>
-
-                  {/* Chevron */}
-                  <ChevronRight className="w-5 h-5 text-slate-600 flex-shrink-0 self-center opacity-0 group-hover:opacity-100 transition-opacity" />
-                </div>
-
-                {/* Swipe actions (visible on hover) */}
-                <div className="absolute right-12 top-1/2 -translate-y-1/2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <motion.button
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.9 }}
-                    onClick={(e) => handleArchive(e, thread.id)}
-                    className="p-2 rounded-lg bg-slate-700 hover:bg-slate-600 transition-colors"
-                  >
-                    <Archive className="w-4 h-4 text-slate-300" />
-                  </motion.button>
-                  <motion.button
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.9 }}
-                    onClick={(e) => handleTrash(e, thread.id)}
-                    className="p-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors"
-                  >
-                    <Trash2 className="w-4 h-4 text-red-400" />
-                  </motion.button>
-                </div>
-              </motion.div>
+                thread={thread}
+                index={index}
+                isSelected={selectedThreadId === thread.id}
+                onSelect={() => handleSelect(thread)}
+                onArchive={(e) => handleArchive(e, thread.id)}
+                getSenderNames={getSenderNames}
+                formatDate={formatDate}
+              />
             ))}
           </AnimatePresence>
         )}
       </div>
     </div>
+  );
+}
+
+// Swipeable email row component
+interface SwipeableEmailRowProps {
+  thread: EmailThread;
+  index: number;
+  isSelected: boolean;
+  onSelect: () => void;
+  onArchive: (e: React.MouseEvent) => void;
+  getSenderNames: (thread: EmailThread) => string;
+  formatDate: (date: string) => string;
+}
+
+function SwipeableEmailRow({
+  thread,
+  index,
+  isSelected,
+  onSelect,
+  onArchive,
+  getSenderNames,
+  formatDate,
+}: SwipeableEmailRowProps) {
+  const x = useMotionValue(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isArchiving, setIsArchiving] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  
+  // Transform for the archive background opacity
+  const archiveBgOpacity = useTransform(x, [-150, -50, 0], [1, 0.5, 0]);
+  const archiveIconScale = useTransform(x, [-150, -80, 0], [1.2, 1, 0.8]);
+  
+  const SWIPE_THRESHOLD = -100; // How far to swipe to trigger archive
+  
+  const handleDragEnd = (event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
+    setIsDragging(false);
+    
+    if (info.offset.x < SWIPE_THRESHOLD) {
+      // Trigger archive
+      setIsArchiving(true);
+      // Animate off screen then archive
+      setTimeout(() => {
+        onArchive({ stopPropagation: () => {} } as React.MouseEvent);
+      }, 200);
+    }
+  };
+  
+  const handleDragStart = () => {
+    setIsDragging(true);
+  };
+
+  if (isArchiving) {
+    return (
+      <motion.div
+        initial={{ opacity: 1, x: 0 }}
+        animate={{ opacity: 0, x: -300 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.2 }}
+        className="bg-green-500/20 border-b border-slate-800/30"
+      >
+        <div className="flex items-center justify-center gap-2 py-6 text-green-400">
+          <Archive className="w-5 h-5" />
+          <span className="text-sm font-medium">Archived</span>
+        </div>
+      </motion.div>
+    );
+  }
+
+  return (
+    <motion.div
+      ref={containerRef}
+      initial={{ opacity: 0, x: -20 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -100 }}
+      transition={{ delay: index * 0.03 }}
+      className="relative overflow-hidden"
+    >
+      {/* Archive action background (revealed on swipe) */}
+      <motion.div 
+        className="absolute inset-0 bg-gradient-to-l from-green-600 to-green-700 flex items-center justify-end pr-6"
+        style={{ opacity: archiveBgOpacity }}
+      >
+        <motion.div style={{ scale: archiveIconScale }}>
+          <Archive className="w-6 h-6 text-white" />
+        </motion.div>
+      </motion.div>
+      
+      {/* Swipeable content */}
+      <motion.div
+        drag="x"
+        dragConstraints={{ left: -150, right: 0 }}
+        dragElastic={0.1}
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
+        style={{ x }}
+        animate={!isDragging ? { x: 0 } : undefined}
+        transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+        onClick={() => !isDragging && onSelect()}
+        className={`
+          relative cursor-pointer bg-slate-900
+          ${isSelected ? 'bg-purple-500/10' : 'hover:bg-slate-800/50'}
+          ${!thread.isRead ? 'bg-slate-800/30' : ''}
+          transition-colors
+        `}
+      >
+        <div className="flex items-start gap-3 px-4 py-3 border-b border-slate-800/30">
+          {/* Unread indicator */}
+          <div className="flex-shrink-0 pt-1">
+            {thread.isRead ? (
+              <MailOpen className="w-5 h-5 text-slate-600" />
+            ) : (
+              <Mail className="w-5 h-5 text-purple-400" />
+            )}
+          </div>
+
+          {/* Content */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className={`font-medium truncate ${!thread.isRead ? 'text-slate-100' : 'text-slate-300'}`}>
+                  {getSenderNames(thread)}
+                </span>
+                {/* Message count - Gmail style */}
+                {thread.messages.length > 1 && (
+                  <span className="flex-shrink-0 text-xs text-slate-500 font-medium">
+                    ({thread.messages.length})
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                {/* Attachment indicator */}
+                {thread.messages.some(m => m.hasAttachments) && (
+                  <Paperclip className="w-3.5 h-3.5 text-slate-500" />
+                )}
+                <span className="text-xs text-slate-500">
+                  {formatDate(thread.lastMessageDate)}
+                </span>
+              </div>
+            </div>
+            <p className={`text-sm truncate mb-1 ${!thread.isRead ? 'text-slate-200' : 'text-slate-400'}`}>
+              {thread.subject || '(No Subject)'}
+            </p>
+            <p className="text-xs text-slate-500 truncate">
+              {thread.snippet}
+            </p>
+          </div>
+
+          {/* Archive button (always visible on right) */}
+          <div className="flex items-center gap-1 self-center">
+            <motion.button
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onArchive(e);
+              }}
+              className="p-2 rounded-lg bg-slate-800/50 hover:bg-green-500/20 text-slate-500 hover:text-green-400 transition-colors"
+              title="Archive"
+            >
+              <Archive className="w-4 h-4" />
+            </motion.button>
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
