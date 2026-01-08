@@ -69,7 +69,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   },
   {
     name: 'archive_email',
-    description: 'Archive the current email thread, removing it from the inbox. Call when user wants to archive, done with, or move on from current email.',
+    description: 'Archive the current email thread, removing it from the inbox. Only works if email is currently in inbox. If email is already archived (not in inbox), tell the user it is already archived.',
     parameters: {
       type: 'object',
       properties: {
@@ -82,8 +82,35 @@ export const AGENT_TOOLS: AgentTool[] = [
     },
   },
   {
+    name: 'move_to_inbox',
+    description: 'Move an archived email back to the inbox (unarchive). Only works if email is not currently in inbox. Use when user wants to unarchive or move a message back to inbox.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'star_email',
+    description: 'Star the current email thread. Use when user wants to star, mark as important, or flag the email.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'unstar_email',
+    description: 'Remove star from the current email thread. Use when user wants to unstar or remove the star/flag.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
     name: 'go_to_next_email',
-    description: 'Navigate to the next unread email in the inbox. Call when user says "next", "next email", "move on", or similar.',
+    description: 'Navigate to the next email in the current folder. Call when user says "next", "next email", "move on", or similar.',
     parameters: {
       type: 'object',
       properties: {},
@@ -92,7 +119,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   },
   {
     name: 'go_to_inbox',
-    description: 'Return to the inbox view. Call when user wants to see their inbox, go back, or browse emails.',
+    description: 'Return to the inbox/folder list view. Call when user wants to see their inbox, go back, or browse emails.',
     parameters: {
       type: 'object',
       properties: {},

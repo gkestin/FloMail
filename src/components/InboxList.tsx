@@ -10,14 +10,38 @@ import {
   Trash2,
   ChevronRight,
   Loader2,
-  Paperclip
+  Paperclip,
+  Send,
+  Inbox,
+  Star,
+  FolderOpen
 } from 'lucide-react';
 import { EmailThread } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import { fetchInbox, archiveThread, trashThread, markAsRead } from '@/lib/gmail';
 
+// Available mail folders/views
+export type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'archive';
+
+// Gmail API label configuration
+// Note: Gmail uses LABELS not folders. Archive is NOT a label - 
+// archived messages are simply messages without the INBOX label.
+const FOLDER_CONFIG: Record<MailFolder, { 
+  label: string; 
+  labelIds?: string[];  // Gmail system label IDs (preferred)
+  query?: string;       // Fallback search query
+  icon: React.ElementType 
+}> = {
+  inbox: { label: 'Inbox', labelIds: ['INBOX'], icon: Inbox },
+  sent: { label: 'Sent', labelIds: ['SENT'], icon: Send },
+  starred: { label: 'Starred', labelIds: ['STARRED'], icon: Star },
+  all: { label: 'All Mail', icon: Mail }, // No filter = all mail
+  // Archive has no label in Gmail - it's messages NOT in inbox
+  archive: { label: 'Archive', query: '-in:inbox -in:spam -in:trash', icon: Archive },
+};
+
 interface InboxListProps {
-  onSelectThread: (thread: EmailThread) => void;
+  onSelectThread: (thread: EmailThread, folder: MailFolder) => void;
   selectedThreadId?: string;
 }
 
@@ -27,8 +51,9 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [currentFolder, setCurrentFolder] = useState<MailFolder>('inbox');
 
-  const loadInbox = useCallback(async (showRefresh = false) => {
+  const loadFolder = useCallback(async (folder: MailFolder, showRefresh = false) => {
     try {
       if (showRefresh) {
         setRefreshing(true);
@@ -42,11 +67,17 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
         throw new Error('Not authenticated');
       }
 
-      const { threads: fetchedThreads } = await fetchInbox(token);
+      const config = FOLDER_CONFIG[folder];
+      // Use labelIds when available (proper Gmail API approach), 
+      // fall back to query for archive (which has no label)
+      const { threads: fetchedThreads } = await fetchInbox(token, { 
+        labelIds: config.labelIds,
+        query: config.query 
+      });
       setThreads(fetchedThreads);
     } catch (err: any) {
-      console.error('Failed to load inbox:', err);
-      setError(err.message || 'Failed to load inbox');
+      console.error('Failed to load folder:', err);
+      setError(err.message || 'Failed to load emails');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -54,8 +85,14 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
   }, [getAccessToken]);
 
   useEffect(() => {
-    loadInbox();
-  }, [loadInbox]);
+    loadFolder(currentFolder);
+  }, [currentFolder, loadFolder]);
+
+  const handleFolderChange = (folder: MailFolder) => {
+    if (folder !== currentFolder) {
+      setCurrentFolder(folder);
+    }
+  };
 
   const handleArchive = async (e: React.MouseEvent, threadId: string) => {
     e.stopPropagation();
@@ -84,7 +121,7 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
   };
 
   const handleSelect = async (thread: EmailThread) => {
-    onSelectThread(thread);
+    onSelectThread(thread, currentFolder);
     
     if (!thread.isRead) {
       try {
@@ -161,7 +198,7 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
       <div className="flex flex-col items-center justify-center h-full p-4 text-center">
         <p className="text-red-400 mb-4">{error}</p>
         <button
-          onClick={() => loadInbox()}
+          onClick={() => loadFolder(currentFolder)}
           className="px-4 py-2 rounded-lg bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 transition-colors"
         >
           Try again
@@ -170,17 +207,43 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
     );
   }
 
+  const FolderIcon = FOLDER_CONFIG[currentFolder].icon;
+  
+  // Define tab order explicitly: Inbox → Archive → Sent → Starred → All Mail
+  const FOLDER_ORDER: MailFolder[] = ['inbox', 'archive', 'sent', 'starred', 'all'];
+
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800/50">
-        <h1 className="text-xl font-bold text-slate-100">Inbox</h1>
+      {/* Folder tabs - combined with header (selected folder is prominent) */}
+      <div className="flex items-center gap-1 px-2 py-2.5 border-b border-slate-800/50 overflow-x-auto">
+        {FOLDER_ORDER.map((folder) => {
+          const config = FOLDER_CONFIG[folder];
+          const Icon = config.icon;
+          const isActive = folder === currentFolder;
+          
+          return (
+            <button
+              key={folder}
+              onClick={() => handleFolderChange(folder)}
+              className={`flex items-center gap-1.5 rounded-lg font-medium whitespace-nowrap transition-all ${
+                isActive 
+                  ? 'px-4 py-2 bg-purple-500/25 text-purple-200 border border-purple-500/40 text-base shadow-sm' 
+                  : 'px-3 py-1.5 text-sm text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+              }`}
+            >
+              <Icon className={isActive ? 'w-5 h-5' : 'w-4 h-4'} />
+              {config.label}
+            </button>
+          );
+        })}
+        
+        {/* Refresh button - at the end */}
         <motion.button
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
-          onClick={() => loadInbox(true)}
+          onClick={() => loadFolder(currentFolder, true)}
           disabled={refreshing}
-          className="p-2 rounded-lg hover:bg-slate-800 transition-colors"
+          className="ml-auto p-2 rounded-lg hover:bg-slate-800 transition-colors flex-shrink-0"
         >
           <RefreshCw className={`w-5 h-5 text-slate-400 ${refreshing ? 'animate-spin' : ''}`} />
         </motion.button>
@@ -190,8 +253,8 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
       <div className="flex-1 overflow-y-auto">
         {threads.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-4">
-            <Mail className="w-12 h-12 text-slate-600 mb-4" />
-            <p className="text-slate-400">Your inbox is empty</p>
+            <FolderIcon className="w-12 h-12 text-slate-600 mb-4" />
+            <p className="text-slate-400">No emails in {FOLDER_CONFIG[currentFolder].label.toLowerCase()}</p>
           </div>
         ) : (
           <AnimatePresence>

@@ -10,11 +10,13 @@ export async function POST(request: NextRequest) {
     const { 
       messages, 
       thread, 
+      folder = 'inbox',
       provider = 'anthropic', 
       model 
     }: {
       messages: { role: 'user' | 'assistant'; content: string }[];
       thread?: EmailThread;
+      folder?: string;
       provider?: 'openai' | 'anthropic';
       model?: string;
     } = body;
@@ -38,8 +40,8 @@ export async function POST(request: NextRequest) {
       const openaiModel = model && model in OPENAI_MODELS 
         ? model as keyof typeof OPENAI_MODELS 
         : 'gpt-4.1';
-      console.log(`[FloMail] Using OpenAI model: ${openaiModel}`);
-      const response = await agentChat(messages, thread, openaiModel);
+      console.log(`[FloMail] Using OpenAI model: ${openaiModel}, Folder: ${folder}`);
+      const response = await agentChat(messages, thread, openaiModel, folder);
       result = {
         content: response.content,
         toolCalls: response.toolCalls,
@@ -48,8 +50,8 @@ export async function POST(request: NextRequest) {
       const claudeModel = model && model in CLAUDE_MODELS 
         ? model as keyof typeof CLAUDE_MODELS 
         : 'claude-sonnet-4-20250514';
-      console.log(`[FloMail] Using Claude model: ${claudeModel}`);
-      const response = await agentChatClaude(messages, thread, claudeModel);
+      console.log(`[FloMail] Using Claude model: ${claudeModel}, Folder: ${folder}`);
+      const response = await agentChatClaude(messages, thread, claudeModel, folder);
       result = {
         content: response.content,
         toolCalls: response.toolCalls,

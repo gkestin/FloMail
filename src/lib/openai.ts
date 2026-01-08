@@ -32,9 +32,18 @@ const FLOMAIL_AGENT_PROMPT = `You are FloMail, a voice-first email assistant age
   * subject: Use "Re: [subject]" for replies, "Fwd: [subject]" for forwards
   * body: The email content
 - send_email: Call when user confirms they want to send.
-- archive_email: Call when user says "archive", "done with this", etc.
+- archive_email: Remove from inbox. ONLY works if email is currently in inbox. If viewing archived email, tell user it's already archived.
+- move_to_inbox: Move archived email back to inbox. ONLY use when viewing archived email.
+- star_email: Star/flag the email for importance.
+- unstar_email: Remove star from email.
 - go_to_next_email: Call when user says "next", "next email", etc.
 - go_to_inbox: Call when user wants to go back to inbox.
+
+## FOLDER AWARENESS:
+The email context will tell you which folder the email is from (Inbox, Sent, Starred, All Mail, or Archive).
+- If from Archive: Cannot archive again, but can move_to_inbox
+- If from Inbox: Can archive
+- If starred: Can unstar. If not starred: Can star.
 
 ## DIRECT RESPONSES (NO tools - just respond with text):
 - Summarizing: When user asks "what is this about", "summarize", "tldr" → Just write the summary directly!
@@ -47,11 +56,21 @@ const FLOMAIL_AGENT_PROMPT = `You are FloMail, a voice-first email assistant age
 2. For summaries/questions: Just respond with the answer - DO NOT use tools
 3. After drafting: Ask "Ready to send, or would you like changes?"
 4. Be concise but complete. Don't stop mid-sentence.
+5. Check the folder before suggesting actions - don't suggest archive for archived emails!
 
 Match the conversation's tone. Be helpful and efficient.`;
 
+// Folder display names
+const FOLDER_NAMES: Record<string, string> = {
+  inbox: 'Inbox',
+  sent: 'Sent',
+  starred: 'Starred',
+  all: 'All Mail',
+  archive: 'Archive',
+};
+
 // Build context from email thread
-function buildEmailContext(thread: EmailThread): string {
+function buildEmailContext(thread: EmailThread, folder: string = 'inbox'): string {
   const messages = thread.messages.map((msg, i) => {
     const fromName = msg.from.name || msg.from.email;
     return `[${i + 1}] From: ${fromName} <${msg.from.email}>
@@ -62,19 +81,33 @@ Subject: ${msg.subject}
 ${msg.body}`;
   });
 
+  const folderName = FOLDER_NAMES[folder] || folder;
+  
+  // Check actual labels for precise guidance
+  const hasInboxLabel = thread.labels?.includes('INBOX');
+  const hasStarredLabel = thread.labels?.includes('STARRED');
+  
   return `<current_email_thread>
+Folder: ${folderName}
+Labels: ${thread.labels?.join(', ') || 'None'}
 Subject: ${thread.subject}
 Participants: ${thread.participants.map(p => `${p.name || 'Unknown'} <${p.email}>`).join(', ')}
 
 ${messages.join('\n\n---\n\n')}
-</current_email_thread>`;
+</current_email_thread>
+
+Note: This email is currently in the "${folderName}" folder.
+${hasInboxLabel ? '• Has INBOX label - can be archived.' : '• No INBOX label - archive will have no effect, but move_to_inbox will work.'}
+${hasStarredLabel ? '• Is STARRED - star_email will have no effect, but unstar_email will work.' : '• Not starred - can be starred.'}
+${folder === 'sent' ? '• This is a SENT email. If user wants to "reply", they mean follow-up to the original recipients, not themselves.' : ''}`;
 }
 
 // Agent chat with tool calling
 export async function agentChat(
   messages: { role: 'user' | 'assistant'; content: string }[],
   thread?: EmailThread,
-  model: OpenAIModel = 'gpt-4.1'
+  model: OpenAIModel = 'gpt-4.1',
+  folder: string = 'inbox'
 ): Promise<{
   content: string;
   toolCalls: ToolCall[];
@@ -89,7 +122,7 @@ export async function agentChat(
   if (thread) {
     systemMessages.push({
       role: 'system',
-      content: buildEmailContext(thread),
+      content: buildEmailContext(thread, folder),
     });
   }
 

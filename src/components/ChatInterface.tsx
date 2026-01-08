@@ -48,11 +48,19 @@ function CancelledDraftPreview({ draft }: { draft: EmailDraft }) {
   );
 }
 
+// Import folder type
+import { MailFolder } from './InboxList';
+
 interface ChatInterfaceProps {
   thread?: EmailThread;
+  folder?: MailFolder;
+  threadLabels?: string[]; // Current Gmail labels on the thread
   onDraftCreated?: (draft: EmailDraft) => void;
   onSendEmail?: (draft: EmailDraft) => Promise<void>;
   onArchive?: () => void;
+  onMoveToInbox?: () => void;
+  onStar?: () => void;
+  onUnstar?: () => void;
   onNextEmail?: () => void;
   onGoToInbox?: () => void;
   // Callback to register archive handler that includes notification
@@ -75,9 +83,14 @@ interface UIMessage extends ChatMessage {
 
 export function ChatInterface({
   thread,
+  folder = 'inbox',
+  threadLabels = [],
   onDraftCreated,
   onSendEmail,
   onArchive,
+  onMoveToInbox,
+  onStar,
+  onUnstar,
   onNextEmail,
   onGoToInbox,
   onRegisterArchiveHandler,
@@ -241,6 +254,39 @@ export function ChatInterface({
         case 'archive_email':
           archiveWithNotification();
           break;
+        case 'move_to_inbox':
+          setMessages(prev => [...prev, {
+            id: `action-${Date.now()}`,
+            role: 'assistant' as const,
+            content: `📥 Moved to Inbox: "${thread?.subject || 'Email'}"`,
+            timestamp: new Date(),
+            isSystemMessage: true,
+            systemType: 'navigated' as const,
+          }]);
+          onMoveToInbox?.();
+          break;
+        case 'star_email':
+          setMessages(prev => [...prev, {
+            id: `action-${Date.now()}`,
+            role: 'assistant' as const,
+            content: `⭐ Starred: "${thread?.subject || 'Email'}"`,
+            timestamp: new Date(),
+            isSystemMessage: true,
+            systemType: 'navigated' as const,
+          }]);
+          onStar?.();
+          break;
+        case 'unstar_email':
+          setMessages(prev => [...prev, {
+            id: `action-${Date.now()}`,
+            role: 'assistant' as const,
+            content: `☆ Unstarred: "${thread?.subject || 'Email'}"`,
+            timestamp: new Date(),
+            isSystemMessage: true,
+            systemType: 'navigated' as const,
+          }]);
+          onUnstar?.();
+          break;
         case 'go_to_next_email':
           onNextEmail?.();
           break;
@@ -257,7 +303,7 @@ export function ChatInterface({
           break;
       }
     }
-  }, [thread, onDraftCreated, archiveWithNotification, onNextEmail, onGoToInbox]);
+  }, [thread, onDraftCreated, archiveWithNotification, onMoveToInbox, onStar, onUnstar, onNextEmail, onGoToInbox]);
 
   // Send message to AI
   const sendToAI = useCallback(async (messageId: string, content: string) => {
@@ -279,6 +325,7 @@ export function ChatInterface({
         body: JSON.stringify({
           messages: contextMessages,
           thread,
+          folder,
           provider,
           model,
         }),
@@ -583,7 +630,7 @@ export function ChatInterface({
   return (
     <div className="flex flex-col h-full bg-gradient-to-b from-slate-900 to-slate-950">
       {/* Email Thread Preview */}
-      {thread && <ThreadPreview thread={thread} defaultExpanded={false} />}
+      {thread && <ThreadPreview thread={thread} folder={folder} defaultExpanded={false} />}
 
 
       {/* Messages */}
@@ -603,7 +650,8 @@ export function ChatInterface({
             </p>
             {thread && (
               <div className="flex flex-wrap gap-2 justify-center">
-                {['Summarize', 'Draft reply', 'Archive', 'Next'].map((suggestion) => (
+                {/* AI-powered actions */}
+                {['Summarize', 'Draft reply'].map((suggestion) => (
                   <button
                     key={suggestion}
                     onClick={() => sendMessage(suggestion)}
@@ -612,6 +660,19 @@ export function ChatInterface({
                     {suggestion}
                   </button>
                 ))}
+                {/* Direct actions - no AI needed */}
+                <button
+                  onClick={() => archiveWithNotification()}
+                  className="px-4 py-2.5 rounded-full bg-slate-800/80 text-slate-300 text-sm font-medium hover:bg-blue-500/20 hover:text-blue-300 hover:border-blue-500/30 transition-colors border border-slate-700/50"
+                >
+                  Archive
+                </button>
+                <button
+                  onClick={() => onNextEmail?.()}
+                  className="px-4 py-2.5 rounded-full bg-slate-800/80 text-slate-300 text-sm font-medium hover:bg-green-500/20 hover:text-green-300 hover:border-green-500/30 transition-colors border border-slate-700/50"
+                >
+                  Next
+                </button>
               </div>
             )}
           </div>
@@ -892,7 +953,7 @@ export function ChatInterface({
         </AnimatePresence>
 
         {/* Text Input with mic and settings */}
-        <form onSubmit={handleSubmit} className="flex items-end gap-2">
+        <form onSubmit={handleSubmit} className="flex items-center gap-2">
           {!isRecording && (
             <motion.button
               whileHover={{ scale: 1.05 }}

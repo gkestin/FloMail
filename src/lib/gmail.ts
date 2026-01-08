@@ -84,15 +84,27 @@ function hasAttachments(payload: any): boolean {
   return false;
 }
 
-// Fetch inbox messages
+// Fetch threads by label or query
+// Gmail API supports:
+// - labelIds: Array of system label IDs (INBOX, SENT, STARRED, etc.)
+// - q: Search query for complex filtering (like archive: -in:inbox)
 export async function fetchInbox(
   accessToken: string,
-  options: { maxResults?: number; pageToken?: string; query?: string } = {}
+  options: { maxResults?: number; pageToken?: string; query?: string; labelIds?: string[] } = {}
 ): Promise<{ threads: EmailThread[]; nextPageToken?: string }> {
   const params = new URLSearchParams({
     maxResults: String(options.maxResults || 20),
-    q: options.query || 'in:inbox',
   });
+  
+  // Use labelIds if provided (preferred Gmail API approach)
+  if (options.labelIds && options.labelIds.length > 0) {
+    options.labelIds.forEach(label => params.append('labelIds', label));
+  } else if (options.query) {
+    // Fall back to query for complex filtering (like archive)
+    params.set('q', options.query);
+  }
+  // If neither is provided, fetch all mail (no filter)
+  
   if (options.pageToken) {
     params.set('pageToken', options.pageToken);
   }
@@ -249,6 +261,81 @@ export async function archiveThread(accessToken: string, threadId: string): Prom
   if (!response.ok) {
     throw new Error('Failed to archive thread');
   }
+}
+
+// Move thread to inbox (unarchive)
+export async function moveToInbox(accessToken: string, threadId: string): Promise<void> {
+  const response = await fetch(`${GMAIL_API_BASE}/threads/${threadId}/modify`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      addLabelIds: ['INBOX'],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to move to inbox');
+  }
+}
+
+// Star a thread
+export async function starThread(accessToken: string, threadId: string): Promise<void> {
+  const response = await fetch(`${GMAIL_API_BASE}/threads/${threadId}/modify`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      addLabelIds: ['STARRED'],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to star thread');
+  }
+}
+
+// Unstar a thread
+export async function unstarThread(accessToken: string, threadId: string): Promise<void> {
+  const response = await fetch(`${GMAIL_API_BASE}/threads/${threadId}/modify`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      removeLabelIds: ['STARRED'],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to unstar thread');
+  }
+}
+
+// Get thread labels (to check current state)
+export async function getThreadLabels(accessToken: string, threadId: string): Promise<string[]> {
+  const response = await fetch(`${GMAIL_API_BASE}/threads/${threadId}?format=minimal`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to get thread labels');
+  }
+
+  const data = await response.json();
+  // Collect all unique labels from all messages in the thread
+  const labels = new Set<string>();
+  for (const msg of data.messages || []) {
+    for (const label of msg.labelIds || []) {
+      labels.add(label);
+    }
+  }
+  return Array.from(labels);
 }
 
 // Mark thread as read

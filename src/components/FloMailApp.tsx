@@ -4,7 +4,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/contexts/AuthContext';
 import { LoginScreen } from './LoginScreen';
-import { InboxList } from './InboxList';
+import { InboxList, MailFolder } from './InboxList';
 import { EmailView } from './EmailView';
 import { ChatInterface } from './ChatInterface';
 import { EmailThread, EmailDraft } from '@/types';
@@ -20,6 +20,7 @@ export function FloMailApp() {
   const [currentDraft, setCurrentDraft] = useState<EmailDraft | null>(null);
   const [showProfile, setShowProfile] = useState(false);
   const [allThreads, setAllThreads] = useState<EmailThread[]>([]);
+  const [currentMailFolder, setCurrentMailFolder] = useState<MailFolder>('inbox');
   const currentThreadIndexRef = useRef(0);
   const archiveHandlerRef = useRef<(() => void) | null>(null);
 
@@ -42,8 +43,9 @@ export function FloMailApp() {
     }
   }, [user, loadThreads]);
 
-  const handleSelectThread = useCallback((thread: EmailThread) => {
+  const handleSelectThread = useCallback((thread: EmailThread, folder: MailFolder = 'inbox') => {
     setSelectedThread(thread);
+    setCurrentMailFolder(folder);
     // Find index in all threads
     const idx = allThreads.findIndex((t) => t.id === thread.id);
     if (idx !== -1) {
@@ -128,6 +130,50 @@ export function FloMailApp() {
       handleArchive();
     }
   }, [handleArchive]);
+
+  // Move to inbox (unarchive)
+  const handleMoveToInbox = useCallback(async () => {
+    if (!selectedThread) return;
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+      
+      const { moveToInbox } = await import('@/lib/gmail');
+      await moveToInbox(token, selectedThread.id);
+      // Refresh the thread list
+      loadThreads();
+    } catch (err) {
+      console.error('Failed to move to inbox:', err);
+    }
+  }, [selectedThread, getAccessToken, loadThreads]);
+
+  // Star email
+  const handleStar = useCallback(async () => {
+    if (!selectedThread) return;
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+      
+      const { starThread } = await import('@/lib/gmail');
+      await starThread(token, selectedThread.id);
+    } catch (err) {
+      console.error('Failed to star:', err);
+    }
+  }, [selectedThread, getAccessToken]);
+
+  // Unstar email
+  const handleUnstar = useCallback(async () => {
+    if (!selectedThread) return;
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+      
+      const { unstarThread } = await import('@/lib/gmail');
+      await unstarThread(token, selectedThread.id);
+    } catch (err) {
+      console.error('Failed to unstar:', err);
+    }
+  }, [selectedThread, getAccessToken]);
 
   const handleNextEmail = useCallback(() => {
     if (allThreads.length === 0) {
@@ -401,9 +447,13 @@ export function FloMailApp() {
             >
               <ChatInterface
                 thread={selectedThread || undefined}
+                folder={currentMailFolder}
                 onDraftCreated={handleDraftCreated}
                 onSendEmail={handleSendEmail}
                 onArchive={handleArchive}
+                onMoveToInbox={handleMoveToInbox}
+                onStar={handleStar}
+                onUnstar={handleUnstar}
                 onNextEmail={handleNextEmail}
                 onGoToInbox={handleGoToInbox}
                 onRegisterArchiveHandler={(handler) => { archiveHandlerRef.current = handler; }}

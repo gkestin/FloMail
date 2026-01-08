@@ -2,27 +2,73 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal } from 'lucide-react';
+import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, Archive, FolderOpen } from 'lucide-react';
 import { EmailThread, EmailMessage } from '@/types';
+
+// Folder type and display config
+type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'archive';
+
+const FOLDER_DISPLAY: Record<MailFolder, { label: string; icon: React.ElementType; color: string }> = {
+  inbox: { label: 'Inbox', icon: Inbox, color: 'text-blue-400 bg-blue-500/20' },
+  sent: { label: 'Sent', icon: Send, color: 'text-green-400 bg-green-500/20' },
+  starred: { label: 'Starred', icon: Star, color: 'text-yellow-400 bg-yellow-500/20' },
+  all: { label: 'All Mail', icon: FolderOpen, color: 'text-slate-400 bg-slate-500/20' },
+  archive: { label: 'Archive', icon: Archive, color: 'text-purple-400 bg-purple-500/20' },
+};
 
 interface ThreadPreviewProps {
   thread: EmailThread;
+  folder?: MailFolder;
   defaultExpanded?: boolean;
 }
 
-export function ThreadPreview({ thread, defaultExpanded = false }: ThreadPreviewProps) {
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+// Storage keys for persisting state
+const STORAGE_KEY_EXPANDED = 'flomail-thread-expanded';
+const STORAGE_KEY_HEIGHT = 'flomail-thread-height';
+
+export function ThreadPreview({ thread, folder = 'inbox', defaultExpanded = false }: ThreadPreviewProps) {
+  // Load persisted expanded state from localStorage
+  const [isExpanded, setIsExpanded] = useState(() => {
+    if (typeof window === 'undefined') return defaultExpanded;
+    const saved = localStorage.getItem(STORAGE_KEY_EXPANDED);
+    return saved !== null ? saved === 'true' : defaultExpanded;
+  });
+  
+  // Always show only the latest message expanded when thread changes
   const [expandedMessages, setExpandedMessages] = useState<Set<string>>(
-    // By default, expand the last message
     new Set([thread.messages[thread.messages.length - 1]?.id])
   );
   
-  // Resizable height state
-  const [messagesHeight, setMessagesHeight] = useState(250); // Default height in pixels
+  // Load persisted height from localStorage
+  const [messagesHeight, setMessagesHeight] = useState(() => {
+    if (typeof window === 'undefined') return 250;
+    const saved = localStorage.getItem(STORAGE_KEY_HEIGHT);
+    return saved !== null ? parseInt(saved, 10) : 250;
+  });
+  
   const isDragging = useRef(false);
   const startY = useRef(0);
   const startHeight = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
+  const previousThreadId = useRef<string | null>(null);
+
+  // Persist expanded state when it changes
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_EXPANDED, String(isExpanded));
+  }, [isExpanded]);
+
+  // Persist height when it changes (debounced via mouseUp)
+  const saveHeight = useCallback((height: number) => {
+    localStorage.setItem(STORAGE_KEY_HEIGHT, String(height));
+  }, []);
+
+  // When thread changes, reset expanded messages to only the latest
+  useEffect(() => {
+    if (previousThreadId.current !== thread.id) {
+      setExpandedMessages(new Set([thread.messages[thread.messages.length - 1]?.id]));
+      previousThreadId.current = thread.id;
+    }
+  }, [thread.id, thread.messages]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -46,6 +92,8 @@ export function ThreadPreview({ thread, defaultExpanded = false }: ThreadPreview
         isDragging.current = false;
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
+        // Save height when drag ends
+        saveHeight(messagesHeight);
       }
     };
 
@@ -56,7 +104,7 @@ export function ThreadPreview({ thread, defaultExpanded = false }: ThreadPreview
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, []);
+  }, [messagesHeight, saveHeight]);
 
   const toggleMessage = (messageId: string) => {
     setExpandedMessages((prev) => {
@@ -130,6 +178,16 @@ export function ThreadPreview({ thread, defaultExpanded = false }: ThreadPreview
               <span className="flex-shrink-0 text-xs text-purple-300/70 bg-purple-500/10 px-1.5 py-0.5 rounded">
                 {thread.messages.length}
               </span>
+              {/* Folder badge - always show for consistency */}
+              {folder && (
+                <span className={`flex-shrink-0 text-xs px-1.5 py-0.5 rounded flex items-center gap-1 ${FOLDER_DISPLAY[folder].color}`}>
+                  {(() => {
+                    const Icon = FOLDER_DISPLAY[folder].icon;
+                    return <Icon className="w-3 h-3" />;
+                  })()}
+                  {FOLDER_DISPLAY[folder].label}
+                </span>
+              )}
             </div>
             <p className="text-xs text-slate-500 truncate">
               {thread.participants.map((p) => p.name || p.email.split('@')[0]).join(', ')}
