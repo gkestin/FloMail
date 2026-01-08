@@ -3,10 +3,12 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Send, X, Loader2, Reply, Forward, Mail, Plus, Paperclip, File, Image, FileText, Trash2, AlertTriangle, ArrowLeftRight } from 'lucide-react';
-import { EmailDraft, DraftAttachment, EmailDraftType } from '@/types';
+import { EmailDraft, DraftAttachment, EmailDraftType, EmailThread } from '@/types';
+import { buildReplyQuote } from '@/lib/agent-tools';
 
 interface DraftCardProps {
   draft: EmailDraft;
+  thread?: EmailThread; // For building quoted content when switching to reply
   onSend: (updatedDraft: EmailDraft) => void;
   onCancel: () => void;
   isSending?: boolean;
@@ -26,8 +28,12 @@ function getFileIcon(mimeType: string) {
   return File;
 }
 
-export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps) {
+export function DraftCard({ draft, thread, onSend, onCancel, isSending }: DraftCardProps) {
   const [editedDraft, setEditedDraft] = useState<EmailDraft>(draft);
+  
+  // Count original attachments (from forward)
+  const originalAttachments = editedDraft.attachments?.filter(a => a.isFromOriginal) || [];
+  const userAttachments = editedDraft.attachments?.filter(a => !a.isFromOriginal) || [];
   const [showCcBcc, setShowCcBcc] = useState(
     (draft.cc && draft.cc.length > 0) || (draft.bcc && draft.bcc.length > 0)
   );
@@ -112,14 +118,15 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
     requestAnimationFrame(resize);
   }, [editedDraft.body]);
 
-  // Resize quoted textarea
+  // Resize quoted textarea (for replies when expanded, or forwards which always show)
   useEffect(() => {
-    if (showQuoted && quotedRef.current) {
+    const shouldResize = (showQuoted && editedDraft.type === 'reply') || editedDraft.type === 'forward';
+    if (shouldResize && quotedRef.current) {
       const resize = () => autoResize(quotedRef.current);
       resize();
       requestAnimationFrame(resize);
     }
-  }, [showQuoted, editedDraft.quotedContent]);
+  }, [showQuoted, editedDraft.quotedContent, editedDraft.type]);
 
   const handleSendClick = () => {
     onSend(editedDraft);
@@ -136,11 +143,29 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
 
   // Switch draft type
   const switchToReply = () => {
-    setEditedDraft(prev => ({
-      ...prev,
-      type: 'reply',
-      subject: prev.subject.startsWith('Re: ') ? prev.subject : `Re: ${prev.subject.replace(/^Fwd:\s*/i, '')}`,
-    }));
+    setEditedDraft(prev => {
+      // Build quoted content if switching to reply and thread exists
+      let quotedContent = prev.quotedContent;
+      if (!quotedContent && thread) {
+        quotedContent = buildReplyQuote(thread);
+      }
+      
+      // Remove auto-attached (original) attachments - keep only user-added ones
+      const userAddedAttachments = prev.attachments?.filter(a => !a.isFromOriginal);
+      
+      // Get the original sender's email to reply to
+      const lastMessage = thread?.messages[thread.messages.length - 1];
+      const replyTo = lastMessage?.from.email ? [lastMessage.from.email] : prev.to;
+      
+      return {
+        ...prev,
+        type: 'reply',
+        subject: prev.subject.startsWith('Re: ') ? prev.subject : `Re: ${prev.subject.replace(/^Fwd:\s*/i, '')}`,
+        to: replyTo,
+        quotedContent,
+        attachments: userAddedAttachments?.length ? userAddedAttachments : undefined,
+      };
+    });
   };
 
   const switchToForward = () => {
@@ -149,6 +174,14 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
       type: 'forward',
       subject: prev.subject.startsWith('Fwd: ') ? prev.subject : `Fwd: ${prev.subject.replace(/^Re:\s*/i, '')}`,
       to: [], // Clear recipients for forward
+    }));
+  };
+  
+  // Remove all original attachments
+  const removeOriginalAttachments = () => {
+    setEditedDraft(prev => ({
+      ...prev,
+      attachments: prev.attachments?.filter(a => !a.isFromOriginal),
     }));
   };
 
@@ -162,56 +195,69 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
         'border-cyan-500/50'
       }`}
     >
-      {/* Header - prominent for new messages */}
-      {editedDraft.type === 'new' ? (
-        // NEW MESSAGE - Very prominent with switch button
-        <div className="px-3 py-2 bg-amber-500/10 border-b border-amber-500/20">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="p-1.5 rounded bg-amber-500/20">
-                <Mail className="w-4 h-4 text-amber-400" />
-              </div>
-              <div>
-                <span className="text-sm font-semibold text-amber-300">New Email</span>
-                <span className="text-xs text-amber-400/70 ml-2">(not a reply)</span>
-              </div>
-            </div>
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={switchToReply}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 text-xs font-medium transition-colors border border-blue-500/30"
-            >
-              <Reply className="w-3.5 h-3.5" />
-              Make Reply
-            </motion.button>
-          </div>
-        </div>
-      ) : editedDraft.type === 'forward' ? (
-        // FORWARD - Somewhat prominent
-        <div className="flex items-center justify-between px-3 py-2 bg-orange-500/5 border-b border-orange-500/10">
-          <div className="flex items-center gap-2">
-            <div className="p-1 rounded bg-orange-500/20">
+      {/* Header with type switcher */}
+      <div className={`px-3 py-2 flex items-center justify-between ${
+        editedDraft.type === 'new' ? 'bg-amber-500/10 border-b border-amber-500/20' :
+        editedDraft.type === 'forward' ? 'bg-orange-500/5 border-b border-orange-500/10' :
+        ''
+      }`}>
+        {/* Current type indicator */}
+        <div className="flex items-center gap-2">
+          <div className={`p-1 rounded ${
+            editedDraft.type === 'new' ? 'bg-amber-500/20' :
+            editedDraft.type === 'forward' ? 'bg-orange-500/20' :
+            'bg-blue-500/20'
+          }`}>
+            {editedDraft.type === 'reply' ? (
+              <Reply className="w-3.5 h-3.5 text-blue-400" />
+            ) : editedDraft.type === 'forward' ? (
               <Forward className="w-3.5 h-3.5 text-orange-400" />
-            </div>
-            <span className="text-sm font-medium text-orange-300">Forward</span>
+            ) : (
+              <Mail className="w-4 h-4 text-amber-400" />
+            )}
           </div>
-          <button
-            onClick={switchToReply}
-            className="text-xs text-slate-500 hover:text-blue-400 transition-colors"
-          >
-            Switch to Reply
-          </button>
-        </div>
-      ) : (
-        // REPLY - Subtle, expected default
-        <div className="flex items-center gap-2 px-3 py-2">
-          <div className="p-1 rounded bg-blue-500/20">
-            <Reply className="w-3.5 h-3.5 text-blue-400" />
+          <div>
+            <span className={`text-sm font-medium ${
+              editedDraft.type === 'new' ? 'text-amber-300' :
+              editedDraft.type === 'forward' ? 'text-orange-300' :
+              'text-slate-300'
+            }`}>
+              {editedDraft.type === 'reply' ? 'Reply' : 
+               editedDraft.type === 'forward' ? 'Forward' : 
+               'New Email'}
+            </span>
+            {editedDraft.type === 'new' && (
+              <span className="text-xs text-amber-400/70 ml-2">(not a reply)</span>
+            )}
           </div>
-          <span className="text-sm font-medium text-slate-300">Reply</span>
         </div>
-      )}
+
+        {/* Type switcher - always visible */}
+        <div className="flex items-center gap-1">
+          {editedDraft.type !== 'reply' && (
+            <button
+              onClick={switchToReply}
+              className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${
+                editedDraft.type === 'new' 
+                  ? 'bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 border border-blue-500/30' 
+                  : 'text-slate-500 hover:text-blue-400'
+              }`}
+            >
+              <Reply className="w-3 h-3" />
+              {editedDraft.type === 'new' ? 'Make Reply' : 'Reply'}
+            </button>
+          )}
+          {editedDraft.type !== 'forward' && (
+            <button
+              onClick={switchToForward}
+              className="flex items-center gap-1 px-2 py-1 rounded text-xs text-slate-500 hover:text-orange-400 transition-colors"
+            >
+              <Forward className="w-3 h-3" />
+              Fwd
+            </button>
+          )}
+        </div>
+      </div>
 
       {/* Content */}
       <div className="px-3 py-2 space-y-2">
@@ -300,54 +346,115 @@ export function DraftCard({ draft, onSend, onCancel, isSending }: DraftCardProps
             className="w-full bg-transparent text-slate-300 text-sm leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden"
           />
 
-          {editedDraft.quotedContent && (
-            <button
-              onClick={() => setShowQuoted(!showQuoted)}
-              className={`inline-flex items-center px-3 py-1.5 rounded-full text-base mt-4 transition-all duration-200 cursor-pointer ${showQuoted ? 'bg-slate-600/60 text-slate-200' : 'bg-slate-700/40 text-slate-400 hover:bg-slate-600/50 hover:text-slate-200'}`}
-            >
-              <span className="font-black tracking-wider">···</span>
-            </button>
-          )}
+          {/* Quoted content - different display for reply vs forward */}
+          {editedDraft.quotedContent && editedDraft.type === 'reply' && (
+            <>
+              <button
+                onClick={() => setShowQuoted(!showQuoted)}
+                className={`inline-flex items-center px-3 py-1.5 rounded-full text-base mt-4 transition-all duration-200 cursor-pointer ${showQuoted ? 'bg-slate-600/60 text-slate-200' : 'bg-slate-700/40 text-slate-400 hover:bg-slate-600/50 hover:text-slate-200'}`}
+              >
+                <span className="font-black tracking-wider">···</span>
+              </button>
 
-          {editedDraft.quotedContent && showQuoted && (
-            <div className="mt-3 pl-3 border-l-2 border-slate-500/50">
-              <textarea
-                ref={quotedRef}
-                value={editedDraft.quotedContent}
-                onChange={(e) => setEditedDraft({ ...editedDraft, quotedContent: e.target.value })}
-                disabled={isSending}
-                className="w-full bg-transparent text-slate-400 text-sm leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden"
-              />
+              {showQuoted && (
+                <div className="mt-3 pl-3 border-l-2 border-slate-500/50">
+                  <textarea
+                    ref={quotedRef}
+                    value={editedDraft.quotedContent}
+                    onChange={(e) => setEditedDraft({ ...editedDraft, quotedContent: e.target.value })}
+                    disabled={isSending}
+                    className="w-full bg-transparent text-slate-400 text-sm leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden"
+                  />
+                </div>
+              )}
+            </>
+          )}
+          
+          {/* Forward: show forwarded content inline (not collapsible) */}
+          {editedDraft.quotedContent && editedDraft.type === 'forward' && (
+            <div className="mt-4 pt-3 border-t border-orange-500/20">
+              <div className="text-xs text-orange-400/70 mb-2">Forwarded message below:</div>
+              <div className="pl-3 border-l-2 border-orange-500/30">
+                <textarea
+                  ref={quotedRef}
+                  value={editedDraft.quotedContent}
+                  onChange={(e) => setEditedDraft({ ...editedDraft, quotedContent: e.target.value })}
+                  disabled={isSending}
+                  className="w-full bg-transparent text-slate-400 text-sm leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden"
+                />
+              </div>
             </div>
           )}
         </div>
 
-        {/* Attachments section */}
-        {(editedDraft.attachments && editedDraft.attachments.length > 0) && (
+        {/* Original attachments notice (for forwards) */}
+        {originalAttachments.length > 0 && (
+          <div className="mt-3 p-2.5 rounded-lg bg-purple-500/10 border border-purple-500/20">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Paperclip className="w-4 h-4 text-purple-400" />
+                <span className="text-sm text-purple-300">
+                  {originalAttachments.length} attachment{originalAttachments.length > 1 ? 's' : ''} from original
+                </span>
+              </div>
+              <button
+                onClick={removeOriginalAttachments}
+                disabled={isSending}
+                className="flex items-center gap-1 px-2 py-1 text-xs text-purple-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+              >
+                <X className="w-3 h-3" />
+                Remove all
+              </button>
+            </div>
+            {/* List original attachments */}
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {originalAttachments.map((att, i) => {
+                const FileIcon = getFileIcon(att.mimeType);
+                const globalIndex = editedDraft.attachments?.findIndex(a => a === att) ?? -1;
+                return (
+                  <div
+                    key={i}
+                    className="flex items-center gap-1.5 px-2 py-1 rounded bg-purple-500/10 text-xs"
+                  >
+                    <FileIcon className="w-3 h-3 text-purple-400" />
+                    <span className="text-purple-200 max-w-[120px] truncate">{att.filename}</span>
+                    <button
+                      onClick={() => removeAttachment(globalIndex)}
+                      disabled={isSending}
+                      className="p-0.5 hover:bg-red-500/20 rounded transition-colors"
+                    >
+                      <X className="w-3 h-3 text-purple-400 hover:text-red-400" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* User-added attachments section */}
+        {userAttachments.length > 0 && (
           <div className="mt-3 pt-3 border-t border-slate-700/50">
             <div className="flex items-center gap-2 mb-2">
               <Paperclip className="w-3.5 h-3.5 text-slate-500" />
               <span className="text-xs text-slate-500 uppercase tracking-wide">
-                Attachments ({editedDraft.attachments.length})
+                Your Attachments ({userAttachments.length})
               </span>
             </div>
             <div className="flex flex-wrap gap-2">
-              {editedDraft.attachments.map((att, index) => {
+              {userAttachments.map((att, i) => {
                 const FileIcon = getFileIcon(att.mimeType);
+                const globalIndex = editedDraft.attachments?.findIndex(a => a === att) ?? -1;
                 return (
                   <div
-                    key={index}
-                    className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm ${
-                      att.isFromOriginal 
-                        ? 'bg-purple-500/10 border border-purple-500/20' 
-                        : 'bg-slate-700/50 border border-slate-600/30'
-                    }`}
+                    key={i}
+                    className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm bg-slate-700/50 border border-slate-600/30"
                   >
-                    <FileIcon className={`w-4 h-4 ${att.isFromOriginal ? 'text-purple-400' : 'text-slate-400'}`} />
+                    <FileIcon className="w-4 h-4 text-slate-400" />
                     <span className="text-slate-300 max-w-[150px] truncate">{att.filename}</span>
                     <span className="text-xs text-slate-500">{formatFileSize(att.size)}</span>
                     <button
-                      onClick={() => removeAttachment(index)}
+                      onClick={() => removeAttachment(globalIndex)}
                       disabled={isSending}
                       className="p-0.5 hover:bg-red-500/20 rounded transition-colors"
                       title="Remove attachment"

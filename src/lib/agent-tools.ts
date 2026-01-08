@@ -203,7 +203,7 @@ function formatQuoteDate(dateStr: string): string {
 }
 
 // Build quoted content for replies - includes the full conversation chain
-function buildReplyQuote(thread: EmailThread): string {
+export function buildReplyQuote(thread: EmailThread): string {
   if (thread.messages.length === 0) return '';
   
   // Build quotes from most recent to oldest (reverse order for display)

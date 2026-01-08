@@ -918,6 +918,7 @@ export function ChatInterface({
                 ) : (
                   <DraftCard
                     draft={message.draft}
+                    thread={thread}
                     onSend={handleSendDraft}
                     onCancel={handleCancelDraft}
                     isSending={isSending}
@@ -950,6 +951,7 @@ export function ChatInterface({
           >
             <DraftCard
               draft={currentDraft}
+              thread={thread}
               onSend={handleSendDraft}
               onCancel={handleCancelDraft}
               isSending={isSending}
