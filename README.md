@@ -1,5 +1,7 @@
 # FloMail
 
+**Repository:** https://github.com/gkestin/FloMail
+
 A **voice-first, AI-powered email assistant** that integrates with Gmail. The core concept is "flow" - seamlessly chat, draft, send, and navigate emails without friction.
 
 ## Intent
@@ -78,10 +80,21 @@ ANTHROPIC_API_KEY=...
 - OAuth consent screen configured
 - OAuth 2.0 credentials with authorized origins/redirects
 
+## Setup (from clone)
+
+```bash
+git clone https://github.com/gkestin/FloMail.git
+cd FloMail
+npm install
+```
+
+Then create `.env.local` with your API keys (see Configuration section above).
+
+**Note:** `.env.local` is git-ignored and NOT included in the repo. You must create it yourself with your own API keys.
+
 ## Running
 
 ```bash
-npm install
 npm run dev
 # Opens at http://localhost:3000 (or next available port)
 ```
