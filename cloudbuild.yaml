@@ -1,72 +1,74 @@
 # Cloud Build configuration for FloMail
-# Builds Docker image and deploys to Cloud Run
-
-# ============================================
-# Prerequisites:
-# 1. Enable Cloud Build API
-# 2. Enable Cloud Run API
-# 3. Enable Artifact Registry API
-# 4. Grant Cloud Build service account permission to deploy to Cloud Run:
-#    - Cloud Run Admin
-#    - Service Account User
-# ============================================
+# Builds the Docker image and deploys to Cloud Run
 
 steps:
-  # Step 1: Build the Docker image
+  # Build the Docker image with build args
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
-      - '-t'
-      - 'us-central1-docker.pkg.dev/$PROJECT_ID/flomail/flomail:$COMMIT_SHA'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_FIREBASE_API_KEY=${_NEXT_PUBLIC_FIREBASE_API_KEY}'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=${_NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_FIREBASE_PROJECT_ID=${_NEXT_PUBLIC_FIREBASE_PROJECT_ID}'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=${_NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET}'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=${_NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID}'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_FIREBASE_APP_ID=${_NEXT_PUBLIC_FIREBASE_APP_ID}'
       - '-t'
       - 'us-central1-docker.pkg.dev/$PROJECT_ID/flomail/flomail:latest'
       - '.'
 
-  # Step 2: Push to Artifact Registry
+  # Push the image
   - name: 'gcr.io/cloud-builders/docker'
-    args:
-      - 'push'
-      - 'us-central1-docker.pkg.dev/$PROJECT_ID/flomail/flomail:$COMMIT_SHA'
+    args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/flomail/flomail:latest']
 
-  - name: 'gcr.io/cloud-builders/docker'
-    args:
-      - 'push'
-      - 'us-central1-docker.pkg.dev/$PROJECT_ID/flomail/flomail:latest'
-
-  # Step 3: Deploy to Cloud Run
+  # Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: 'gcloud'
+    entrypoint: gcloud
     args:
       - 'run'
       - 'deploy'
       - 'flomail'
       - '--image'
-      - 'us-central1-docker.pkg.dev/$PROJECT_ID/flomail/flomail:$COMMIT_SHA'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/flomail/flomail:latest'
       - '--region'
       - 'us-central1'
       - '--platform'
       - 'managed'
       - '--allow-unauthenticated'
-      - '--timeout'
-      - '300'  # 5 min timeout for streaming AI responses
+      - '--port'
+      - '3000'
       - '--memory'
       - '512Mi'
       - '--cpu'
       - '1'
+      - '--timeout'
+      - '300'
       - '--min-instances'
-      - '0'  # Scale to zero when not in use
+      - '0'
       - '--max-instances'
       - '10'
+      - '--set-env-vars'
+      - 'OPENAI_API_KEY=${_OPENAI_API_KEY},ANTHROPIC_API_KEY=${_ANTHROPIC_API_KEY}'
 
-# Store images in Artifact Registry
+# Store image in Artifact Registry
 images:
-  - 'us-central1-docker.pkg.dev/$PROJECT_ID/flomail/flomail:$COMMIT_SHA'
   - 'us-central1-docker.pkg.dev/$PROJECT_ID/flomail/flomail:latest'
 
-# Build timeout
-timeout: '1200s'  # 20 minutes
-
-# Substitutions (can override via command line)
+# Allow substitution of variables
 substitutions:
-  _REGION: 'us-central1'
+  _NEXT_PUBLIC_FIREBASE_API_KEY: ''
+  _NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ''
+  _NEXT_PUBLIC_FIREBASE_PROJECT_ID: ''
+  _NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ''
+  _NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ''
+  _NEXT_PUBLIC_FIREBASE_APP_ID: ''
+  _OPENAI_API_KEY: ''
+  _ANTHROPIC_API_KEY: ''
 
+options:
+  logging: CLOUD_LOGGING_ONLY

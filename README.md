@@ -2,6 +2,8 @@
 
 **Repository:** https://github.com/gkestin/FloMail
 
+**Live App:** https://flomail-n6a6ot4xyq-uc.a.run.app
+
 A **voice-first, AI-powered email assistant** that integrates with Gmail. The core concept is "flow" - seamlessly chat, draft, send, and navigate emails without friction.
 
 ## Intent
@@ -126,72 +128,122 @@ npm run dev -- -p 3001
 
 ## Deployment (GCP Cloud Run)
 
-FloMail is configured for deployment to **Google Cloud Run** - a serverless platform that scales automatically and supports streaming AI responses.
+FloMail is deployed to **Google Cloud Run** - a serverless platform that scales automatically and supports streaming AI responses.
+
+### Current Deployment
+
+| Setting | Value |
+|---------|-------|
+| **GCP Account** | greg.kestin@gmail.com |
+| **GCP Project** | flomail25 |
+| **Region** | us-central1 |
+| **Service Name** | flomail |
+| **Live URL** | https://flomail-n6a6ot4xyq-uc.a.run.app |
+| **Artifact Registry** | us-central1-docker.pkg.dev/flomail25/flomail/flomail |
 
 ### Prerequisites
 
 1. **Google Cloud CLI** installed: https://cloud.google.com/sdk/docs/install
-2. **Docker** installed: https://docs.docker.com/get-docker/
-3. GCP project `flomail25` (or update in deploy.sh)
+2. GCP project with **billing enabled** (required for Cloud Build/Cloud Run)
+3. `.env.local` file with all required environment variables
 
 ### Quick Deploy
 
 ```bash
-# One-command deployment (reads .env.local for env vars)
+# Ensure you're logged in to the correct account
+gcloud auth login greg.kestin@gmail.com
+gcloud config set project flomail25
+
+# One-command deployment (uses Cloud Build - no local Docker needed)
 ./deploy.sh
 ```
 
-### Manual Deploy
+The deploy script:
+- Validates all required env vars from `.env.local`
+- Builds the Docker image remotely via Cloud Build (~5 min)
+- Deploys to Cloud Run with all environment variables
+- Outputs the live URL
+
+### First-Time Setup (Already Done)
+
+These steps were completed during initial deployment:
 
 ```bash
-# 1. Set your project
+# 1. Switch to correct account and project
+gcloud auth login greg.kestin@gmail.com
 gcloud config set project flomail25
 
-# 2. Create Artifact Registry (first time only)
+# 2. Enable required APIs
+gcloud services enable \
+    run.googleapis.com \
+    artifactregistry.googleapis.com \
+    cloudbuild.googleapis.com \
+    containerregistry.googleapis.com
+
+# 3. Create Artifact Registry repository
 gcloud artifacts repositories create flomail \
     --repository-format=docker \
-    --location=us-central1
+    --location=us-central1 \
+    --description="FloMail Docker images"
 
-# 3. Configure Docker auth
+# 4. Configure Docker authentication
 gcloud auth configure-docker us-central1-docker.pkg.dev
-
-# 4. Build and push
-docker build -t us-central1-docker.pkg.dev/flomail25/flomail/flomail:latest .
-docker push us-central1-docker.pkg.dev/flomail25/flomail/flomail:latest
-
-# 5. Deploy to Cloud Run
-gcloud run deploy flomail \
-    --image us-central1-docker.pkg.dev/flomail25/flomail/flomail:latest \
-    --region us-central1 \
-    --platform managed \
-    --allow-unauthenticated \
-    --timeout 300 \
-    --memory 512Mi \
-    --set-env-vars "OPENAI_API_KEY=...,ANTHROPIC_API_KEY=...,..."
 ```
 
-### Post-Deployment Setup
+### How the Build Works
 
-After deploying, you'll get a URL like `https://flomail-xxxxx-uc.a.run.app`. You need to:
+The deployment uses **Cloud Build** (remote build on GCP) instead of local Docker because:
+- Apple Silicon Macs build ARM images, but Cloud Run needs AMD64
+- Cloud Build automatically builds for the correct architecture
+- No local Docker disk space issues
+
+The `cloudbuild.yaml` file:
+1. Builds the Docker image with Firebase build args (NEXT_PUBLIC_* vars)
+2. Pushes to Artifact Registry
+3. Deploys to Cloud Run with runtime env vars (API keys)
+
+### Post-Deployment Setup (One-Time)
+
+After the first deployment, authorize the Cloud Run domain:
 
 1. **Firebase Console** → Authentication → Settings → Authorized domains
-   - Add your Cloud Run URL
+   - Add: `flomail-n6a6ot4xyq-uc.a.run.app`
 
 2. **Google Cloud Console** → APIs & Services → Credentials → OAuth 2.0 Client
-   - Add to Authorized JavaScript origins: `https://flomail-xxxxx-uc.a.run.app`
-   - Add to Authorized redirect URIs: `https://flomail-xxxxx-uc.a.run.app`
+   - Authorized JavaScript origins: `https://flomail-n6a6ot4xyq-uc.a.run.app`
+   - Authorized redirect URIs: `https://flomail-n6a6ot4xyq-uc.a.run.app`
 
-3. **Environment Variables** (if not set via deploy.sh)
-   - Go to Cloud Run → flomail → Edit → Variables & Secrets
-   - Add all env vars from your `.env.local`
+### Environment Variables
 
-### CI/CD with Cloud Build
+**Build-time** (baked into the Docker image via build args):
+- `NEXT_PUBLIC_FIREBASE_API_KEY`
+- `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`
+- `NEXT_PUBLIC_FIREBASE_PROJECT_ID`
+- `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`
+- `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`
+- `NEXT_PUBLIC_FIREBASE_APP_ID`
 
-For automatic deployments on git push:
+**Runtime** (set as Cloud Run env vars):
+- `OPENAI_API_KEY`
+- `ANTHROPIC_API_KEY`
 
-1. Enable Cloud Build API
-2. Connect your GitHub repo in Cloud Build
-3. Create a trigger using `cloudbuild.yaml`
+All are read from `.env.local` by the deploy script.
+
+### Useful Commands
+
+```bash
+# Check deployment status
+gcloud run services describe flomail --region us-central1
+
+# View logs
+gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=flomail" --limit=50
+
+# Get the service URL
+gcloud run services describe flomail --region us-central1 --format="value(status.url)"
+
+# View recent builds
+gcloud builds list --limit=5
+```
 
 ### Custom Domain
 
