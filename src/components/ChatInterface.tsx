@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Loader2, Settings, Sparkles, ChevronDown, ChevronRight, X, Edit2, RotateCcw, Mic, Square, Archive, Eye, Inbox } from 'lucide-react';
+import { Send, Loader2, Settings, Sparkles, ChevronDown, ChevronRight, X, Edit2, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp } from 'lucide-react';
 import { DraftCard } from './DraftCard';
 import { ThreadPreview } from './ThreadPreview';
 import { WaveformVisualizer } from './WaveformVisualizer';
@@ -658,9 +658,39 @@ export function ChatInterface({
     }
   }, [sendToAI]);
 
-  // Stop voice recording
+  // Stop voice recording (and send for transcription)
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        audioContextRef.current.close().catch(() => {});
+        setAnalyserNode(null);
+      }
+
+      if (durationIntervalRef.current) {
+        clearInterval(durationIntervalRef.current);
+      }
+    }
+  }, [isRecording]);
+
+  // Cancel voice recording (stop without sending)
+  const cancelRecording = useCallback(() => {
+    if (mediaRecorderRef.current && isRecording) {
+      // Clear the chunks so onstop doesn't process them
+      chunksRef.current = [];
+      
+      // Remove the ondataavailable handler to prevent adding more chunks
+      mediaRecorderRef.current.ondataavailable = null;
+      
+      // Set a no-op onstop handler to prevent transcription
+      mediaRecorderRef.current.onstop = () => {};
+      
       mediaRecorderRef.current.stop();
       setIsRecording(false);
 
@@ -1198,13 +1228,24 @@ export function ChatInterface({
                   />
                   <span className="text-xs font-mono text-slate-400">{formatDuration(recordingDuration)}</span>
                 </div>
-                <button
-                  onClick={stopRecording}
-                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-purple-500 to-cyan-500 text-white text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-purple-500/20 flex items-center gap-2"
-                >
-                  <Send className="w-4 h-4" />
-                  Send
-                </button>
+                <div className="flex items-center gap-2">
+                  {/* Cancel recording button */}
+                  <button
+                    onClick={cancelRecording}
+                    className="p-2.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+                    title="Cancel recording"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                  {/* Submit recording to chat - up arrow indicates adding to chat */}
+                  <button
+                    onClick={stopRecording}
+                    className="p-2.5 rounded-xl bg-gradient-to-r from-purple-500 to-cyan-500 text-white hover:opacity-90 transition-all shadow-lg shadow-purple-500/20"
+                    title="Add to chat"
+                  >
+                    <ArrowUp className="w-5 h-5" />
+                  </button>
+                </div>
               </div>
             </motion.div>
           )}
@@ -1249,8 +1290,9 @@ export function ChatInterface({
             type="submit"
             disabled={!input.trim() || isLoading || isRecording}
             className="p-3 rounded-xl bg-gradient-to-r from-purple-500 to-cyan-500 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Add to chat"
           >
-            <Send className="w-5 h-5" />
+            <ArrowUp className="w-5 h-5" />
           </motion.button>
 
           {/* Settings button with popover */}

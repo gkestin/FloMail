@@ -46,7 +46,7 @@ export default function RootLayout({
       </head>
       <body className={`${sora.variable} antialiased`}>
         <AuthProvider>
-          {children}
+        {children}
         </AuthProvider>
       </body>
     </html>

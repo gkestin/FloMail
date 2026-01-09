@@ -375,8 +375,8 @@ function MessageItem({
                 )}
               </div>
 
-              {/* Email body - left border accent (red for drafts) */}
-              <div className={`border-l-2 ${isDraft ? 'border-red-500/40' : 'border-purple-500/25'} pl-3 text-sm ${isDraft ? 'text-slate-400 italic' : 'text-slate-300'} whitespace-pre-wrap leading-relaxed`}>
+              {/* Email body - clean display, no left border for expanded messages */}
+              <div className={`text-sm ${isDraft ? 'text-slate-400 italic' : 'text-slate-300'} whitespace-pre-wrap leading-relaxed`}>
                 {message.body}
                 {isDraft && (
                   <div className="mt-2 text-xs text-red-400/70 not-italic">
