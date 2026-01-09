@@ -17,7 +17,8 @@ import {
 } from 'lucide-react';
 import { EmailThread } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
-import { fetchInbox, archiveThread, markAsRead, listGmailDrafts, GmailDraftInfo, getThreadsWithDrafts } from '@/lib/gmail';
+import { fetchInbox, archiveThread, markAsRead, listGmailDrafts, GmailDraftInfo, getThreadsWithDrafts, fetchThread } from '@/lib/gmail';
+import { emailCache } from '@/lib/email-cache';
 
 // Available mail folders/views
 export type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'archive' | 'drafts';
@@ -54,15 +55,41 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentFolder, setCurrentFolder] = useState<MailFolder>('inbox');
+  // Always skip entrance animations - they cause visual glitches and delays
+  // Keeping this as a constant true instead of removing to minimize code changes
+  const skipAnimation = true;
 
-  const loadFolder = useCallback(async (folder: MailFolder, showRefresh = false) => {
+  const loadFolder = useCallback(async (folder: MailFolder, forceRefresh = false) => {
     try {
-      if (showRefresh) {
-        setRefreshing(true);
-      } else {
-        setLoading(true);
-      }
       setError(null);
+      
+      // Check cache first (unless forcing refresh)
+      if (!forceRefresh) {
+        const cachedData = emailCache.getFolderData(folder);
+        if (cachedData) {
+          // Cache hit! Use cached data immediately
+          setThreads(cachedData.threads);
+          setDrafts(cachedData.drafts || []);
+          setThreadsWithDrafts(cachedData.threadsWithDrafts || new Set());
+          setLoading(false);
+          setRefreshing(false);
+          return;
+        }
+        
+        // Check for stale cache (show immediately, refresh in background)
+        const staleData = emailCache.getStaleFolderData(folder);
+        if (staleData) {
+          setThreads(staleData.threads);
+          setDrafts(staleData.drafts || []);
+          setThreadsWithDrafts(staleData.threadsWithDrafts || new Set());
+          setLoading(false);
+          setRefreshing(true); // Show refresh indicator for background update
+        } else {
+          setLoading(true);
+        }
+      } else {
+        setRefreshing(true);
+      }
 
       const token = await getAccessToken();
       if (!token) {
@@ -75,7 +102,10 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
       if (config.isDrafts) {
         const draftList = await listGmailDrafts(token);
         setDrafts(draftList);
-        setThreads([]); // Clear threads when viewing drafts
+        setThreads([]);
+        
+        // Cache the result
+        emailCache.setFolderData(folder, { threads: [], drafts: draftList });
       } else {
         // Use labelIds when available (proper Gmail API approach), 
         // fall back to query for archive (which has no label)
@@ -84,11 +114,20 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
             labelIds: config.labelIds,
             query: config.query 
           }),
-          getThreadsWithDrafts(token), // Fetch which threads have drafts
+          getThreadsWithDrafts(token),
         ]);
         setThreads(fetchedThreads);
         setThreadsWithDrafts(draftThreadIds);
-        setDrafts([]); // Clear drafts when viewing other folders
+        setDrafts([]);
+        
+        // Cache the result
+        emailCache.setFolderData(folder, { 
+          threads: fetchedThreads, 
+          threadsWithDrafts: draftThreadIds 
+        });
+        
+        // Also cache individual threads for quick access when viewing
+        emailCache.setThreads(fetchedThreads);
       }
     } catch (err: any) {
       console.error('Failed to load folder:', err);
@@ -105,6 +144,29 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
 
   const handleFolderChange = (folder: MailFolder) => {
     if (folder !== currentFolder) {
+      // Check cache SYNCHRONOUSLY before changing folder
+      // This prevents the flash of old threads
+      const cachedData = emailCache.getFolderData(folder);
+      const staleData = cachedData || emailCache.getStaleFolderData(folder);
+      
+      if (staleData) {
+        // Update threads immediately with cached data (same render cycle)
+        setThreads(staleData.threads);
+        setDrafts(staleData.drafts || []);
+        setThreadsWithDrafts(staleData.threadsWithDrafts || new Set());
+        setLoading(false);
+        
+        // If data is stale (not fresh cache), set refreshing for background update
+        if (!cachedData && staleData) {
+          setRefreshing(true);
+        }
+      } else {
+        // No cache at all - clear and show loading
+        setThreads([]);
+        setDrafts([]);
+        setLoading(true);
+      }
+      
       setCurrentFolder(folder);
     }
   };
@@ -117,6 +179,10 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
       
       await archiveThread(token, threadId);
       setThreads((prev) => prev.filter((t) => t.id !== threadId));
+      
+      // Update cache: remove from current folder, invalidate archive (it moved there)
+      emailCache.removeThreadFromFolder(currentFolder, threadId);
+      emailCache.invalidateFolder('archive');
     } catch (err) {
       console.error('Failed to archive:', err);
     }
@@ -136,10 +202,43 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
               t.id === thread.id ? { ...t, isRead: true } : t
             )
           );
+          
+          // Update cache to reflect read status
+          emailCache.updateThreadInFolders(thread.id, t => ({ ...t, isRead: true }));
         }
       } catch (err) {
         console.error('Failed to mark as read:', err);
       }
+    }
+  };
+
+  // Handle clicking on a draft - fetch the full thread and all draft threads for navigation
+  const handleDraftSelect = async (draft: GmailDraftInfo) => {
+    if (!draft.threadId) {
+      console.error('Draft has no threadId:', draft);
+      return;
+    }
+    
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+      
+      // Fetch all draft threads for navigation
+      // Get unique threadIds from all drafts
+      const threadIds = [...new Set(drafts.filter(d => d.threadId).map(d => d.threadId as string))];
+      
+      // Fetch all draft threads in parallel
+      const draftThreads = await Promise.all(
+        threadIds.map(tid => fetchThread(token, tid))
+      );
+      
+      // Find the clicked thread (it's one of the fetched threads)
+      const clickedThread = draftThreads.find(t => t.id === draft.threadId) || draftThreads[0];
+      
+      // Open the thread with all draft threads for navigation
+      onSelectThread(clickedThread, currentFolder, draftThreads);
+    } catch (err) {
+      console.error('Failed to open draft thread:', err);
     }
   };
 
@@ -266,14 +365,11 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
               {drafts.map((draft, index) => (
                 <motion.div
                   key={draft.id}
-                  initial={{ opacity: 0, y: 10 }}
+                  initial={skipAnimation ? { opacity: 1, y: 0 } : { opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: index * 0.02 }}
+                  transition={skipAnimation ? { duration: 0 } : { delay: index * 0.02 }}
                   className="px-4 py-3 border-b border-slate-800/50 hover:bg-slate-800/30 cursor-pointer transition-colors"
-                  onClick={() => {
-                    // TODO: Handle draft editing
-                    console.log('Edit draft:', draft);
-                  }}
+                  onClick={() => handleDraftSelect(draft)}
                 >
                   <div className="flex items-start gap-3">
                     <div className="flex-shrink-0 mt-1">
@@ -317,6 +413,7 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
                 index={index}
                 isSelected={selectedThreadId === thread.id}
                 hasDraft={threadsWithDrafts.has(thread.id)}
+                skipAnimation={skipAnimation}
                 onSelect={() => handleSelect(thread)}
                 onArchive={(e) => handleArchive(e, thread.id)}
                 getSenderNames={getSenderNames}
@@ -336,6 +433,7 @@ interface SwipeableEmailRowProps {
   index: number;
   isSelected: boolean;
   hasDraft?: boolean; // Whether this thread has a draft
+  skipAnimation?: boolean; // Skip entrance animation (for cached data)
   onSelect: () => void;
   onArchive: (e: React.MouseEvent) => void;
   getSenderNames: (thread: EmailThread) => string;
@@ -347,6 +445,7 @@ function SwipeableEmailRow({
   index,
   isSelected,
   hasDraft,
+  skipAnimation,
   onSelect,
   onArchive,
   getSenderNames,
@@ -400,10 +499,10 @@ function SwipeableEmailRow({
   return (
     <motion.div
       ref={containerRef}
-      initial={{ opacity: 0, x: -20 }}
+      initial={skipAnimation ? { opacity: 1, x: 0 } : { opacity: 0, x: -20 }}
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: -100 }}
-      transition={{ delay: index * 0.03 }}
+      transition={skipAnimation ? { duration: 0 } : { delay: index * 0.03 }}
       className="relative overflow-hidden"
     >
       {/* Archive action background (revealed on swipe) */}

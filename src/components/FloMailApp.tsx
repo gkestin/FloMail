@@ -10,6 +10,7 @@ import { ChatInterface } from './ChatInterface';
 import { EmailThread, EmailDraft } from '@/types';
 import { Loader2, LogOut, User, MessageSquare, Inbox, ArrowLeft, ChevronLeft, ChevronRight, Archive } from 'lucide-react';
 import { sendEmail, archiveThread, fetchInbox, getAttachment, createGmailDraft } from '@/lib/gmail';
+import { emailCache } from '@/lib/email-cache';
 import { DraftAttachment } from '@/types';
 
 type View = 'inbox' | 'email' | 'chat';
@@ -136,7 +137,13 @@ export function FloMailApp() {
     
     await sendEmail(token, processedDraft);
     setCurrentDraft(null);
-  }, [getAccessToken]);
+    
+    // Invalidate sent folder cache (new email there) and current thread
+    emailCache.invalidateFolder('sent');
+    if (selectedThread) {
+      emailCache.invalidateThread(selectedThread.id);
+    }
+  }, [getAccessToken, selectedThread]);
 
   const handleSaveDraft = useCallback(async (draft: EmailDraft) => {
     const token = await getAccessToken();
@@ -168,6 +175,9 @@ export function FloMailApp() {
     
     await createGmailDraft(token, processedDraft);
     setCurrentDraft(null);
+    
+    // Invalidate drafts folder cache
+    emailCache.invalidateFolder('drafts');
   }, [getAccessToken]);
 
   const handleArchive = useCallback(async () => {
@@ -178,6 +188,10 @@ export function FloMailApp() {
       if (!token) return;
       
       await archiveThread(token, selectedThread.id);
+      
+      // Update cache: remove from current folder, invalidate archive
+      emailCache.removeThreadFromFolder(currentMailFolder, selectedThread.id);
+      emailCache.invalidateFolder('archive');
       
       // Use folder-specific threads for navigation
       const navThreads = folderThreads.length > 0 ? folderThreads : allThreads;
@@ -206,7 +220,7 @@ export function FloMailApp() {
     } catch (err) {
       console.error('Failed to archive:', err);
     }
-  }, [selectedThread, getAccessToken, folderThreads, allThreads]);
+  }, [selectedThread, getAccessToken, currentMailFolder, folderThreads, allThreads]);
 
   // Handler for top bar archive button - uses registered handler from ChatInterface for notification
   const handleTopBarArchive = useCallback(() => {
