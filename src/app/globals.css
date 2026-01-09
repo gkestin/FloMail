@@ -84,9 +84,9 @@ button, .no-select {
   user-select: none;
 }
 
-/* Safe area padding for notch devices */
+/* Safe area padding for notch devices - uses max to ensure minimum padding */
 .safe-top {
-  padding-top: env(safe-area-inset-top);
+  padding-top: max(0.5rem, env(safe-area-inset-top));
 }
 
 .safe-bottom {

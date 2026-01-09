@@ -15,7 +15,9 @@ import {
   FolderOpen,
   FileEdit,
   Undo2,
-  Check
+  Check,
+  Search,
+  X
 } from 'lucide-react';
 import { EmailThread } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
@@ -46,9 +48,11 @@ interface InboxListProps {
   onSelectThread: (thread: EmailThread, folder: MailFolder, folderThreads: EmailThread[]) => void;
   selectedThreadId?: string;
   defaultFolder?: MailFolder; // Folder to show when returning from email view
+  searchQuery?: string; // Search query from parent
+  onClearSearch?: () => void; // Callback to clear search
 }
 
-export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'inbox' }: InboxListProps) {
+export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'inbox', searchQuery = '', onClearSearch }: InboxListProps) {
   const { getAccessToken } = useAuth();
   const [threads, setThreads] = useState<EmailThread[]>([]);
   const [drafts, setDrafts] = useState<GmailDraftInfo[]>([]);
@@ -60,6 +64,13 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
   const [error, setError] = useState<string | null>(null);
   const [currentFolder, setCurrentFolder] = useState<MailFolder>(defaultFolder);
   const loadMoreRef = useRef<HTMLDivElement>(null); // For intersection observer
+  
+  // Search state (query comes from parent, results managed here)
+  const [searchResults, setSearchResults] = useState<EmailThread[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const isSearchActive = searchQuery.trim().length > 0;
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
   // Always skip entrance animations - they cause visual glitches and delays
   // Keeping this as a constant true instead of removing to minimize code changes
   const skipAnimation = true;
@@ -154,6 +165,61 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
   useEffect(() => {
     loadFolder(currentFolder);
   }, [currentFolder, loadFolder]);
+
+  // Search function - uses Gmail's powerful query syntax
+  const performSearch = useCallback(async (query: string) => {
+    if (!query.trim()) {
+      setSearchResults([]);
+      return;
+    }
+
+    setIsSearching(true);
+
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+
+      // Use Gmail's search API with the query
+      const { threads: results } = await fetchInbox(token, {
+        query: query.trim(),
+        maxResults: 30, // Show more results for search
+      });
+
+      setSearchResults(results);
+    } catch (err) {
+      console.error('Search failed:', err);
+      setSearchResults([]);
+    } finally {
+      setIsSearching(false);
+    }
+  }, [getAccessToken]);
+
+  // Watch for searchQuery changes from parent and trigger search
+  useEffect(() => {
+    // Clear previous timeout
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      return;
+    }
+
+    // Debounce the search
+    searchTimeoutRef.current = setTimeout(() => {
+      performSearch(searchQuery);
+    }, 300);
+  }, [searchQuery, performSearch]);
+
+  // Cleanup search timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Load more threads (next page)
   const loadMore = useCallback(async () => {
@@ -387,7 +453,8 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
 
   return (
     <div className="flex flex-col h-full" style={{ background: 'var(--bg-sidebar)' }}>
-      {/* Folder tabs - combined with header (selected folder is prominent) */}
+      {/* Folder tabs - hidden when search is active */}
+      {!isSearchActive && (
       <div className="flex items-center gap-1 px-2 py-2.5 overflow-x-auto" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
         {FOLDER_ORDER.map((folder) => {
           const config = FOLDER_CONFIG[folder];
@@ -430,11 +497,85 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
           <RefreshCw className={`w-5 h-5 ${refreshing ? 'animate-spin' : ''}`} />
         </motion.button>
       </div>
+      )}
+
+      {/* Search results header */}
+      {isSearchActive && (
+        <div className="px-3 py-2 flex items-center justify-between" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+          <div className="flex items-center gap-2">
+            {isSearching && <Loader2 className="w-4 h-4 animate-spin text-blue-400" />}
+            <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+              {isSearching ? 'Searching...' : `${searchResults.length} result${searchResults.length !== 1 ? 's' : ''}`}
+            </span>
+          </div>
+          <button
+            onClick={onClearSearch}
+            className="text-xs px-2 py-1 rounded-lg hover:bg-white/10 transition-colors"
+            style={{ color: 'var(--text-accent-blue)' }}
+          >
+            Clear
+          </button>
+        </div>
+      )}
 
       {/* Email List */}
       <div className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-primary)' }}>
-        {/* Drafts folder - show drafts */}
-        {currentFolder === 'drafts' ? (
+        {/* Search Results */}
+        {isSearchActive ? (
+          searchResults.length === 0 && !isSearching ? (
+            <div className="flex flex-col items-center justify-center h-full text-center p-4">
+              <Search className="w-12 h-12 mb-4" style={{ color: 'var(--text-disabled)' }} />
+              <p style={{ color: 'var(--text-secondary)' }}>No results found</p>
+              <p className="text-sm mt-2" style={{ color: 'var(--text-muted)' }}>
+                Try different keywords or Gmail search operators
+              </p>
+              <div className="flex flex-wrap gap-2 mt-4 justify-center">
+                {['from:', 'to:', 'subject:', 'has:attachment', 'is:unread'].map(op => (
+                  <span
+                    key={op}
+                    className="text-xs px-2 py-1 rounded-lg"
+                    style={{ background: 'var(--bg-interactive)', color: 'var(--text-secondary)' }}
+                  >
+                    {op}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div>
+              {searchResults.map((thread, index) => {
+                // Only show "Inbox" badge for messages in inbox
+                const isInInbox = thread.labels?.includes('INBOX');
+                
+                return (
+                  <SwipeableEmailRow
+                    key={thread.id}
+                    thread={thread}
+                    index={index}
+                    isSelected={selectedThreadId === thread.id}
+                    hasDraft={threadsWithDrafts.has(thread.id)}
+                    skipAnimation={skipAnimation}
+                    onSelect={() => {
+                      // For search results, pass them as the folder threads
+                      onSelectThread(thread, 'all', searchResults);
+                    }}
+                    onArchive={(e) => handleArchive(e, thread.id)}
+                    getSenderNames={getSenderNames}
+                    formatDate={formatDate}
+                    labelBadge={isInInbox ? (
+                      <span className="text-xs px-1.5 py-0.5 rounded" style={{ 
+                        background: 'rgba(59, 130, 246, 0.2)',
+                        color: 'rgb(147, 197, 253)'
+                      }}>
+                        Inbox
+                      </span>
+                    ) : undefined}
+                  />
+                );
+              })}
+            </div>
+          )
+        ) : currentFolder === 'drafts' ? (
           drafts.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center p-4">
               <FileEdit className="w-12 h-12 mb-4" style={{ color: 'var(--text-disabled)' }} />
@@ -539,6 +680,7 @@ interface SwipeableEmailRowProps {
   onArchive: (e: React.MouseEvent) => void;
   getSenderNames: (thread: EmailThread) => string;
   formatDate: (date: string) => string;
+  labelBadge?: React.ReactNode; // Optional label badge for search results
 }
 
 function SwipeableEmailRow({
@@ -551,6 +693,7 @@ function SwipeableEmailRow({
   onArchive,
   getSenderNames,
   formatDate,
+  labelBadge,
 }: SwipeableEmailRowProps) {
   const x = useMotionValue(0);
   const [swipeState, setSwipeState] = useState<'idle' | 'pending' | 'archived'>('idle');
@@ -757,6 +900,8 @@ function SwipeableEmailRow({
                     Draft
                   </span>
                 )}
+                {/* Label badge for search results */}
+                {labelBadge}
               </div>
               <div className="flex items-center gap-1.5 flex-shrink-0">
                 {/* Attachment indicator */}

@@ -7,7 +7,7 @@ import { LoginScreen } from './LoginScreen';
 import { InboxList, MailFolder } from './InboxList';
 import { ChatInterface } from './ChatInterface';
 import { EmailThread, EmailDraft } from '@/types';
-import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive } from 'lucide-react';
+import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X } from 'lucide-react';
 import { sendEmail, archiveThread, fetchInbox, getAttachment, createGmailDraft } from '@/lib/gmail';
 import { emailCache } from '@/lib/email-cache';
 import { DraftAttachment } from '@/types';
@@ -32,6 +32,7 @@ export function FloMailApp() {
   const [allThreads, setAllThreads] = useState<EmailThread[]>([]);
   const [folderThreads, setFolderThreads] = useState<EmailThread[]>([]); // Threads in current folder for navigation
   const [currentMailFolder, setCurrentMailFolder] = useState<MailFolder>('inbox');
+  const [searchQuery, setSearchQuery] = useState(''); // Search query for inbox
   const currentThreadIndexRef = useRef(0);
   const archiveHandlerRef = useRef<(() => void) | null>(null);
 
@@ -386,7 +387,7 @@ export function FloMailApp() {
       </AnimatePresence>
 
       {/* Top bar */}
-      <div className="flex items-center justify-between px-4 py-3 safe-top" style={{ background: 'var(--bg-sidebar)', borderBottom: '1px solid var(--border-subtle)' }}>
+      <div className="flex items-center justify-between px-3 pb-2.5 safe-top" style={{ background: 'var(--bg-sidebar)', borderBottom: '1px solid var(--border-subtle)' }}>
         <div className="flex items-center gap-1">
           {currentView !== 'inbox' ? (
             <>
@@ -459,15 +460,45 @@ export function FloMailApp() {
             </>
           ) : (
             <>
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-cyan-500 flex items-center justify-center">
-                <span className="text-white font-bold text-sm">F</span>
+              <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-purple-500 to-cyan-500 flex items-center justify-center flex-shrink-0">
+                <span className="text-white font-bold text-xs">F</span>
               </div>
-              <span className="font-semibold ml-2" style={{ color: 'var(--text-primary)' }}>FloMail</span>
+              <span className="font-semibold ml-1.5 mr-2 flex-shrink-0 text-sm" style={{ color: 'var(--text-primary)' }}>FloMail</span>
             </>
           )}
         </div>
 
-          <div className="flex items-center gap-2">
+        {/* Search bar - full width in center when on inbox view */}
+        {currentView === 'inbox' && (
+          <div className="flex-1 ml-2 mr-3">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search mail..."
+                className="w-full pl-9 pr-8 py-1.5 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 transition-all"
+                style={{ 
+                  background: 'var(--bg-interactive)', 
+                  border: '1px solid var(--border-subtle)',
+                  color: 'var(--text-primary)'
+                }}
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded-full hover:bg-white/10 transition-colors"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 flex-shrink-0">
           {/* Profile */}
           <button
             onClick={() => setShowProfile(!showProfile)}
@@ -504,6 +535,8 @@ export function FloMailApp() {
                 onSelectThread={handleSelectThread}
                 selectedThreadId={selectedThread?.id}
                 defaultFolder={currentMailFolder}
+                searchQuery={searchQuery}
+                onClearSearch={() => setSearchQuery('')}
               />
             </motion.div>
           )}
