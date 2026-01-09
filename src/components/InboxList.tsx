@@ -759,7 +759,6 @@ function SwipeableEmailRow({
                 e.stopPropagation();
                 // Use the same undo flow for button clicks
                 setSwipeState('pending');
-                setShowUndo(true);
                 undoTimeoutRef.current = setTimeout(() => {
                   setSwipeState('archived');
                   setTimeout(() => {
