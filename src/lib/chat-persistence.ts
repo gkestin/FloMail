@@ -58,9 +58,17 @@ export interface PersistedMessage {
   
   // System message data
   isSystemMessage?: boolean;
-  systemType?: 'archived' | 'sent' | 'navigated' | 'context';
+  systemType?: 'archived' | 'sent' | 'navigated' | 'context' | 'search';
   systemSnippet?: string;
   systemPreview?: string;
+  
+  // Search results
+  searchResults?: Array<{
+    type: 'web_search' | 'browse_url';
+    query: string;
+    success: boolean;
+    resultPreview?: string;
+  }>;
   
   // Action button state
   hasActionButtons?: boolean;
@@ -93,9 +101,10 @@ export function toPersistedMessage(msg: {
   draft?: EmailDraft;
   draftCancelled?: boolean;
   isSystemMessage?: boolean;
-  systemType?: 'archived' | 'sent' | 'navigated' | 'context';
+  systemType?: 'archived' | 'sent' | 'navigated' | 'context' | 'search';
   systemSnippet?: string;
   systemPreview?: string;
+  searchResults?: Array<{ type: 'web_search' | 'browse_url'; query: string; success: boolean; resultPreview?: string }>;
   hasActionButtons?: boolean;
   actionButtonsHandled?: boolean;
 }): PersistedMessage {
@@ -139,6 +148,7 @@ export function toPersistedMessage(msg: {
   if (msg.systemType) persisted.systemType = msg.systemType;
   if (msg.systemSnippet) persisted.systemSnippet = msg.systemSnippet;
   if (msg.systemPreview) persisted.systemPreview = msg.systemPreview;
+  if (msg.searchResults && msg.searchResults.length > 0) persisted.searchResults = msg.searchResults;
   if (msg.hasActionButtons) persisted.hasActionButtons = true;
   if (msg.actionButtonsHandled) persisted.actionButtonsHandled = true;
 
@@ -157,9 +167,10 @@ export function fromPersistedMessage(persisted: PersistedMessage): {
   draft?: EmailDraft;
   draftCancelled?: boolean;
   isSystemMessage?: boolean;
-  systemType?: 'archived' | 'sent' | 'navigated' | 'context';
+  systemType?: 'archived' | 'sent' | 'navigated' | 'context' | 'search';
   systemSnippet?: string;
   systemPreview?: string;
+  searchResults?: Array<{ type: 'web_search' | 'browse_url'; query: string; success: boolean; resultPreview?: string }>;
   hasActionButtons?: boolean;
   actionButtonsHandled?: boolean;
 } {
@@ -201,6 +212,7 @@ export function fromPersistedMessage(persisted: PersistedMessage): {
   if (persisted.systemType) msg.systemType = persisted.systemType;
   if (persisted.systemSnippet) msg.systemSnippet = persisted.systemSnippet;
   if (persisted.systemPreview) msg.systemPreview = persisted.systemPreview;
+  if (persisted.searchResults) msg.searchResults = persisted.searchResults;
   if (persisted.hasActionButtons) msg.hasActionButtons = true;
   if (persisted.actionButtonsHandled) msg.actionButtonsHandled = true;
 

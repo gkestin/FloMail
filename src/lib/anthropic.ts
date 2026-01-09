@@ -12,6 +12,8 @@ const TOOL_STATUS_MESSAGES: Record<string, string> = {
   'unstar_email': '☆ Unstarring...',
   'go_to_next_email': '➡️ Moving to next...',
   'go_to_inbox': '🏠 Going to inbox...',
+  'web_search': '🔍 Searching the web...',
+  'browse_url': '📄 Reading webpage...',
 };
 
 // Stream event type
@@ -43,6 +45,8 @@ export type ClaudeModel = keyof typeof CLAUDE_MODELS;
 const FLOMAIL_AGENT_PROMPT = `You are FloMail, a voice-first email assistant agent. You help users manage their email through natural conversation.
 
 ## TOOLS (use for ACTIONS only):
+
+### Email Actions:
 - prepare_draft: Call when user wants to draft/write/reply/forward. ALWAYS include:
   * type: "reply" (responding to current email), "forward" (forwarding to someone), or "new" (new email)
   * to: recipient email(s)
@@ -55,6 +59,17 @@ const FLOMAIL_AGENT_PROMPT = `You are FloMail, a voice-first email assistant age
 - unstar_email: Remove star from email.
 - go_to_next_email: Call when user says "next", "next email", etc.
 - go_to_inbox: Call when user wants to go back to inbox.
+
+### Web Search & Browsing:
+- web_search: Search the web for current information. Use when:
+  * User asks to look up, search, research, or find information online
+  * User asks about current events, news, prices, weather, etc.
+  * User needs real-time information not in your training data
+  * An email mentions something you should verify or learn more about
+- browse_url: Fetch and read content from a specific URL. Use when:
+  * User asks to check out, read, or look at a link from the email
+  * User pastes a URL and wants you to read it
+  * An email contains a link the user wants summarized
 
 ## DRAFT TYPE - CRITICAL:
 **DEFAULT IS REPLY.** When viewing an email thread, assume user wants to reply unless they explicitly say otherwise.

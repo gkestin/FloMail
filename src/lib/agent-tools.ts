@@ -126,6 +126,34 @@ export const AGENT_TOOLS: AgentTool[] = [
       required: [],
     },
   },
+  {
+    name: 'web_search',
+    description: 'Search the web for current information. Use when user asks to look up, search, find, or research something on the internet. Also use when you need current/real-time information that may not be in your training data (e.g., recent news, current events, latest updates, prices, weather, etc.).',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'The search query to look up on the web. Be specific and include relevant context.',
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'browse_url',
+    description: 'Fetch and read the content of a specific URL. Use when user asks to check out, read, open, or look at a specific link or URL (e.g., from an email). Returns the main text content of the webpage.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: {
+          type: 'string',
+          description: 'The full URL to fetch (including https://)',
+        },
+      },
+      required: ['url'],
+    },
+  },
 ];
 
 // Tool result types

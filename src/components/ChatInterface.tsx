@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Loader2, Settings, Sparkles, ChevronDown, ChevronRight, X, Edit2, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp, EyeOff } from 'lucide-react';
+import { Send, Loader2, Settings, Sparkles, ChevronDown, ChevronRight, X, Edit2, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp, EyeOff, Search, Globe, ExternalLink, CheckCircle, XCircle } from 'lucide-react';
 import { DraftCard } from './DraftCard';
 import { ThreadPreview } from './ThreadPreview';
 import { WaveformVisualizer } from './WaveformVisualizer';
@@ -76,6 +76,13 @@ interface ChatInterfaceProps {
   onRegisterArchiveHandler?: (handler: () => void) => void;
 }
 
+interface SearchResult {
+  type: 'web_search' | 'browse_url';
+  query: string;
+  success: boolean;
+  resultPreview?: string;
+}
+
 interface UIMessage extends ChatMessage {
   toolCalls?: ToolCall[];
   draft?: EmailDraft;
@@ -85,13 +92,15 @@ interface UIMessage extends ChatMessage {
   isStreaming?: boolean; // Content is still being streamed
   draftCancelled?: boolean; // Draft was cancelled but kept for history
   isSystemMessage?: boolean; // For action confirmations (archive, navigate, etc.)
-  systemType?: 'archived' | 'sent' | 'navigated' | 'context'; // Type of system message
+  systemType?: 'archived' | 'sent' | 'navigated' | 'context' | 'search'; // Type of system message
   // Stored data for system messages (so we don't rely on current thread state)
   systemSnippet?: string;
   systemPreview?: string;
   // Action buttons for post-send flow
   hasActionButtons?: boolean;
   actionButtonsHandled?: boolean; // Set to true once user clicks a button
+  // Search results
+  searchResults?: SearchResult[];
 }
 
 export function ChatInterface({
@@ -619,6 +628,27 @@ export function ChatInterface({
                 }
                 break;
 
+              case 'search_result':
+                // Search completed - add as a simple left-aligned chat message (not centered system message)
+                const searchResult: SearchResult = {
+                  type: event.data.type,
+                  query: event.data.query,
+                  success: event.data.success,
+                  resultPreview: event.data.resultPreview,
+                };
+                
+                // Add a simple message showing the completed search (left-aligned, part of chat flow)
+                const searchMessageId = `search-${Date.now()}`;
+                const searchMessage: UIMessage = {
+                  id: searchMessageId,
+                  role: 'assistant',
+                  content: '', // Content is rendered via searchResults
+                  timestamp: new Date(),
+                  searchResults: [searchResult],
+                };
+                setMessages(prev => [...prev, searchMessage]);
+                break;
+
               case 'done':
                 // Stream completed
                 setMessages(prev => prev.map(m => 
@@ -1121,7 +1151,9 @@ export function ChatInterface({
                     ? 'bg-gradient-to-r from-transparent to-blue-500/40' 
                     : message.systemType === 'sent'
                       ? 'bg-gradient-to-r from-transparent to-cyan-500/40'
-                      : 'bg-gradient-to-r from-transparent to-green-500/40'
+                      : message.systemType === 'search'
+                        ? 'bg-gradient-to-r from-transparent to-purple-500/40'
+                        : 'bg-gradient-to-r from-transparent to-green-500/40'
                 }`} />
                 
                 {/* Center badge - shrinks on narrow screens, lines stay visible */}
@@ -1132,12 +1164,19 @@ export function ChatInterface({
                     ? 'bg-blue-500/15 text-blue-300 border border-blue-500/25' 
                     : message.systemType === 'sent'
                       ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/25'
-                      : 'bg-green-500/15 text-green-300 border border-green-500/25'
+                      : message.systemType === 'search'
+                        ? 'bg-purple-500/15 text-purple-300 border border-purple-500/25'
+                        : 'bg-green-500/15 text-green-300 border border-green-500/25'
                   }
                 `}>
                   {message.systemType === 'archived' && <Archive className="w-4 h-4 text-blue-400 flex-shrink-0" />}
                   {message.systemType === 'sent' && <Send className="w-4 h-4 text-cyan-400 flex-shrink-0" />}
                   {message.systemType === 'navigated' && <Eye className="w-4 h-4 text-green-400 flex-shrink-0" />}
+                  {message.systemType === 'search' && (
+                    message.searchResults?.[0]?.type === 'browse_url' 
+                      ? <Globe className="w-4 h-4 text-purple-400 flex-shrink-0" />
+                      : <Search className="w-4 h-4 text-purple-400 flex-shrink-0" />
+                  )}
                   <div className="flex flex-col min-w-0 overflow-hidden">
                     <span className="font-medium truncate">{message.content}</span>
                     {/* Show stored snippet for navigation and archive */}
@@ -1146,6 +1185,18 @@ export function ChatInterface({
                         {message.systemSnippet.slice(0, 120)}
                         {message.systemSnippet.length > 120 && '...'}
                       </span>
+                    )}
+                    {/* Show URL for browse_url searches */}
+                    {message.systemType === 'search' && message.searchResults?.[0]?.type === 'browse_url' && (
+                      <a 
+                        href={message.searchResults[0].query} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-xs text-purple-400/70 hover:text-purple-300 flex items-center gap-1 mt-0.5"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        <span className="truncate">{message.searchResults[0].query}</span>
+                      </a>
                     )}
                   </div>
                   
@@ -1171,7 +1222,9 @@ export function ChatInterface({
                     ? 'bg-gradient-to-l from-transparent to-blue-500/40' 
                     : message.systemType === 'sent'
                       ? 'bg-gradient-to-l from-transparent to-cyan-500/40'
-                      : 'bg-gradient-to-l from-transparent to-green-500/40'
+                      : message.systemType === 'search'
+                        ? 'bg-gradient-to-l from-transparent to-purple-500/40'
+                        : 'bg-gradient-to-l from-transparent to-green-500/40'
                 }`} />
               </div>
             )}
@@ -1301,6 +1354,27 @@ export function ChatInterface({
                 <p className="text-sm whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--text-primary)' }}>
                   {message.content}
                 </p>
+              </div>
+            )}
+
+            {/* Search results - simple left-aligned in chat flow */}
+            {!message.isSystemMessage && message.searchResults && message.searchResults.length > 0 && (
+              <div className="max-w-[85%] px-1 py-1">
+                {message.searchResults.map((result, idx) => (
+                  <div key={idx} className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-secondary)' }}>
+                    {result.success ? (
+                      <CheckCircle className="w-4 h-4 text-green-400 flex-shrink-0" />
+                    ) : (
+                      <XCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
+                    )}
+                    <span>
+                      {result.type === 'web_search' 
+                        ? `Searched: "${result.query}"`
+                        : `Read: ${result.query}`
+                      }
+                    </span>
+                  </div>
+                ))}
               </div>
             )}
 

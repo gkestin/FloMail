@@ -71,6 +71,9 @@ GOOGLE_CLIENT_SECRET=...
 # AI APIs
 OPENAI_API_KEY=...
 ANTHROPIC_API_KEY=...
+
+# Web Search (optional - enables web_search and browse_url tools)
+TAVILY_API_KEY=...  # Get from https://tavily.com (free tier available)
 ```
 
 **`FirebaseConfig.txt`** - Reference copy of Firebase web config (for setup reference)
@@ -183,6 +186,7 @@ npm run dev -- -p 3001
 5. **Model Selection**: Switch between Claude/GPT models via settings popover
 6. **Per-Thread Chat History**: Each email thread has its own chat history, saved and synced across devices
 7. **Incognito Mode**: Click the eye icon to disable chat saving for the current session
+8. **Web Search**: Ask the AI to search the web or browse URLs from emails for real-time information
 
 ## Deployment (GCP Cloud Run)
 
@@ -284,6 +288,7 @@ After the first deployment, authorize the Cloud Run domain:
 **Runtime** (set as Cloud Run env vars):
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
+- `TAVILY_API_KEY` (optional - for web search)
 
 All are read from `.env.local` by the deploy script.
 
