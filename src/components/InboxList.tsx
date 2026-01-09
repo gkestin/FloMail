@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { motion, AnimatePresence, useMotionValue, useTransform, PanInfo } from 'framer-motion';
+import { motion, AnimatePresence, useMotionValue, useTransform, PanInfo, animate } from 'framer-motion';
 import { 
   RefreshCw, 
   Mail, 
@@ -13,7 +13,9 @@ import {
   Inbox,
   Star,
   FolderOpen,
-  FileEdit
+  FileEdit,
+  Undo2,
+  Check
 } from 'lucide-react';
 import { EmailThread } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
@@ -534,47 +536,119 @@ function SwipeableEmailRow({
   formatDate,
 }: SwipeableEmailRowProps) {
   const x = useMotionValue(0);
-  const [isDragging, setIsDragging] = useState(false);
-  const [isArchiving, setIsArchiving] = useState(false);
+  const [swipeState, setSwipeState] = useState<'idle' | 'pending' | 'archived'>('idle');
+  const undoTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const dragStartX = useRef(0);
+  const hasDragged = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
   
-  // Transform for the archive background opacity
-  const archiveBgOpacity = useTransform(x, [-150, -50, 0], [1, 0.5, 0]);
-  const archiveIconScale = useTransform(x, [-150, -80, 0], [1.2, 1, 0.8]);
+  const SWIPE_THRESHOLD = -80;
+  const UNDO_DURATION = 4000;
   
-  const SWIPE_THRESHOLD = -100; // How far to swipe to trigger archive
+  // Smooth transforms for visual feedback
+  const archiveBgOpacity = useTransform(x, [-120, -40, 0], [1, 0.3, 0]);
+  const archiveIconScale = useTransform(x, [-120, -60, 0], [1.1, 0.9, 0.7]);
+  const archiveIconX = useTransform(x, [-120, -60, 0], [0, 10, 30]);
   
   const handleDragEnd = (event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
-    setIsDragging(false);
+    const shouldArchive = info.offset.x < SWIPE_THRESHOLD || 
+                          (info.offset.x < -50 && info.velocity.x < -200);
     
-    if (info.offset.x < SWIPE_THRESHOLD) {
-      // Trigger archive
-      setIsArchiving(true);
-      // Animate off screen then archive
-      setTimeout(() => {
-        onArchive({ stopPropagation: () => {} } as React.MouseEvent);
-      }, 200);
+    if (shouldArchive) {
+      setSwipeState('pending');
+      undoTimeoutRef.current = setTimeout(() => {
+        setSwipeState('archived');
+        setTimeout(() => {
+          onArchive({ stopPropagation: () => {} } as React.MouseEvent);
+        }, 300);
+      }, UNDO_DURATION);
+    } else {
+      // Animate back to 0 with spring physics
+      animate(x, 0, { type: 'spring', stiffness: 400, damping: 30 });
     }
+    
+    // Reset drag tracking after a brief delay
+    setTimeout(() => {
+      hasDragged.current = false;
+    }, 100);
+  };
+  
+  const handleUndo = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (undoTimeoutRef.current) {
+      clearTimeout(undoTimeoutRef.current);
+      undoTimeoutRef.current = null;
+    }
+    setSwipeState('idle');
+    animate(x, 0, { type: 'spring', stiffness: 400, damping: 30 });
   };
   
   const handleDragStart = () => {
-    setIsDragging(true);
+    dragStartX.current = x.get();
+    hasDragged.current = true;
   };
+  
+  const handleClick = () => {
+    // Only trigger select if we didn't just drag
+    if (!hasDragged.current) {
+      onSelect();
+    }
+  };
+  
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (undoTimeoutRef.current) {
+        clearTimeout(undoTimeoutRef.current);
+      }
+    };
+  }, []);
 
-  if (isArchiving) {
+  // Pending archive state - show undo option
+  if (swipeState === 'pending') {
     return (
       <motion.div
-        initial={{ opacity: 1, x: 0 }}
-        animate={{ opacity: 0, x: -300 }}
-        exit={{ opacity: 0 }}
-        transition={{ duration: 0.2 }}
-        className="bg-green-500/20 border-b border-slate-800/30"
+        initial={{ opacity: 1, height: 'auto' }}
+        animate={{ opacity: 1, height: 'auto' }}
+        className="bg-gradient-to-r from-green-900/40 to-green-800/30 border-b border-green-700/30"
       >
-        <div className="flex items-center justify-center gap-2 py-6 text-green-400">
-          <Archive className="w-5 h-5" />
-          <span className="text-sm font-medium">Archived</span>
+        <div className="flex items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-2 text-green-400">
+            <Check className="w-4 h-4" />
+            <span className="text-sm font-medium">Archived</span>
+          </div>
+          <motion.button
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={handleUndo}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition-all text-sm font-medium"
+          >
+            <Undo2 className="w-3.5 h-3.5" />
+            Undo
+          </motion.button>
         </div>
+        {/* Animated progress bar for undo timeout */}
+        <motion.div
+          initial={{ scaleX: 1 }}
+          animate={{ scaleX: 0 }}
+          transition={{ duration: UNDO_DURATION / 1000, ease: 'linear' }}
+          className="h-0.5 bg-green-500/50 origin-left"
+        />
       </motion.div>
+    );
+  }
+  
+  // Archived state - animate out
+  if (swipeState === 'archived') {
+    return (
+      <motion.div
+        initial={{ opacity: 1, height: 'auto' }}
+        animate={{ opacity: 0, height: 0, marginBottom: 0 }}
+        transition={{ duration: 0.3, ease: 'easeOut' }}
+        className="overflow-hidden"
+      />
     );
   }
 
@@ -583,17 +657,30 @@ function SwipeableEmailRow({
       ref={containerRef}
       initial={skipAnimation ? { opacity: 1, x: 0 } : { opacity: 0, x: -20 }}
       animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -100 }}
-      transition={skipAnimation ? { duration: 0 } : { delay: index * 0.03 }}
+      exit={{ opacity: 0, height: 0 }}
+      transition={skipAnimation ? { duration: 0 } : { delay: index * 0.02 }}
       className="relative overflow-hidden"
     >
       {/* Archive action background (revealed on swipe) */}
       <motion.div 
-        className="absolute inset-0 bg-gradient-to-l from-green-600 to-green-700 flex items-center justify-end pr-6"
-        style={{ opacity: archiveBgOpacity }}
+        className="absolute inset-0 flex items-center justify-end pr-6"
+        style={{ 
+          opacity: archiveBgOpacity,
+          background: 'linear-gradient(to left, rgb(22 163 74 / 0.9), rgb(21 128 61 / 0.7))'
+        }}
       >
-        <motion.div style={{ scale: archiveIconScale }}>
-          <Archive className="w-6 h-6 text-white" />
+        <motion.div 
+          style={{ scale: archiveIconScale, x: archiveIconX }}
+          className="flex items-center gap-2"
+        >
+          <Archive className="w-5 h-5 text-white" />
+          <motion.span 
+            className="text-white text-sm font-medium"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+          >
+            Archive
+          </motion.span>
         </motion.div>
       </motion.div>
       
@@ -601,18 +688,18 @@ function SwipeableEmailRow({
       <motion.div
         drag="x"
         dragConstraints={{ left: -150, right: 0 }}
-        dragElastic={0.1}
+        dragElastic={0.08}
+        dragMomentum={false}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
         style={{ x }}
-        animate={!isDragging ? { x: 0 } : undefined}
-        transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-        onClick={() => !isDragging && onSelect()}
+        whileDrag={{ cursor: 'grabbing' }}
+        onClick={handleClick}
         className={`
           relative cursor-pointer bg-slate-900
           ${isSelected ? 'bg-purple-500/10' : 'hover:bg-slate-800/50'}
           ${!thread.isRead ? 'bg-slate-800/30' : ''}
-          transition-colors
+          transition-colors touch-pan-y select-none
         `}
       >
         <div className="flex items-start gap-3 px-4 py-3 border-b border-slate-800/30">
@@ -670,7 +757,15 @@ function SwipeableEmailRow({
               whileTap={{ scale: 0.9 }}
               onClick={(e) => {
                 e.stopPropagation();
-                onArchive(e);
+                // Use the same undo flow for button clicks
+                setSwipeState('pending');
+                setShowUndo(true);
+                undoTimeoutRef.current = setTimeout(() => {
+                  setSwipeState('archived');
+                  setTimeout(() => {
+                    onArchive(e);
+                  }, 300);
+                }, UNDO_DURATION);
               }}
               className="p-2 rounded-lg bg-slate-800/50 hover:bg-green-500/20 text-slate-500 hover:text-green-400 transition-colors"
               title="Archive"
