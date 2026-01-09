@@ -124,12 +124,91 @@ npm run dev -- -p 3001
 4. **Email Threading**: Replies/forwards stay in Gmail thread with proper headers
 5. **Model Selection**: Switch between Claude/GPT models via settings popover
 
+## Deployment (GCP Cloud Run)
+
+FloMail is configured for deployment to **Google Cloud Run** - a serverless platform that scales automatically and supports streaming AI responses.
+
+### Prerequisites
+
+1. **Google Cloud CLI** installed: https://cloud.google.com/sdk/docs/install
+2. **Docker** installed: https://docs.docker.com/get-docker/
+3. GCP project `flomail25` (or update in deploy.sh)
+
+### Quick Deploy
+
+```bash
+# One-command deployment (reads .env.local for env vars)
+./deploy.sh
+```
+
+### Manual Deploy
+
+```bash
+# 1. Set your project
+gcloud config set project flomail25
+
+# 2. Create Artifact Registry (first time only)
+gcloud artifacts repositories create flomail \
+    --repository-format=docker \
+    --location=us-central1
+
+# 3. Configure Docker auth
+gcloud auth configure-docker us-central1-docker.pkg.dev
+
+# 4. Build and push
+docker build -t us-central1-docker.pkg.dev/flomail25/flomail/flomail:latest .
+docker push us-central1-docker.pkg.dev/flomail25/flomail/flomail:latest
+
+# 5. Deploy to Cloud Run
+gcloud run deploy flomail \
+    --image us-central1-docker.pkg.dev/flomail25/flomail/flomail:latest \
+    --region us-central1 \
+    --platform managed \
+    --allow-unauthenticated \
+    --timeout 300 \
+    --memory 512Mi \
+    --set-env-vars "OPENAI_API_KEY=...,ANTHROPIC_API_KEY=...,..."
+```
+
+### Post-Deployment Setup
+
+After deploying, you'll get a URL like `https://flomail-xxxxx-uc.a.run.app`. You need to:
+
+1. **Firebase Console** → Authentication → Settings → Authorized domains
+   - Add your Cloud Run URL
+
+2. **Google Cloud Console** → APIs & Services → Credentials → OAuth 2.0 Client
+   - Add to Authorized JavaScript origins: `https://flomail-xxxxx-uc.a.run.app`
+   - Add to Authorized redirect URIs: `https://flomail-xxxxx-uc.a.run.app`
+
+3. **Environment Variables** (if not set via deploy.sh)
+   - Go to Cloud Run → flomail → Edit → Variables & Secrets
+   - Add all env vars from your `.env.local`
+
+### CI/CD with Cloud Build
+
+For automatic deployments on git push:
+
+1. Enable Cloud Build API
+2. Connect your GitHub repo in Cloud Build
+3. Create a trigger using `cloudbuild.yaml`
+
+### Custom Domain
+
+```bash
+gcloud run domain-mappings create \
+    --service flomail \
+    --domain flomail.app \
+    --region us-central1
+```
+
+Then update DNS records as instructed.
+
 ## Future Plans
 
 - Task manager integration
 - Labels, star, snooze actions
 - Keyboard shortcuts
-- GCP deployment for scalability
 
 ## iOS App (When Ready)
 

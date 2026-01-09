@@ -87,8 +87,8 @@ export function FloMailApp() {
     // Fetch attachment data for any attachments that are from original messages
     let processedDraft = draft;
     if (draft.attachments && draft.attachments.length > 0) {
-      const attachmentsWithData: DraftAttachment[] = await Promise.all(
-        draft.attachments.map(async (att) => {
+      const attachmentsWithData = await Promise.all(
+        draft.attachments.map(async (att): Promise<DraftAttachment | null> => {
           // If it's from original and doesn't have data, fetch it
           if (att.isFromOriginal && !att.data && att.messageId && att.attachmentId) {
             try {
@@ -122,8 +122,8 @@ export function FloMailApp() {
     // Fetch attachment data for any attachments that are from original messages
     let processedDraft = draft;
     if (draft.attachments && draft.attachments.length > 0) {
-      const attachmentsWithData: DraftAttachment[] = await Promise.all(
-        draft.attachments.map(async (att) => {
+      const attachmentsWithData = await Promise.all(
+        draft.attachments.map(async (att): Promise<DraftAttachment | null> => {
           if (att.isFromOriginal && !att.data && att.messageId && att.attachmentId) {
             try {
               const data = await getAttachment(token, att.messageId, att.attachmentId);

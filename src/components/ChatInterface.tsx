@@ -357,7 +357,7 @@ export function ChatInterface({
       let streamedContent = '';
       let toolCalls: ToolCall[] = [];
       let hasAddedMessage = false;
-      let streamingDraft: EmailDraft | null = null;
+      let streamingDraft: EmailDraft | undefined = undefined;
       let buffer = '';
 
       while (true) {
@@ -448,6 +448,7 @@ export function ChatInterface({
               case 'tool_done':
                 // Tool call completed with full arguments
                 const completedTool: ToolCall = {
+                  id: event.data.id || `tool_${Date.now()}`,
                   name: event.data.name,
                   arguments: event.data.arguments,
                 };

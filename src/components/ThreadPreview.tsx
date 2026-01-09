@@ -6,7 +6,7 @@ import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inb
 import { EmailThread, EmailMessage } from '@/types';
 
 // Folder type and display config
-type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'archive';
+type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'archive' | 'drafts';
 
 const FOLDER_DISPLAY: Record<MailFolder, { label: string; icon: React.ElementType; color: string }> = {
   inbox: { label: 'Inbox', icon: Inbox, color: 'text-blue-400 bg-blue-500/20' },
@@ -14,6 +14,7 @@ const FOLDER_DISPLAY: Record<MailFolder, { label: string; icon: React.ElementTyp
   starred: { label: 'Starred', icon: Star, color: 'text-yellow-400 bg-yellow-500/20' },
   all: { label: 'All Mail', icon: FolderOpen, color: 'text-slate-400 bg-slate-500/20' },
   archive: { label: 'Archive', icon: Archive, color: 'text-purple-400 bg-purple-500/20' },
+  drafts: { label: 'Drafts', icon: Mail, color: 'text-red-400 bg-red-500/20' },
 };
 
 interface ThreadPreviewProps {

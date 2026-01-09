@@ -1,0 +1,72 @@
+# Cloud Build configuration for FloMail
+# Builds Docker image and deploys to Cloud Run
+
+# ============================================
+# Prerequisites:
+# 1. Enable Cloud Build API
+# 2. Enable Cloud Run API
+# 3. Enable Artifact Registry API
+# 4. Grant Cloud Build service account permission to deploy to Cloud Run:
+#    - Cloud Run Admin
+#    - Service Account User
+# ============================================
+
+steps:
+  # Step 1: Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/flomail/flomail:$COMMIT_SHA'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/flomail/flomail:latest'
+      - '.'
+
+  # Step 2: Push to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/flomail/flomail:$COMMIT_SHA'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/flomail/flomail:latest'
+
+  # Step 3: Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'flomail'
+      - '--image'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/flomail/flomail:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--timeout'
+      - '300'  # 5 min timeout for streaming AI responses
+      - '--memory'
+      - '512Mi'
+      - '--cpu'
+      - '1'
+      - '--min-instances'
+      - '0'  # Scale to zero when not in use
+      - '--max-instances'
+      - '10'
+
+# Store images in Artifact Registry
+images:
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/flomail/flomail:$COMMIT_SHA'
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/flomail/flomail:latest'
+
+# Build timeout
+timeout: '1200s'  # 20 minutes
+
+# Substitutions (can override via command line)
+substitutions:
+  _REGION: 'us-central1'
+
