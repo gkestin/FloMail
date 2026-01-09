@@ -64,7 +64,7 @@ export interface PersistedMessage {
   
   // Search results
   searchResults?: Array<{
-    type: 'web_search' | 'browse_url';
+    type: 'web_search' | 'browse_url' | 'search_emails';
     query: string;
     success: boolean;
     resultPreview?: string;
@@ -104,7 +104,7 @@ export function toPersistedMessage(msg: {
   systemType?: 'archived' | 'sent' | 'navigated' | 'context' | 'search';
   systemSnippet?: string;
   systemPreview?: string;
-  searchResults?: Array<{ type: 'web_search' | 'browse_url'; query: string; success: boolean; resultPreview?: string }>;
+  searchResults?: Array<{ type: 'web_search' | 'browse_url' | 'search_emails'; query: string; success: boolean; resultPreview?: string }>;
   hasActionButtons?: boolean;
   actionButtonsHandled?: boolean;
 }): PersistedMessage {
@@ -170,7 +170,7 @@ export function fromPersistedMessage(persisted: PersistedMessage): {
   systemType?: 'archived' | 'sent' | 'navigated' | 'context' | 'search';
   systemSnippet?: string;
   systemPreview?: string;
-  searchResults?: Array<{ type: 'web_search' | 'browse_url'; query: string; success: boolean; resultPreview?: string }>;
+  searchResults?: Array<{ type: 'web_search' | 'browse_url' | 'search_emails'; query: string; success: boolean; resultPreview?: string }>;
   hasActionButtons?: boolean;
   actionButtonsHandled?: boolean;
 } {

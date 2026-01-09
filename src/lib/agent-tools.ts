@@ -154,6 +154,24 @@ export const AGENT_TOOLS: AgentTool[] = [
       required: ['url'],
     },
   },
+  {
+    name: 'search_emails',
+    description: 'Search through the user\'s emails using Gmail search. Use when user asks about previous emails, messages from a specific person, emails about a topic, or wants to find something in their mailbox. Uses Gmail search syntax - supports from:, to:, subject:, has:attachment, before:, after:, etc.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Gmail search query. Examples: "from:john@example.com", "subject:invoice", "from:alice has:attachment", "order confirmation after:2024/01/01". Keep it focused - don\'t over-specify unless needed.',
+        },
+        max_results: {
+          type: 'string',
+          description: 'Maximum number of results to return (default: 5, max: 10)',
+        },
+      },
+      required: ['query'],
+    },
+  },
 ];
 
 // Tool result types

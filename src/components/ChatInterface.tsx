@@ -77,7 +77,7 @@ interface ChatInterfaceProps {
 }
 
 interface SearchResult {
-  type: 'web_search' | 'browse_url';
+  type: 'web_search' | 'browse_url' | 'search_emails';
   query: string;
   success: boolean;
   resultPreview?: string;
@@ -118,7 +118,7 @@ export function ChatInterface({
   onGoToInbox,
   onRegisterArchiveHandler,
 }: ChatInterfaceProps) {
-  const { user } = useAuth();
+  const { user, getAccessToken } = useAuth();
   
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [input, setInput] = useState('');
@@ -469,6 +469,9 @@ export function ChatInterface({
       // Add the current message
       contextMessages.push({ role: 'user' as const, content });
 
+      // Get access token for email search functionality
+      const accessToken = await getAccessToken();
+      
       const response = await fetch('/api/ai/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -478,6 +481,7 @@ export function ChatInterface({
           folder,
           provider,
           model,
+          accessToken, // For email search
         }),
         signal: abortControllerRef.current.signal,
       });
@@ -1369,8 +1373,10 @@ export function ChatInterface({
                     )}
                     <span>
                       {result.type === 'web_search' 
-                        ? `Searched: "${result.query}"`
-                        : `Read: ${result.query}`
+                        ? `Searched web: "${result.query}"`
+                        : result.type === 'search_emails'
+                          ? `Searched emails: "${result.query}"`
+                          : `Read: ${result.query}`
                       }
                     </span>
                   </div>
