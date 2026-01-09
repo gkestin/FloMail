@@ -83,9 +83,9 @@ TAVILY_API_KEY=...  # Get from https://tavily.com (free tier available)
 - Auth: Google Sign-In enabled
 - Gmail scopes requested: `gmail.readonly`, `gmail.send`, `gmail.modify`
 
-### Firestore Setup (Chat Persistence)
+### Firestore Setup (Chat Persistence & Snooze)
 
-FloMail stores per-thread chat history in Firestore. Each thread has its own chat history that syncs across devices.
+FloMail stores per-thread chat history and snooze data in Firestore. Each thread has its own chat history that syncs across devices.
 
 1. **Enable Firestore** in Firebase Console → Build → Firestore Database → Create database
 
@@ -104,6 +104,16 @@ service cloud.firestore {
     
     // User's chat history per email thread
     match /users/{userId}/threadChats/{threadId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // User's snoozed emails (tracks snooze until time)
+    match /users/{userId}/snoozedEmails/{threadId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // User's recently unsnoozed emails (for "Back!" badge)
+    match /users/{userId}/recentlyUnsnoozed/{threadId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
     
@@ -129,6 +139,20 @@ service cloud.firestore {
 ├── lastUpdated: Timestamp
 ├── messageCount: number
 └── lastMessagePreview: string
+
+/users/{userId}/snoozedEmails/{gmailThreadId}
+├── threadId: string
+├── userId: string
+├── snoozeUntil: Timestamp
+├── snoozedAt: Timestamp
+├── subject: string
+├── snippet: string
+└── senderName: string
+
+/users/{userId}/recentlyUnsnoozed/{gmailThreadId}
+├── threadId: string
+├── userId: string
+└── unsnoozedAt: Timestamp
 ```
 
 **Features:**

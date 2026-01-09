@@ -8,7 +8,7 @@ import { InboxList, MailFolder } from './InboxList';
 import { ChatInterface } from './ChatInterface';
 import { EmailThread, EmailDraft } from '@/types';
 import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X } from 'lucide-react';
-import { sendEmail, archiveThread, fetchInbox, getAttachment, createGmailDraft } from '@/lib/gmail';
+import { sendEmail, archiveThread, fetchInbox, getAttachment, createGmailDraft, hasSnoozedLabel } from '@/lib/gmail';
 import { emailCache } from '@/lib/email-cache';
 import { DraftAttachment } from '@/types';
 
@@ -19,6 +19,7 @@ const FOLDER_LABELS: Record<MailFolder, string> = {
   inbox: 'Inbox',
   sent: 'Sent',
   drafts: 'Drafts',
+  snoozed: 'Snoozed',
   starred: 'Starred',
   all: 'All Mail',
 };
@@ -54,6 +55,56 @@ export function FloMailApp() {
       loadThreads();
     }
   }, [user, loadThreads]);
+
+  // Check for expired snoozes on app load and periodically (client-side with auth)
+  useEffect(() => {
+    if (!user) return;
+
+    const checkExpiredSnoozes = async () => {
+      try {
+        const token = await getAccessToken();
+        if (!token) return;
+
+        // Import client-side functions
+        const { getExpiredSnoozes, deleteSnoozedEmail } = await import('@/lib/snooze-persistence');
+        const { unsnoozeThread } = await import('@/lib/gmail');
+        
+        // Get expired snoozes from Firestore (client-side, authenticated)
+        const expired = await getExpiredSnoozes(user.uid);
+        
+        if (expired.length === 0) return;
+        
+        console.log(`[Snooze] Found ${expired.length} expired snoozes`);
+        
+        // Unsnooze each one
+        const { markAsUnsnoozed } = await import('@/lib/snooze-persistence');
+        for (const snoozed of expired) {
+          try {
+            await unsnoozeThread(token, snoozed.threadId);
+            await deleteSnoozedEmail(user.uid, snoozed.threadId);
+            // Mark as recently unsnoozed for "Back!" badge
+            await markAsUnsnoozed(user.uid, snoozed.threadId);
+            console.log(`[Snooze] Unsnoozed: ${snoozed.subject}`);
+          } catch (e) {
+            console.error(`[Snooze] Failed to unsnooze ${snoozed.threadId}:`, e);
+          }
+        }
+        
+        // Invalidate caches
+        emailCache.invalidateFolder('inbox');
+        emailCache.invalidateFolder('snoozed');
+      } catch (err) {
+        console.error('[Snooze] Failed to check expired snoozes:', err);
+      }
+    };
+
+    // Check immediately on load
+    checkExpiredSnoozes();
+
+    // Check every 60 seconds
+    const interval = setInterval(checkExpiredSnoozes, 60000);
+    return () => clearInterval(interval);
+  }, [user, getAccessToken]);
 
   const handleSelectThread = useCallback((thread: EmailThread, folder: MailFolder = 'inbox', threadsInFolder: EmailThread[] = []) => {
     setSelectedThread(thread);
@@ -404,21 +455,31 @@ export function FloMailApp() {
               </motion.button>
               
               {/* Current folder indicator - clickable to go back */}
-              <motion.button
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
-                onClick={handleGoToInbox}
-                className="flex items-center gap-1.5 px-2 py-1 rounded-lg cursor-pointer hover:bg-blue-500/10 transition-colors"
-                style={{ background: 'var(--bg-interactive)' }}
-                title={`Back to ${FOLDER_LABELS[currentMailFolder]}`}
-              >
-                <span className="text-xs font-medium text-blue-400">
-                  {FOLDER_LABELS[currentMailFolder]}
-                </span>
-                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                  {currentThreadIndexRef.current + 1}/{folderThreads.length || allThreads.length}
-                </span>
-              </motion.button>
+              {(() => {
+                // Show "Snoozed" if viewing a snoozed thread from All Mail or search
+                const isSnoozedThread = selectedThread && hasSnoozedLabel(selectedThread);
+                const displayFolder = isSnoozedThread && currentMailFolder !== 'snoozed' 
+                  ? 'Snoozed' 
+                  : FOLDER_LABELS[currentMailFolder];
+                
+                return (
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={handleGoToInbox}
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-lg cursor-pointer hover:bg-blue-500/10 transition-colors"
+                    style={{ background: 'var(--bg-interactive)' }}
+                    title={`Back to ${FOLDER_LABELS[currentMailFolder]}`}
+                  >
+                    <span className={`text-xs font-medium ${isSnoozedThread && currentMailFolder !== 'snoozed' ? 'text-amber-400' : 'text-blue-400'}`}>
+                      {displayFolder}
+                    </span>
+                    <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                      {currentThreadIndexRef.current + 1}/{folderThreads.length || allThreads.length}
+                    </span>
+                  </motion.button>
+                );
+              })()}
               
               {/* Previous/Next navigation - clear labeled buttons */}
               <div className="flex items-center gap-1 ml-1">

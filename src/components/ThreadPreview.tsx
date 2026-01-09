@@ -2,11 +2,11 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, FolderOpen } from 'lucide-react';
+import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, FolderOpen, Clock } from 'lucide-react';
 import { EmailThread, EmailMessage } from '@/types';
 
 // Folder type and display config
-type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'drafts';
+type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'drafts' | 'snoozed';
 
 const FOLDER_DISPLAY: Record<MailFolder, { label: string; icon: React.ElementType; color: string }> = {
   inbox: { label: 'Inbox', icon: Inbox, color: 'text-blue-400 bg-blue-500/20' },
@@ -14,6 +14,7 @@ const FOLDER_DISPLAY: Record<MailFolder, { label: string; icon: React.ElementTyp
   starred: { label: 'Starred', icon: Star, color: 'text-yellow-400 bg-yellow-500/20' },
   all: { label: 'All Mail', icon: FolderOpen, color: 'text-slate-400 bg-slate-500/20' },
   drafts: { label: 'Drafts', icon: Mail, color: 'text-red-400 bg-red-500/20' },
+  snoozed: { label: 'Snoozed', icon: Clock, color: 'text-amber-400 bg-amber-500/20' },
 };
 
 interface ThreadPreviewProps {

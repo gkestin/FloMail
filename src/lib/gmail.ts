@@ -669,3 +669,203 @@ export async function getThreadsWithDrafts(accessToken: string): Promise<Set<str
   return threadIds;
 }
 
+// ============================================================================
+// SNOOZE FUNCTIONALITY
+// ============================================================================
+// Gmail API doesn't have native snooze support, so we implement it using:
+// 1. Custom labels (FloMail/Snoozed, FloMail/Unsnoozed) 
+// 2. Firestore to track snooze times
+// 3. A scheduled function to unsnooze at the right time
+
+// Cache for label IDs to avoid repeated lookups
+let snoozeLabelId: string | null = null;
+let unsnoozedLabelId: string | null = null;
+
+// Label names (visible in Gmail)
+export const SNOOZE_LABEL_NAME = 'FloMail/Snoozed';
+export const UNSNOOZED_LABEL_NAME = 'FloMail/Unsnoozed';
+
+// Get or create a Gmail label
+async function getOrCreateLabel(accessToken: string, labelName: string): Promise<string> {
+  // First, try to find the existing label
+  const listResponse = await fetch(`${GMAIL_API_BASE}/labels`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  
+  if (!listResponse.ok) {
+    throw new Error('Failed to list labels');
+  }
+  
+  const labelsData = await listResponse.json();
+  const existingLabel = labelsData.labels?.find((l: any) => l.name === labelName);
+  
+  if (existingLabel) {
+    return existingLabel.id;
+  }
+  
+  // Label doesn't exist, try to create it
+  const createResponse = await fetch(`${GMAIL_API_BASE}/labels`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      name: labelName,
+      labelListVisibility: 'labelShow',
+      messageListVisibility: 'show',
+    }),
+  });
+  
+  // Handle 409 Conflict - label already exists (race condition)
+  if (createResponse.status === 409) {
+    // Re-fetch the label list to get the existing label ID
+    const retryListResponse = await fetch(`${GMAIL_API_BASE}/labels`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    
+    if (retryListResponse.ok) {
+      const retryLabelsData = await retryListResponse.json();
+      const retryLabel = retryLabelsData.labels?.find((l: any) => l.name === labelName);
+      if (retryLabel) {
+        return retryLabel.id;
+      }
+    }
+    
+    // If we still can't find it, throw error
+    throw new Error(`Label "${labelName}" exists but could not be retrieved`);
+  }
+  
+  if (!createResponse.ok) {
+    const error = await createResponse.text();
+    throw new Error(`Failed to create label: ${error}`);
+  }
+  
+  const newLabel = await createResponse.json();
+  return newLabel.id;
+}
+
+// Get the Snoozed label ID (cached)
+export async function getSnoozeLabelId(accessToken: string): Promise<string> {
+  if (snoozeLabelId) return snoozeLabelId;
+  snoozeLabelId = await getOrCreateLabel(accessToken, SNOOZE_LABEL_NAME);
+  return snoozeLabelId;
+}
+
+// Get the Unsnoozed label ID (cached)
+export async function getUnsnoozedLabelId(accessToken: string): Promise<string> {
+  if (unsnoozedLabelId) return unsnoozedLabelId;
+  unsnoozedLabelId = await getOrCreateLabel(accessToken, UNSNOOZED_LABEL_NAME);
+  return unsnoozedLabelId;
+}
+
+// Snooze a thread (remove from inbox, add Snoozed label)
+export async function snoozeThread(accessToken: string, threadId: string): Promise<void> {
+  const snoozeLabelId = await getSnoozeLabelId(accessToken);
+  
+  const response = await fetch(`${GMAIL_API_BASE}/threads/${threadId}/modify`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      addLabelIds: [snoozeLabelId],
+      removeLabelIds: ['INBOX'],
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Failed to snooze thread: ${error}`);
+  }
+}
+
+// Unsnooze a thread (add back to inbox, remove Snoozed label, add Unsnoozed label)
+export async function unsnoozeThread(accessToken: string, threadId: string): Promise<void> {
+  const [snoozeLabelId, unsnoozedLabelId] = await Promise.all([
+    getSnoozeLabelId(accessToken),
+    getUnsnoozedLabelId(accessToken),
+  ]);
+  
+  const response = await fetch(`${GMAIL_API_BASE}/threads/${threadId}/modify`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      addLabelIds: ['INBOX', unsnoozedLabelId],
+      removeLabelIds: [snoozeLabelId],
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Failed to unsnooze thread: ${error}`);
+  }
+}
+
+// Clear the "Unsnoozed" label from a thread (after user has seen it)
+export async function clearUnsnoozedLabel(accessToken: string, threadId: string): Promise<void> {
+  const unsnoozedLabelId = await getUnsnoozedLabelId(accessToken);
+  
+  const response = await fetch(`${GMAIL_API_BASE}/threads/${threadId}/modify`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      removeLabelIds: [unsnoozedLabelId],
+    }),
+  });
+
+  if (!response.ok) {
+    console.error('Failed to clear unsnoozed label');
+  }
+}
+
+// Get all snoozed threads (threads with the Snoozed label)
+export async function getSnoozedThreads(accessToken: string): Promise<EmailThread[]> {
+  const snoozeLabelId = await getSnoozeLabelId(accessToken);
+  
+  const response = await fetch(`${GMAIL_API_BASE}/threads?labelIds=${snoozeLabelId}&maxResults=50`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  
+  if (!response.ok) {
+    throw new Error('Failed to get snoozed threads');
+  }
+  
+  const data = await response.json();
+  const threads: EmailThread[] = [];
+  
+  if (data.threads) {
+    for (const t of data.threads) {
+      try {
+        const thread = await fetchThread(accessToken, t.id);
+        threads.push(thread);
+      } catch (e) {
+        console.error('Failed to fetch snoozed thread:', t.id, e);
+      }
+    }
+  }
+  
+  return threads;
+}
+
+// Check if a thread has the Snoozed label (currently snoozed)
+export function hasSnoozedLabel(thread: EmailThread): boolean {
+  return thread.labels?.some(l => 
+    l === SNOOZE_LABEL_NAME || l.includes('/Snoozed')
+  ) || false;
+}
+
+// Check if a thread has the Unsnoozed label (just returned from snooze)
+export function hasUnsnoozedLabel(thread: EmailThread): boolean {
+  return thread.labels?.some(l => 
+    l === UNSNOOZED_LABEL_NAME || l.includes('Unsnoozed')
+  ) || false;
+}
+

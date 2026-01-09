@@ -17,15 +17,19 @@ import {
   Undo2,
   Check,
   Search,
-  X
+  X,
+  Clock,
+  Bell
 } from 'lucide-react';
 import { EmailThread } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
-import { fetchInbox, archiveThread, markAsRead, listGmailDrafts, GmailDraftInfo, getThreadsWithDrafts, fetchThread } from '@/lib/gmail';
+import { fetchInbox, archiveThread, markAsRead, listGmailDrafts, GmailDraftInfo, getThreadsWithDrafts, fetchThread, moveToInbox, getSnoozedThreads, SNOOZE_LABEL_NAME, clearUnsnoozedLabel } from '@/lib/gmail';
+import { getSnoozedEmails, SnoozedEmail, formatSnoozeTime, SnoozeOption, getRecentlyUnsnoozed, RecentlyUnsnoozedEmail } from '@/lib/snooze-persistence';
+import { SnoozePicker } from './SnoozePicker';
 import { emailCache } from '@/lib/email-cache';
 
 // Available mail folders/views
-export type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'drafts';
+export type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'drafts' | 'snoozed';
 
 // Gmail API label configuration
 // Note: Gmail uses LABELS not folders. "Archive" in Gmail simply means
@@ -36,10 +40,12 @@ const FOLDER_CONFIG: Record<MailFolder, {
   query?: string;       // Fallback search query
   icon: React.ElementType;
   isDrafts?: boolean;   // Special handling for drafts
+  isSnoozed?: boolean;  // Special handling for snoozed
 }> = {
   inbox: { label: 'Inbox', labelIds: ['INBOX'], icon: Inbox },
   sent: { label: 'Sent', labelIds: ['SENT'], icon: Send },
   drafts: { label: 'Drafts', labelIds: ['DRAFT'], icon: FileEdit, isDrafts: true },
+  snoozed: { label: 'Snoozed', icon: Clock, isSnoozed: true },
   starred: { label: 'Starred', labelIds: ['STARRED'], icon: Star },
   all: { label: 'All Mail', icon: Mail }, // No filter = all mail
 };
@@ -53,10 +59,12 @@ interface InboxListProps {
 }
 
 export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'inbox', searchQuery = '', onClearSearch }: InboxListProps) {
-  const { getAccessToken } = useAuth();
+  const { getAccessToken, user } = useAuth();
   const [threads, setThreads] = useState<EmailThread[]>([]);
   const [drafts, setDrafts] = useState<GmailDraftInfo[]>([]);
   const [threadsWithDrafts, setThreadsWithDrafts] = useState<Set<string>>(new Set());
+  const [snoozedEmailsData, setSnoozedEmailsData] = useState<SnoozedEmail[]>([]); // Snooze metadata from Firestore
+  const [recentlyUnsnoozedData, setRecentlyUnsnoozedData] = useState<RecentlyUnsnoozedEmail[]>([]); // Recently unsnoozed threads
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false); // Loading next page
@@ -126,23 +134,55 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
         const draftList = await listGmailDrafts(token);
         setDrafts(draftList);
         setThreads([]);
+        setSnoozedEmailsData([]);
+        setRecentlyUnsnoozedData([]);
         
         // Cache the result
         emailCache.setFolderData(folder, { threads: [], drafts: draftList });
+      } else if (config.isSnoozed) {
+        // Special handling for snoozed folder
+        // Get snoozed emails from both Gmail (by label) and Firestore (for snooze times)
+        const [snoozedThreads, snoozedData] = await Promise.all([
+          getSnoozedThreads(token),
+          user?.uid ? getSnoozedEmails(user.uid).catch(() => []) : Promise.resolve([]),
+        ]);
+        setThreads(snoozedThreads);
+        setSnoozedEmailsData(snoozedData);
+        setRecentlyUnsnoozedData([]);
+        setDrafts([]);
+        setNextPageToken(undefined);
+        
+        // Cache the result
+        emailCache.setFolderData(folder, { 
+          threads: snoozedThreads,
+          snoozedEmails: snoozedData 
+        });
       } else {
         // Use labelIds when available (proper Gmail API approach), 
         // fall back to query for archive (which has no label)
-        const [{ threads: fetchedThreads, nextPageToken: pageToken }, draftThreadIds] = await Promise.all([
+        // Also load snoozed and recently unsnoozed data for badges
+        // Use Promise.allSettled for optional data to not fail if permissions are missing
+        const [threadsResult, draftThreadIds, snoozedResult, unsnoozedResult] = await Promise.all([
           fetchInbox(token, { 
             labelIds: config.labelIds,
             query: config.query 
           }),
           getThreadsWithDrafts(token),
+          user?.uid ? getSnoozedEmails(user.uid).catch(() => []) : Promise.resolve([]),
+          user?.uid ? getRecentlyUnsnoozed(user.uid).catch(() => []) : Promise.resolve([]),
         ]);
+        const { threads: fetchedThreads, nextPageToken: pageToken } = threadsResult;
         setThreads(fetchedThreads);
         setThreadsWithDrafts(draftThreadIds);
         setNextPageToken(pageToken); // Store for "load more"
         setDrafts([]);
+        setSnoozedEmailsData(snoozedResult);
+        setRecentlyUnsnoozedData(unsnoozedResult);
+        
+        // Debug logging
+        if (unsnoozedResult.length > 0) {
+          console.log(`[InboxList] Loaded ${unsnoozedResult.length} recently unsnoozed threads:`, unsnoozedResult.map(u => u.threadId));
+        }
         
         // Cache the result
         emailCache.setFolderData(folder, { 
@@ -325,6 +365,110 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
     }
   };
 
+  const handleMoveToInbox = async (e: React.MouseEvent, threadId: string) => {
+    e.stopPropagation();
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+      
+      await moveToInbox(token, threadId);
+      
+      // Update the thread's labels locally to reflect the change
+      setThreads((prev) => prev.map((t) => 
+        t.id === threadId 
+          ? { ...t, labels: [...(t.labels || []), 'INBOX'] }
+          : t
+      ));
+      
+      // Invalidate inbox cache since we added to it
+      emailCache.invalidateFolder('inbox');
+    } catch (err) {
+      console.error('Failed to move to inbox:', err);
+    }
+  };
+
+  // Snooze state
+  const [snoozePickerOpen, setSnoozePickerOpen] = useState(false);
+  const [snoozeTargetThread, setSnoozeTargetThread] = useState<EmailThread | null>(null);
+  const [snoozeLoading, setSnoozeLoading] = useState(false);
+
+  const handleOpenSnoozePicker = (e: React.MouseEvent, thread: EmailThread) => {
+    e.stopPropagation();
+    setSnoozeTargetThread(thread);
+    setSnoozePickerOpen(true);
+  };
+
+  const handleSnooze = async (option: SnoozeOption, customDate?: Date) => {
+    if (!snoozeTargetThread || !user?.uid) return;
+    
+    setSnoozeLoading(true);
+    
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+
+      // Save last snooze option for "repeat" feature
+      const { saveLastSnooze } = await import('./SnoozePicker');
+      saveLastSnooze(option, customDate);
+
+      // Get thread info for the snooze record
+      const lastMessage = snoozeTargetThread.messages[snoozeTargetThread.messages.length - 1];
+      const emailInfo = {
+        subject: snoozeTargetThread.subject || '(No subject)',
+        snippet: snoozeTargetThread.snippet || '',
+        senderName: lastMessage?.from?.name || lastMessage?.from?.email || 'Unknown',
+      };
+
+      // Call the snooze API (handles Gmail labels)
+      const response = await fetch('/api/snooze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'snooze',
+          threadId: snoozeTargetThread.id,
+          accessToken: token,
+          snoozeOption: option,
+          customDate: customDate?.toISOString(),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to snooze');
+      }
+
+      const data = await response.json();
+      
+      // Save to Firestore client-side (where auth context is available)
+      const { saveSnoozedEmail } = await import('@/lib/snooze-persistence');
+      await saveSnoozedEmail(user.uid, snoozeTargetThread.id, new Date(data.snoozeUntil), emailInfo);
+
+      // Update behavior based on current folder
+      if (currentFolder === 'all') {
+        // In All Mail: update thread labels to show snoozed status (don't remove)
+        setThreads((prev) => prev.map((t) => 
+          t.id === snoozeTargetThread.id 
+            ? { ...t, labels: [...(t.labels || []).filter(l => l !== 'INBOX'), SNOOZE_LABEL_NAME] }
+            : t
+        ));
+      } else {
+        // In Inbox or other folders: remove from current view
+        setThreads((prev) => prev.filter((t) => t.id !== snoozeTargetThread.id));
+        emailCache.removeThreadFromFolder(currentFolder, snoozeTargetThread.id);
+      }
+      
+      // Invalidate snoozed folder cache
+      emailCache.invalidateFolder('snoozed');
+      
+      // Close picker
+      setSnoozePickerOpen(false);
+      setSnoozeTargetThread(null);
+    } catch (err) {
+      console.error('Failed to snooze:', err);
+    } finally {
+      setSnoozeLoading(false);
+    }
+  };
+
   const handleSelect = async (thread: EmailThread) => {
     // Pass the current folder's threads so navigation stays within this folder
     onSelectThread(thread, currentFolder, threads);
@@ -448,8 +592,8 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
 
   const FolderIcon = FOLDER_CONFIG[currentFolder].icon;
   
-  // Define tab order explicitly: Inbox → Sent → Drafts → Starred → All Mail
-  const FOLDER_ORDER: MailFolder[] = ['inbox', 'sent', 'drafts', 'starred', 'all'];
+  // Define tab order explicitly: Inbox → Sent → Drafts → Snoozed → Starred → All Mail
+  const FOLDER_ORDER: MailFolder[] = ['inbox', 'sent', 'drafts', 'snoozed', 'starred', 'all'];
 
   return (
     <div className="flex flex-col h-full" style={{ background: 'var(--bg-sidebar)' }}>
@@ -547,6 +691,40 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
                 // Only show "Inbox" badge for messages in inbox
                 const isInInbox = thread.labels?.includes('INBOX');
                 
+                // Check snooze status using Firestore data
+                const snoozeData = snoozedEmailsData.find(s => s.threadId === thread.id);
+                const isThreadSnoozed = !!snoozeData;
+                
+                // Check if recently unsnoozed using Firestore data
+                const isThreadUnsnoozed = recentlyUnsnoozedData.some(u => u.threadId === thread.id);
+                
+                // Build appropriate label badge
+                let searchLabelBadge = null;
+                if (isThreadSnoozed) {
+                  searchLabelBadge = (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                      style={{ background: 'rgba(251, 191, 36, 0.15)', color: 'rgb(251, 191, 36)' }}>
+                      Snoozed
+                    </span>
+                  );
+                } else if (isThreadUnsnoozed) {
+                  searchLabelBadge = (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                      style={{ background: 'rgba(251, 191, 36, 0.15)', color: 'rgb(251, 191, 36)' }}>
+                      Unsnoozed
+                    </span>
+                  );
+                } else if (isInInbox) {
+                  searchLabelBadge = (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ 
+                      background: 'rgba(59, 130, 246, 0.2)',
+                      color: 'rgb(147, 197, 253)'
+                    }}>
+                      Inbox
+                    </span>
+                  );
+                }
+                
                 return (
                   <SwipeableEmailRow
                     key={thread.id}
@@ -555,21 +733,18 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
                     isSelected={selectedThreadId === thread.id}
                     hasDraft={threadsWithDrafts.has(thread.id)}
                     skipAnimation={skipAnimation}
+                    isInInbox={isInInbox}
+                    isUnsnoozed={isThreadUnsnoozed}
                     onSelect={() => {
                       // For search results, pass them as the folder threads
                       onSelectThread(thread, 'all', searchResults);
                     }}
                     onArchive={(e) => handleArchive(e, thread.id)}
+                    onMoveToInbox={(e) => handleMoveToInbox(e, thread.id)}
+                    onSnooze={(e) => handleOpenSnoozePicker(e, thread)}
                     getSenderNames={getSenderNames}
                     formatDate={formatDate}
-                    labelBadge={isInInbox ? (
-                      <span className="text-xs px-1.5 py-0.5 rounded" style={{ 
-                        background: 'rgba(59, 130, 246, 0.2)',
-                        color: 'rgb(147, 197, 253)'
-                      }}>
-                        Inbox
-                      </span>
-                    ) : undefined}
+                    labelBadge={searchLabelBadge}
                   />
                 );
               })}
@@ -628,20 +803,81 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
           </div>
         ) : (
           <AnimatePresence>
-            {threads.map((thread, index) => (
-              <SwipeableEmailRow
-                key={thread.id}
-                thread={thread}
-                index={index}
-                isSelected={selectedThreadId === thread.id}
-                hasDraft={threadsWithDrafts.has(thread.id)}
-                skipAnimation={skipAnimation}
-                onSelect={() => handleSelect(thread)}
-                onArchive={(e) => handleArchive(e, thread.id)}
-                getSenderNames={getSenderNames}
-                formatDate={formatDate}
-              />
-            ))}
+            {threads.map((thread, index) => {
+              // Determine if thread is in inbox (by folder or by labels)
+              const threadInInbox = currentFolder === 'inbox' || thread.labels?.includes('INBOX');
+              const threadIsSnoozed = currentFolder === 'snoozed';
+              
+              // Check snooze status using Firestore data (more reliable than Gmail labels)
+              const snoozeData = snoozedEmailsData.find(s => s.threadId === thread.id);
+              const isThreadSnoozed = !!snoozeData;
+              const snoozeUntilStr = snoozeData 
+                ? formatSnoozeTime(snoozeData.snoozeUntil.toDate())
+                : undefined;
+              
+              // Check if recently unsnoozed using Firestore data
+              const isThreadUnsnoozed = recentlyUnsnoozedData.some(u => u.threadId === thread.id);
+              
+              // Build label badge for special labels in All Mail/search
+              // Also show "Unsnoozed" in inbox for recently unsnoozed threads
+              let labelBadge = null;
+              if (currentFolder === 'inbox' && isThreadUnsnoozed) {
+                // Show "Unsnoozed" badge in inbox for recently unsnoozed threads
+                labelBadge = (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                    style={{ background: 'rgba(251, 191, 36, 0.15)', color: 'rgb(251, 191, 36)' }}>
+                    Unsnoozed
+                  </span>
+                );
+              } else if (currentFolder === 'all' || searchQuery) {
+                if (isThreadSnoozed) {
+                  // Show Snoozed badge for snoozed threads
+                  labelBadge = (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                      style={{ background: 'rgba(251, 191, 36, 0.15)', color: 'rgb(251, 191, 36)' }}>
+                      Snoozed
+                    </span>
+                  );
+                } else if (isThreadUnsnoozed) {
+                  // Show Unsnoozed badge for recently unsnoozed threads
+                  labelBadge = (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                      style={{ background: 'rgba(251, 191, 36, 0.15)', color: 'rgb(251, 191, 36)' }}>
+                      Unsnoozed
+                    </span>
+                  );
+                } else if (thread.labels?.includes('INBOX')) {
+                  labelBadge = (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                      style={{ background: 'var(--bg-interactive-blue)', color: 'var(--text-accent-blue)' }}>
+                      Inbox
+                    </span>
+                  );
+                }
+              }
+              
+              return (
+                <SwipeableEmailRow
+                  key={thread.id}
+                  thread={thread}
+                  index={index}
+                  isSelected={selectedThreadId === thread.id}
+                  hasDraft={threadsWithDrafts.has(thread.id)}
+                  skipAnimation={skipAnimation}
+                  isInInbox={threadInInbox}
+                  isSnoozed={threadIsSnoozed}
+                  snoozeUntil={snoozeUntilStr}
+                  isUnsnoozed={isThreadUnsnoozed}
+                  onSelect={() => handleSelect(thread)}
+                  onArchive={(e) => handleArchive(e, thread.id)}
+                  onMoveToInbox={(e) => handleMoveToInbox(e, thread.id)}
+                  onSnooze={(e) => handleOpenSnoozePicker(e, thread)}
+                  getSenderNames={getSenderNames}
+                  formatDate={formatDate}
+                  labelBadge={labelBadge}
+                />
+              );
+            })}
           </AnimatePresence>
         )}
         
@@ -665,6 +901,19 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
           </div>
         )}
       </div>
+      
+      {/* Snooze Picker Modal */}
+      <SnoozePicker
+        isOpen={snoozePickerOpen}
+        onClose={() => {
+          if (!snoozeLoading) {
+            setSnoozePickerOpen(false);
+            setSnoozeTargetThread(null);
+          }
+        }}
+        onSelect={handleSnooze}
+        isLoading={snoozeLoading}
+      />
     </div>
   );
 }
@@ -676,8 +925,14 @@ interface SwipeableEmailRowProps {
   isSelected: boolean;
   hasDraft?: boolean; // Whether this thread has a draft
   skipAnimation?: boolean; // Skip entrance animation (for cached data)
+  isInInbox?: boolean; // Whether this thread is currently in inbox
+  isSnoozed?: boolean; // Whether this thread is snoozed
+  snoozeUntil?: string; // When the snooze expires (formatted string)
+  isUnsnoozed?: boolean; // Whether this thread just returned from snooze
   onSelect: () => void;
   onArchive: (e: React.MouseEvent) => void;
+  onMoveToInbox?: (e: React.MouseEvent) => void; // For moving archived emails back to inbox
+  onSnooze?: (e: React.MouseEvent) => void; // For snoozing emails
   getSenderNames: (thread: EmailThread) => string;
   formatDate: (date: string) => string;
   labelBadge?: React.ReactNode; // Optional label badge for search results
@@ -689,8 +944,14 @@ function SwipeableEmailRow({
   isSelected,
   hasDraft,
   skipAnimation,
+  isInInbox = true,
+  isSnoozed,
+  snoozeUntil,
+  isUnsnoozed,
   onSelect,
   onArchive,
+  onMoveToInbox,
+  onSnooze,
   getSenderNames,
   formatDate,
   labelBadge,
@@ -924,28 +1185,71 @@ function SwipeableEmailRow({
             </p>
           </div>
 
-          {/* Archive button (always visible on right) */}
+          {/* Snooze indicator (for snoozed folder) */}
+          {isSnoozed && snoozeUntil && (
+            <div className="flex items-center gap-1 text-xs px-2 py-1 rounded-lg" 
+              style={{ background: 'rgba(251, 191, 36, 0.15)', color: 'rgb(251, 191, 36)' }}>
+              <Clock className="w-3 h-3" />
+              <span>{snoozeUntil}</span>
+            </div>
+          )}
+          
+          {/* Action buttons */}
           <div className="flex items-center gap-1 self-center">
-            <motion.button
-              whileHover={{ scale: 1.1 }}
-              whileTap={{ scale: 0.9 }}
-              onClick={(e) => {
-                e.stopPropagation();
-                // Use the same undo flow for button clicks
-                setSwipeState('pending');
-                undoTimeoutRef.current = setTimeout(() => {
-                  setSwipeState('archived');
-                  setTimeout(() => {
-                    onArchive(e);
-                  }, 300);
-                }, UNDO_DURATION);
-              }}
-              className="p-2 rounded-lg transition-colors hover:bg-green-500/20 hover:text-green-400"
-              style={{ background: 'var(--bg-interactive)', color: 'var(--text-muted)' }}
-              title="Archive"
-            >
-              <Archive className="w-4 h-4" />
-            </motion.button>
+            {/* Snooze button (for inbox emails) */}
+            {isInInbox && onSnooze && (
+              <motion.button
+                whileHover={{ scale: 1.1 }}
+                whileTap={{ scale: 0.9 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSnooze(e);
+                }}
+                className="p-2 rounded-lg transition-colors hover:bg-amber-500/20 hover:text-amber-400"
+                style={{ background: 'var(--bg-interactive)', color: 'var(--text-muted)' }}
+                title="Snooze"
+              >
+                <Clock className="w-4 h-4" />
+              </motion.button>
+            )}
+            
+            {/* Archive button (for inbox emails) */}
+            {isInInbox && !isSnoozed ? (
+              <motion.button
+                whileHover={{ scale: 1.1 }}
+                whileTap={{ scale: 0.9 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // Use the same undo flow for button clicks
+                  setSwipeState('pending');
+                  undoTimeoutRef.current = setTimeout(() => {
+                    setSwipeState('archived');
+                    setTimeout(() => {
+                      onArchive(e);
+                    }, 300);
+                  }, UNDO_DURATION);
+                }}
+                className="p-2 rounded-lg transition-colors hover:bg-green-500/20 hover:text-green-400"
+                style={{ background: 'var(--bg-interactive)', color: 'var(--text-muted)' }}
+                title="Archive"
+              >
+                <Archive className="w-4 h-4" />
+              </motion.button>
+            ) : !isInInbox && onMoveToInbox && (
+              <motion.button
+                whileHover={{ scale: 1.1 }}
+                whileTap={{ scale: 0.9 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMoveToInbox(e);
+                }}
+                className="p-2 rounded-lg transition-colors hover:bg-blue-500/20 hover:text-blue-400"
+                style={{ background: 'var(--bg-interactive)', color: 'var(--text-muted)' }}
+                title="Move to Inbox"
+              >
+                <Inbox className="w-4 h-4" />
+              </motion.button>
+            )}
           </div>
         </div>
       </motion.div>
