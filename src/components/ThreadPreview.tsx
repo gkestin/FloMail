@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, Archive, FolderOpen } from 'lucide-react';
+import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, FolderOpen } from 'lucide-react';
 import { EmailThread, EmailMessage } from '@/types';
 
 // Folder type and display config
@@ -13,7 +13,6 @@ const FOLDER_DISPLAY: Record<MailFolder, { label: string; icon: React.ElementTyp
   sent: { label: 'Sent', icon: Send, color: 'text-green-400 bg-green-500/20' },
   starred: { label: 'Starred', icon: Star, color: 'text-yellow-400 bg-yellow-500/20' },
   all: { label: 'All Mail', icon: FolderOpen, color: 'text-slate-400 bg-slate-500/20' },
-  archive: { label: 'Archive', icon: Archive, color: 'text-purple-400 bg-purple-500/20' },
   drafts: { label: 'Drafts', icon: Mail, color: 'text-red-400 bg-red-500/20' },
 };
 
