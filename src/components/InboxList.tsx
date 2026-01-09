@@ -53,8 +53,11 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
   const [threadsWithDrafts, setThreadsWithDrafts] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false); // Loading next page
+  const [nextPageToken, setNextPageToken] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [currentFolder, setCurrentFolder] = useState<MailFolder>('inbox');
+  const loadMoreRef = useRef<HTMLDivElement>(null); // For intersection observer
   // Always skip entrance animations - they cause visual glitches and delays
   // Keeping this as a constant true instead of removing to minimize code changes
   const skipAnimation = true;
@@ -109,7 +112,7 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
       } else {
         // Use labelIds when available (proper Gmail API approach), 
         // fall back to query for archive (which has no label)
-        const [{ threads: fetchedThreads }, draftThreadIds] = await Promise.all([
+        const [{ threads: fetchedThreads, nextPageToken: pageToken }, draftThreadIds] = await Promise.all([
           fetchInbox(token, { 
             labelIds: config.labelIds,
             query: config.query 
@@ -118,6 +121,7 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
         ]);
         setThreads(fetchedThreads);
         setThreadsWithDrafts(draftThreadIds);
+        setNextPageToken(pageToken); // Store for "load more"
         setDrafts([]);
         
         // Cache the result
@@ -141,6 +145,62 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
   useEffect(() => {
     loadFolder(currentFolder);
   }, [currentFolder, loadFolder]);
+
+  // Load more threads (next page)
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !nextPageToken || FOLDER_CONFIG[currentFolder].isDrafts) return;
+    
+    try {
+      setLoadingMore(true);
+      
+      const token = await getAccessToken();
+      if (!token) return;
+      
+      const config = FOLDER_CONFIG[currentFolder];
+      
+      const { threads: moreThreads, nextPageToken: newPageToken } = await fetchInbox(token, {
+        labelIds: config.labelIds,
+        query: config.query,
+        pageToken: nextPageToken,
+      });
+      
+      // Append to existing threads
+      setThreads(prev => [...prev, ...moreThreads]);
+      setNextPageToken(newPageToken);
+      
+      // Cache the individual threads
+      emailCache.setThreads(moreThreads);
+      
+      // Update folder cache with all threads
+      const allThreads = [...threads, ...moreThreads];
+      emailCache.setFolderData(currentFolder, {
+        threads: allThreads,
+        threadsWithDrafts,
+      });
+    } catch (err) {
+      console.error('Failed to load more:', err);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, nextPageToken, currentFolder, getAccessToken, threads, threadsWithDrafts]);
+
+  // Intersection Observer for infinite scroll
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && nextPageToken && !loadingMore && !loading) {
+          loadMore();
+        }
+      },
+      { threshold: 0.1, rootMargin: '100px' } // Trigger when within 100px of bottom
+    );
+    
+    if (loadMoreRef.current) {
+      observer.observe(loadMoreRef.current);
+    }
+    
+    return () => observer.disconnect();
+  }, [nextPageToken, loadingMore, loading, loadMore]);
 
   const handleFolderChange = (folder: MailFolder) => {
     if (folder !== currentFolder) {
@@ -167,6 +227,8 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
         setLoading(true);
       }
       
+      // Reset pagination for new folder
+      setNextPageToken(undefined);
       setCurrentFolder(folder);
     }
   };
@@ -421,6 +483,26 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
               />
             ))}
           </AnimatePresence>
+        )}
+        
+        {/* Infinite scroll sentinel and loading indicator */}
+        {!loading && threads.length > 0 && (
+          <div ref={loadMoreRef} className="py-4 flex justify-center">
+            {loadingMore ? (
+              <div className="flex items-center gap-2 text-slate-400">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span className="text-sm">Loading more...</span>
+              </div>
+            ) : nextPageToken ? (
+              <div className="text-xs text-slate-500">
+                Scroll for more
+              </div>
+            ) : threads.length > 20 ? (
+              <div className="text-xs text-slate-500">
+                All {threads.length} emails loaded
+              </div>
+            ) : null}
+          </div>
         )}
       </div>
     </div>
