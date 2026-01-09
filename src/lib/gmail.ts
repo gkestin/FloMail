@@ -528,6 +528,10 @@ export async function trashThread(accessToken: string, threadId: string): Promis
   }
 }
 
+// ============================================================================
+// GMAIL DRAFTS API
+// ============================================================================
+
 // Create Gmail draft using mimetext library for proper RFC compliance
 export async function createGmailDraft(accessToken: string, draft: EmailDraft): Promise<string> {
   // Build properly formatted email using mimetext library
@@ -553,5 +557,115 @@ export async function createGmailDraft(accessToken: string, draft: EmailDraft): 
 
   const data = await response.json();
   return data.id;
+}
+
+// Update an existing Gmail draft
+export async function updateGmailDraft(accessToken: string, draftId: string, draft: EmailDraft): Promise<string> {
+  const encodedEmail = buildEmailForGmail(draft);
+
+  const response = await fetch(`${GMAIL_API_BASE}/drafts/${draftId}`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      message: {
+        raw: encodedEmail,
+        threadId: draft.threadId,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to update draft');
+  }
+
+  const data = await response.json();
+  return data.id;
+}
+
+// Delete a Gmail draft
+export async function deleteGmailDraft(accessToken: string, draftId: string): Promise<void> {
+  const response = await fetch(`${GMAIL_API_BASE}/drafts/${draftId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to delete draft');
+  }
+}
+
+// Gmail draft info returned from API
+export interface GmailDraftInfo {
+  id: string;
+  threadId?: string;
+  subject: string;
+  to: string[];
+  snippet: string;
+  date: string;
+}
+
+// List all Gmail drafts
+export async function listGmailDrafts(accessToken: string): Promise<GmailDraftInfo[]> {
+  const response = await fetch(`${GMAIL_API_BASE}/drafts?maxResults=50`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to list drafts');
+  }
+
+  const data = await response.json();
+  const drafts: GmailDraftInfo[] = [];
+
+  // Fetch details for each draft
+  for (const draft of data.drafts || []) {
+    try {
+      const detailResponse = await fetch(`${GMAIL_API_BASE}/drafts/${draft.id}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      
+      if (detailResponse.ok) {
+        const detail = await detailResponse.json();
+        const message = detail.message;
+        const headers = message?.payload?.headers || [];
+        
+        const getHeader = (name: string) => 
+          headers.find((h: any) => h.name.toLowerCase() === name.toLowerCase())?.value || '';
+        
+        const toHeader = getHeader('To');
+        const toAddresses = toHeader ? toHeader.split(',').map((s: string) => s.trim()) : [];
+        
+        drafts.push({
+          id: draft.id,
+          threadId: message?.threadId,
+          subject: getHeader('Subject') || '(No Subject)',
+          to: toAddresses,
+          snippet: message?.snippet || '',
+          date: getHeader('Date') || new Date().toISOString(),
+        });
+      }
+    } catch (e) {
+      console.error('Failed to fetch draft details:', draft.id, e);
+    }
+  }
+
+  return drafts;
+}
+
+// Get threads that have drafts (for showing draft indicator)
+export async function getThreadsWithDrafts(accessToken: string): Promise<Set<string>> {
+  const drafts = await listGmailDrafts(accessToken);
+  const threadIds = new Set<string>();
+  
+  for (const draft of drafts) {
+    if (draft.threadId) {
+      threadIds.add(draft.threadId);
+    }
+  }
+  
+  return threadIds;
 }
 

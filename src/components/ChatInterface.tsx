@@ -57,6 +57,7 @@ interface ChatInterfaceProps {
   threadLabels?: string[]; // Current Gmail labels on the thread
   onDraftCreated?: (draft: EmailDraft) => void;
   onSendEmail?: (draft: EmailDraft) => Promise<void>;
+  onSaveDraft?: (draft: EmailDraft) => Promise<void>;
   onArchive?: () => void;
   onMoveToInbox?: () => void;
   onStar?: () => void;
@@ -90,6 +91,7 @@ export function ChatInterface({
   threadLabels = [],
   onDraftCreated,
   onSendEmail,
+  onSaveDraft,
   onArchive,
   onMoveToInbox,
   onStar,
@@ -102,6 +104,7 @@ export function ChatInterface({
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [currentDraft, setCurrentDraft] = useState<EmailDraft | null>(null);
   const [provider, setProvider] = useState<AIProvider>('anthropic');
   const [model, setModel] = useState<string>('claude-sonnet-4-20250514');
@@ -611,6 +614,36 @@ export function ChatInterface({
     }
   };
 
+  const handleSaveDraft = async (updatedDraft: EmailDraft) => {
+    if (!updatedDraft || !onSaveDraft) return;
+    
+    setIsSaving(true);
+    try {
+      await onSaveDraft(updatedDraft);
+      setCurrentDraft(null);
+      const confirmMessage: UIMessage = {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: '✓ Draft saved',
+        timestamp: new Date(),
+        isSystemMessage: true,
+        systemType: 'archived', // Reuse archived styling (blue)
+      };
+      setMessages(prev => [...prev, confirmMessage]);
+    } catch (error) {
+      console.error('Save draft error:', error);
+      const errorMessage: UIMessage = {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: '⚠️ Failed to save draft. Try again?',
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   // Handle action button clicks from sent confirmation
   const handleSentActionArchiveNext = useCallback(() => {
     // Mark the buttons as handled so they disappear
@@ -920,8 +953,10 @@ export function ChatInterface({
                     draft={message.draft}
                     thread={thread}
                     onSend={handleSendDraft}
+                    onSaveDraft={onSaveDraft ? handleSaveDraft : undefined}
                     onCancel={handleCancelDraft}
                     isSending={isSending}
+                    isSaving={isSaving}
                   />
                 )}
               </div>
@@ -953,8 +988,10 @@ export function ChatInterface({
               draft={currentDraft}
               thread={thread}
               onSend={handleSendDraft}
+              onSaveDraft={onSaveDraft ? handleSaveDraft : undefined}
               onCancel={handleCancelDraft}
               isSending={isSending}
+              isSaving={isSaving}
             />
           </motion.div>
         )}

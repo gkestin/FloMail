@@ -12,14 +12,15 @@ import {
   Send,
   Inbox,
   Star,
-  FolderOpen
+  FolderOpen,
+  FileEdit
 } from 'lucide-react';
 import { EmailThread } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
-import { fetchInbox, archiveThread, markAsRead } from '@/lib/gmail';
+import { fetchInbox, archiveThread, markAsRead, listGmailDrafts, GmailDraftInfo, getThreadsWithDrafts } from '@/lib/gmail';
 
 // Available mail folders/views
-export type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'archive';
+export type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'archive' | 'drafts';
 
 // Gmail API label configuration
 // Note: Gmail uses LABELS not folders. Archive is NOT a label - 
@@ -28,14 +29,15 @@ const FOLDER_CONFIG: Record<MailFolder, {
   label: string; 
   labelIds?: string[];  // Gmail system label IDs (preferred)
   query?: string;       // Fallback search query
-  icon: React.ElementType 
+  icon: React.ElementType;
+  isDrafts?: boolean;   // Special handling for drafts
 }> = {
   inbox: { label: 'Inbox', labelIds: ['INBOX'], icon: Inbox },
+  archive: { label: 'Archive', query: '-in:inbox -in:spam -in:trash', icon: Archive },
   sent: { label: 'Sent', labelIds: ['SENT'], icon: Send },
+  drafts: { label: 'Drafts', labelIds: ['DRAFT'], icon: FileEdit, isDrafts: true },
   starred: { label: 'Starred', labelIds: ['STARRED'], icon: Star },
   all: { label: 'All Mail', icon: Mail }, // No filter = all mail
-  // Archive has no label in Gmail - it's messages NOT in inbox
-  archive: { label: 'Archive', query: '-in:inbox -in:spam -in:trash', icon: Archive },
 };
 
 interface InboxListProps {
@@ -46,6 +48,8 @@ interface InboxListProps {
 export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) {
   const { getAccessToken } = useAuth();
   const [threads, setThreads] = useState<EmailThread[]>([]);
+  const [drafts, setDrafts] = useState<GmailDraftInfo[]>([]);
+  const [threadsWithDrafts, setThreadsWithDrafts] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -66,13 +70,26 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
       }
 
       const config = FOLDER_CONFIG[folder];
-      // Use labelIds when available (proper Gmail API approach), 
-      // fall back to query for archive (which has no label)
-      const { threads: fetchedThreads } = await fetchInbox(token, { 
-        labelIds: config.labelIds,
-        query: config.query 
-      });
-      setThreads(fetchedThreads);
+      
+      // Special handling for drafts folder
+      if (config.isDrafts) {
+        const draftList = await listGmailDrafts(token);
+        setDrafts(draftList);
+        setThreads([]); // Clear threads when viewing drafts
+      } else {
+        // Use labelIds when available (proper Gmail API approach), 
+        // fall back to query for archive (which has no label)
+        const [{ threads: fetchedThreads }, draftThreadIds] = await Promise.all([
+          fetchInbox(token, { 
+            labelIds: config.labelIds,
+            query: config.query 
+          }),
+          getThreadsWithDrafts(token), // Fetch which threads have drafts
+        ]);
+        setThreads(fetchedThreads);
+        setThreadsWithDrafts(draftThreadIds);
+        setDrafts([]); // Clear drafts when viewing other folders
+      }
     } catch (err: any) {
       console.error('Failed to load folder:', err);
       setError(err.message || 'Failed to load emails');
@@ -194,8 +211,8 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
 
   const FolderIcon = FOLDER_CONFIG[currentFolder].icon;
   
-  // Define tab order explicitly: Inbox → Archive → Sent → Starred → All Mail
-  const FOLDER_ORDER: MailFolder[] = ['inbox', 'archive', 'sent', 'starred', 'all'];
+  // Define tab order explicitly: Inbox → Archive → Sent → Drafts → Starred → All Mail
+  const FOLDER_ORDER: MailFolder[] = ['inbox', 'archive', 'sent', 'drafts', 'starred', 'all'];
 
   return (
     <div className="flex flex-col h-full">
@@ -236,7 +253,56 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
 
       {/* Email List */}
       <div className="flex-1 overflow-y-auto">
-        {threads.length === 0 ? (
+        {/* Drafts folder - show drafts */}
+        {currentFolder === 'drafts' ? (
+          drafts.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-center p-4">
+              <FileEdit className="w-12 h-12 text-slate-600 mb-4" />
+              <p className="text-slate-400">No drafts</p>
+            </div>
+          ) : (
+            <div>
+              {drafts.map((draft, index) => (
+                <motion.div
+                  key={draft.id}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: index * 0.02 }}
+                  className="px-4 py-3 border-b border-slate-800/50 hover:bg-slate-800/30 cursor-pointer transition-colors"
+                  onClick={() => {
+                    // TODO: Handle draft editing
+                    console.log('Edit draft:', draft);
+                  }}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 mt-1">
+                      <div className="p-1.5 rounded bg-amber-500/20">
+                        <FileEdit className="w-4 h-4 text-amber-400" />
+                      </div>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-amber-400 font-medium">DRAFT</span>
+                        <span className="text-sm text-slate-400 truncate">
+                          To: {draft.to.length > 0 ? draft.to.join(', ') : '(no recipient)'}
+                        </span>
+                      </div>
+                      <div className="text-sm font-medium text-slate-200 truncate mt-0.5">
+                        {draft.subject || '(No Subject)'}
+                      </div>
+                      <div className="text-xs text-slate-500 truncate mt-0.5">
+                        {draft.snippet}
+                      </div>
+                    </div>
+                    <div className="text-xs text-slate-500 flex-shrink-0">
+                      {formatDate(draft.date)}
+                    </div>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          )
+        ) : threads.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-4">
             <FolderIcon className="w-12 h-12 text-slate-600 mb-4" />
             <p className="text-slate-400">No emails in {FOLDER_CONFIG[currentFolder].label.toLowerCase()}</p>
@@ -249,6 +315,7 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
                 thread={thread}
                 index={index}
                 isSelected={selectedThreadId === thread.id}
+                hasDraft={threadsWithDrafts.has(thread.id)}
                 onSelect={() => handleSelect(thread)}
                 onArchive={(e) => handleArchive(e, thread.id)}
                 getSenderNames={getSenderNames}
@@ -267,6 +334,7 @@ interface SwipeableEmailRowProps {
   thread: EmailThread;
   index: number;
   isSelected: boolean;
+  hasDraft?: boolean; // Whether this thread has a draft
   onSelect: () => void;
   onArchive: (e: React.MouseEvent) => void;
   getSenderNames: (thread: EmailThread) => string;
@@ -277,6 +345,7 @@ function SwipeableEmailRow({
   thread,
   index,
   isSelected,
+  hasDraft,
   onSelect,
   onArchive,
   getSenderNames,
@@ -385,6 +454,12 @@ function SwipeableEmailRow({
                 {thread.messages.length > 1 && (
                   <span className="flex-shrink-0 text-xs text-slate-500 font-medium">
                     ({thread.messages.length})
+                  </span>
+                )}
+                {/* Draft indicator - next to message count */}
+                {hasDraft && (
+                  <span className="flex-shrink-0 text-xs font-semibold text-red-400 bg-red-500/15 px-1.5 py-0.5 rounded">
+                    Draft
                   </span>
                 )}
               </div>

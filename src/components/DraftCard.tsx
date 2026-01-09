@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, X, Loader2, Reply, Forward, Mail, Plus, Paperclip, File, Image, FileText, Trash2, AlertTriangle, ArrowLeftRight } from 'lucide-react';
+import { Send, X, Loader2, Reply, Forward, Mail, Plus, Paperclip, File, Image, FileText, Trash2, AlertTriangle, ArrowLeftRight, Save } from 'lucide-react';
 import { EmailDraft, DraftAttachment, EmailDraftType, EmailThread } from '@/types';
 import { buildReplyQuote } from '@/lib/agent-tools';
 
@@ -10,8 +10,10 @@ interface DraftCardProps {
   draft: EmailDraft;
   thread?: EmailThread; // For building quoted content when switching to reply
   onSend: (updatedDraft: EmailDraft) => void;
+  onSaveDraft?: (updatedDraft: EmailDraft) => Promise<void>; // Save as Gmail draft
   onCancel: () => void;
   isSending?: boolean;
+  isSaving?: boolean;
 }
 
 // Format file size for display
@@ -28,7 +30,7 @@ function getFileIcon(mimeType: string) {
   return File;
 }
 
-export function DraftCard({ draft, thread, onSend, onCancel, isSending }: DraftCardProps) {
+export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSending, isSaving }: DraftCardProps) {
   const [editedDraft, setEditedDraft] = useState<EmailDraft>(draft);
   
   // Count original attachments (from forward)
@@ -483,7 +485,7 @@ export function DraftCard({ draft, thread, onSend, onCancel, isSending }: DraftC
       <div className="flex items-center gap-2 px-3 py-2">
         <button
           onClick={onCancel}
-          disabled={isSending}
+          disabled={isSending || isSaving}
           className="px-3 py-1.5 text-sm text-slate-400 hover:text-red-400 transition-colors disabled:opacity-50"
         >
           Cancel
@@ -492,7 +494,7 @@ export function DraftCard({ draft, thread, onSend, onCancel, isSending }: DraftC
         {/* Add attachment button */}
         <button
           onClick={() => fileInputRef.current?.click()}
-          disabled={isSending}
+          disabled={isSending || isSaving}
           className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-400 hover:text-cyan-400 transition-colors disabled:opacity-50"
           title="Add attachment"
         >
@@ -502,11 +504,30 @@ export function DraftCard({ draft, thread, onSend, onCancel, isSending }: DraftC
         
         <div className="flex-1" />
         
+        {/* Save Draft button */}
+        {onSaveDraft && (
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={() => onSaveDraft(editedDraft)}
+            disabled={isSending || isSaving}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium transition-colors disabled:opacity-50"
+          >
+            {isSaving ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Save className="w-3.5 h-3.5" />
+            )}
+            {isSaving ? 'Saving...' : 'Save Draft'}
+          </motion.button>
+        )}
+        
+        {/* Send button */}
         <motion.button
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
           onClick={handleSendClick}
-          disabled={isSending || editedDraft.to.length === 0}
+          disabled={isSending || isSaving || editedDraft.to.length === 0}
           className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-cyan-500/90 hover:bg-cyan-500 text-white text-sm font-medium transition-colors disabled:opacity-50"
         >
           {isSending ? (

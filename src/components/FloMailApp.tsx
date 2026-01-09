@@ -9,7 +9,7 @@ import { EmailView } from './EmailView';
 import { ChatInterface } from './ChatInterface';
 import { EmailThread, EmailDraft } from '@/types';
 import { Loader2, LogOut, User, MessageSquare, Inbox, ArrowLeft, ChevronLeft, ChevronRight, Archive } from 'lucide-react';
-import { sendEmail, archiveThread, fetchInbox, getAttachment } from '@/lib/gmail';
+import { sendEmail, archiveThread, fetchInbox, getAttachment, createGmailDraft } from '@/lib/gmail';
 import { DraftAttachment } from '@/types';
 
 type View = 'inbox' | 'email' | 'chat';
@@ -112,6 +112,38 @@ export function FloMailApp() {
     }
     
     await sendEmail(token, processedDraft);
+    setCurrentDraft(null);
+  }, [getAccessToken]);
+
+  const handleSaveDraft = useCallback(async (draft: EmailDraft) => {
+    const token = await getAccessToken();
+    if (!token) throw new Error('Not authenticated');
+    
+    // Fetch attachment data for any attachments that are from original messages
+    let processedDraft = draft;
+    if (draft.attachments && draft.attachments.length > 0) {
+      const attachmentsWithData: DraftAttachment[] = await Promise.all(
+        draft.attachments.map(async (att) => {
+          if (att.isFromOriginal && !att.data && att.messageId && att.attachmentId) {
+            try {
+              const data = await getAttachment(token, att.messageId, att.attachmentId);
+              return { ...att, data };
+            } catch (err) {
+              console.error(`Failed to fetch attachment ${att.filename}:`, err);
+              return null;
+            }
+          }
+          return att;
+        })
+      );
+      
+      processedDraft = {
+        ...draft,
+        attachments: attachmentsWithData.filter((att): att is DraftAttachment => att !== null),
+      };
+    }
+    
+    await createGmailDraft(token, processedDraft);
     setCurrentDraft(null);
   }, [getAccessToken]);
 
@@ -478,6 +510,7 @@ export function FloMailApp() {
                 folder={currentMailFolder}
                 onDraftCreated={handleDraftCreated}
                 onSendEmail={handleSendEmail}
+                onSaveDraft={handleSaveDraft}
                 onArchive={handleArchive}
                 onMoveToInbox={handleMoveToInbox}
                 onStar={handleStar}

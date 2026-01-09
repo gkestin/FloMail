@@ -304,27 +304,37 @@ function MessageItem({
 }) {
   const senderName = message.from.name || message.from.email.split('@')[0];
   const senderInitial = senderName.charAt(0).toUpperCase();
+  
+  // Check if this message is a draft
+  const isDraft = message.labels?.includes('DRAFT');
 
   return (
-    <div className={`${isLast ? '' : 'border-b border-slate-800/50'}`}>
+    <div className={`${isLast ? '' : 'border-b border-slate-800/50'} ${isDraft ? 'bg-red-500/5' : ''}`}>
       {/* Message Header - Clickable to expand/collapse */}
       <button
         onClick={onToggle}
         className={`w-full flex items-center gap-3 py-2 hover:bg-white/5 transition-colors text-left ${isExpanded ? 'bg-white/[0.03]' : ''}`}
       >
-        {/* Avatar */}
+        {/* Avatar - Red border for drafts */}
         <div
-          className={`w-8 h-8 rounded-full bg-gradient-to-br ${getAvatarColor(message.from.email)} flex items-center justify-center flex-shrink-0 shadow-sm`}
+          className={`w-8 h-8 rounded-full bg-gradient-to-br ${isDraft ? 'from-red-600 to-red-700 ring-2 ring-red-500/50' : getAvatarColor(message.from.email)} flex items-center justify-center flex-shrink-0 shadow-sm`}
         >
-          <span className="text-white font-medium text-xs">{senderInitial}</span>
+          <span className="text-white font-medium text-xs">{isDraft ? '✎' : senderInitial}</span>
         </div>
 
         {/* Sender & Preview */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className={`font-medium text-sm ${isLast ? 'text-slate-100' : 'text-slate-300'}`}>
-              {senderName}
-            </span>
+            {/* Draft label - single indicator */}
+            {isDraft ? (
+              <span className="text-xs font-semibold text-red-400 bg-red-500/20 px-1.5 py-0.5 rounded">
+                Draft
+              </span>
+            ) : (
+              <span className={`font-medium text-sm ${isLast ? 'text-slate-100' : 'text-slate-300'}`}>
+                {senderName}
+              </span>
+            )}
             <span className="text-xs text-slate-500">
               {formatDate(message.date)}
             </span>
@@ -364,9 +374,14 @@ function MessageItem({
                 )}
               </div>
 
-              {/* Email body - left border accent */}
-              <div className="border-l-2 border-purple-500/25 pl-3 text-sm text-slate-300 whitespace-pre-wrap leading-relaxed">
+              {/* Email body - left border accent (red for drafts) */}
+              <div className={`border-l-2 ${isDraft ? 'border-red-500/40' : 'border-purple-500/25'} pl-3 text-sm ${isDraft ? 'text-slate-400 italic' : 'text-slate-300'} whitespace-pre-wrap leading-relaxed`}>
                 {message.body}
+                {isDraft && (
+                  <div className="mt-2 text-xs text-red-400/70 not-italic">
+                    — This is a draft, not yet sent
+                  </div>
+                )}
               </div>
             </div>
           </motion.div>
