@@ -6,7 +6,7 @@ import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inb
 import { EmailThread, EmailMessage } from '@/types';
 
 // Folder type and display config
-type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'archive' | 'drafts';
+type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'drafts';
 
 const FOLDER_DISPLAY: Record<MailFolder, { label: string; icon: React.ElementType; color: string }> = {
   inbox: { label: 'Inbox', icon: Inbox, color: 'text-blue-400 bg-blue-500/20' },

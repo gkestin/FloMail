@@ -23,11 +23,11 @@ import { fetchInbox, archiveThread, markAsRead, listGmailDrafts, GmailDraftInfo,
 import { emailCache } from '@/lib/email-cache';
 
 // Available mail folders/views
-export type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'archive' | 'drafts';
+export type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'drafts';
 
 // Gmail API label configuration
-// Note: Gmail uses LABELS not folders. Archive is NOT a label - 
-// archived messages are simply messages without the INBOX label.
+// Note: Gmail uses LABELS not folders. "Archive" in Gmail simply means
+// removing the INBOX label - archived emails appear in All Mail.
 const FOLDER_CONFIG: Record<MailFolder, { 
   label: string; 
   labelIds?: string[];  // Gmail system label IDs (preferred)
@@ -36,7 +36,6 @@ const FOLDER_CONFIG: Record<MailFolder, {
   isDrafts?: boolean;   // Special handling for drafts
 }> = {
   inbox: { label: 'Inbox', labelIds: ['INBOX'], icon: Inbox },
-  archive: { label: 'Archive', query: '-in:inbox -in:spam -in:trash', icon: Archive },
   sent: { label: 'Sent', labelIds: ['SENT'], icon: Send },
   drafts: { label: 'Drafts', labelIds: ['DRAFT'], icon: FileEdit, isDrafts: true },
   starred: { label: 'Starred', labelIds: ['STARRED'], icon: Star },
@@ -252,9 +251,9 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
       await archiveThread(token, threadId);
       setThreads((prev) => prev.filter((t) => t.id !== threadId));
       
-      // Update cache: remove from current folder, invalidate archive (it moved there)
+      // Update cache: remove from current folder, invalidate all mail (archived emails appear there)
       emailCache.removeThreadFromFolder(currentFolder, threadId);
-      emailCache.invalidateFolder('archive');
+      emailCache.invalidateFolder('all');
     } catch (err) {
       console.error('Failed to archive:', err);
     }
@@ -383,8 +382,8 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
 
   const FolderIcon = FOLDER_CONFIG[currentFolder].icon;
   
-  // Define tab order explicitly: Inbox → Archive → Sent → Drafts → Starred → All Mail
-  const FOLDER_ORDER: MailFolder[] = ['inbox', 'archive', 'sent', 'drafts', 'starred', 'all'];
+  // Define tab order explicitly: Inbox → Sent → Drafts → Starred → All Mail
+  const FOLDER_ORDER: MailFolder[] = ['inbox', 'sent', 'drafts', 'starred', 'all'];
 
   return (
     <div className="flex flex-col h-full" style={{ background: 'var(--bg-sidebar)' }}>

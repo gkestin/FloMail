@@ -17,7 +17,6 @@ type View = 'inbox' | 'chat';
 // Folder display names
 const FOLDER_LABELS: Record<MailFolder, string> = {
   inbox: 'Inbox',
-  archive: 'Archive',
   sent: 'Sent',
   drafts: 'Drafts',
   starred: 'Starred',
@@ -183,7 +182,7 @@ export function FloMailApp() {
       
       // Update cache: remove from current folder, invalidate archive
       emailCache.removeThreadFromFolder(currentMailFolder, selectedThread.id);
-      emailCache.invalidateFolder('archive');
+      emailCache.invalidateFolder('all');
       
       // Use folder-specific threads for navigation
       const navThreads = folderThreads.length > 0 ? folderThreads : allThreads;
