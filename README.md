@@ -90,11 +90,23 @@ FloMail stores per-thread chat history in Firestore. Each thread has its own cha
 
 ```javascript
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Users can only access their own chat data
+    
+    // User profile document - stores OAuth tokens, email, etc.
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // User's chat history per email thread
     match /users/{userId}/threadChats/{threadId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Deny all other access by default
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }
@@ -102,6 +114,13 @@ service cloud.firestore {
 
 3. **Data Structure:**
 ```
+/users/{userId}
+├── email: string
+├── displayName: string
+├── accessToken: string (Gmail OAuth)
+├── refreshToken: string
+└── photoURL: string
+
 /users/{userId}/threadChats/{gmailThreadId}
 ├── messages: [{ id, role, content, timestamp, draft?, toolCalls? }]
 ├── lastUpdated: Timestamp
