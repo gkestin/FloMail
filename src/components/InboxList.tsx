@@ -41,7 +41,7 @@ const FOLDER_CONFIG: Record<MailFolder, {
 };
 
 interface InboxListProps {
-  onSelectThread: (thread: EmailThread, folder: MailFolder) => void;
+  onSelectThread: (thread: EmailThread, folder: MailFolder, folderThreads: EmailThread[]) => void;
   selectedThreadId?: string;
 }
 
@@ -123,7 +123,8 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
   };
 
   const handleSelect = async (thread: EmailThread) => {
-    onSelectThread(thread, currentFolder);
+    // Pass the current folder's threads so navigation stays within this folder
+    onSelectThread(thread, currentFolder, threads);
     
     if (!thread.isRead) {
       try {

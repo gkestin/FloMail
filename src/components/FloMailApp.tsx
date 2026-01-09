@@ -14,6 +14,16 @@ import { DraftAttachment } from '@/types';
 
 type View = 'inbox' | 'email' | 'chat';
 
+// Folder display names
+const FOLDER_LABELS: Record<MailFolder, string> = {
+  inbox: 'Inbox',
+  archive: 'Archive',
+  sent: 'Sent',
+  drafts: 'Drafts',
+  starred: 'Starred',
+  all: 'All Mail',
+};
+
 export function FloMailApp() {
   const { user, loading, signOut, getAccessToken } = useAuth();
   const [currentView, setCurrentView] = useState<View>('inbox');
@@ -21,6 +31,7 @@ export function FloMailApp() {
   const [currentDraft, setCurrentDraft] = useState<EmailDraft | null>(null);
   const [showProfile, setShowProfile] = useState(false);
   const [allThreads, setAllThreads] = useState<EmailThread[]>([]);
+  const [folderThreads, setFolderThreads] = useState<EmailThread[]>([]); // Threads in current folder for navigation
   const [currentMailFolder, setCurrentMailFolder] = useState<MailFolder>('inbox');
   const currentThreadIndexRef = useRef(0);
   const archiveHandlerRef = useRef<(() => void) | null>(null);
@@ -44,14 +55,26 @@ export function FloMailApp() {
     }
   }, [user, loadThreads]);
 
-  const handleSelectThread = useCallback((thread: EmailThread, folder: MailFolder = 'inbox') => {
+  const handleSelectThread = useCallback((thread: EmailThread, folder: MailFolder = 'inbox', threadsInFolder: EmailThread[] = []) => {
     setSelectedThread(thread);
     setCurrentMailFolder(folder);
-    // Find index in all threads
-    const idx = allThreads.findIndex((t) => t.id === thread.id);
-    if (idx !== -1) {
-      currentThreadIndexRef.current = idx;
+    
+    // Store the folder's threads for navigation
+    if (threadsInFolder.length > 0) {
+      setFolderThreads(threadsInFolder);
+      // Find index in folder threads (not all threads)
+      const idx = threadsInFolder.findIndex((t) => t.id === thread.id);
+      if (idx !== -1) {
+        currentThreadIndexRef.current = idx;
+      }
+    } else {
+      // Fallback: find in allThreads
+      const idx = allThreads.findIndex((t) => t.id === thread.id);
+      if (idx !== -1) {
+        currentThreadIndexRef.current = idx;
+      }
     }
+    
     setCurrentView('chat'); // Go directly to chat for the "flow" experience
   }, [allThreads]);
 
@@ -156,12 +179,16 @@ export function FloMailApp() {
       
       await archiveThread(token, selectedThread.id);
       
-      // Get the next thread BEFORE removing from list
-      const currentIndex = allThreads.findIndex(t => t.id === selectedThread.id);
-      const remainingThreads = allThreads.filter((t) => t.id !== selectedThread.id);
+      // Use folder-specific threads for navigation
+      const navThreads = folderThreads.length > 0 ? folderThreads : allThreads;
       
-      // Remove from local list
-      setAllThreads(remainingThreads);
+      // Get the next thread BEFORE removing from list
+      const currentIndex = navThreads.findIndex(t => t.id === selectedThread.id);
+      const remainingThreads = navThreads.filter((t) => t.id !== selectedThread.id);
+      
+      // Remove from local lists
+      setAllThreads(prev => prev.filter((t) => t.id !== selectedThread.id));
+      setFolderThreads(remainingThreads);
       
       // Navigate to next thread (or previous if at end, or inbox if none left)
       if (remainingThreads.length === 0) {
@@ -179,7 +206,7 @@ export function FloMailApp() {
     } catch (err) {
       console.error('Failed to archive:', err);
     }
-  }, [selectedThread, getAccessToken, allThreads]);
+  }, [selectedThread, getAccessToken, folderThreads, allThreads]);
 
   // Handler for top bar archive button - uses registered handler from ChatInterface for notification
   const handleTopBarArchive = useCallback(() => {
@@ -236,7 +263,10 @@ export function FloMailApp() {
   }, [selectedThread, getAccessToken]);
 
   const handleNextEmail = useCallback(() => {
-    if (allThreads.length === 0) {
+    // Use folder-specific threads for navigation (fall back to allThreads if empty)
+    const navThreads = folderThreads.length > 0 ? folderThreads : allThreads;
+    
+    if (navThreads.length === 0) {
       setSelectedThread(null);
       setCurrentDraft(null);
       setCurrentView('inbox');
@@ -247,29 +277,31 @@ export function FloMailApp() {
     const currentIndex = currentThreadIndexRef.current;
     const nextIndex = currentIndex + 1;
     
-    // If we're past the end, stay at last or wrap to first
-    const nextThread = allThreads[nextIndex] || allThreads[allThreads.length - 1];
+    // If we're past the end, stay at last
+    const nextThread = navThreads[nextIndex] || navThreads[navThreads.length - 1];
     
     if (nextThread && nextThread.id !== selectedThread?.id) {
       setSelectedThread(nextThread);
       setCurrentDraft(null);
-      currentThreadIndexRef.current = nextIndex < allThreads.length ? nextIndex : allThreads.length - 1;
+      currentThreadIndexRef.current = nextIndex < navThreads.length ? nextIndex : navThreads.length - 1;
       setCurrentView('chat');
-    } else if (allThreads.length > 0 && nextIndex >= allThreads.length) {
-      // Already at the last email
-      // Optionally go to inbox or stay
+    } else if (navThreads.length > 0 && nextIndex >= navThreads.length) {
+      // Already at the last email in this folder
     }
-  }, [allThreads, selectedThread]);
+  }, [folderThreads, allThreads, selectedThread]);
 
   const handlePreviousEmail = useCallback(() => {
+    // Use folder-specific threads for navigation (fall back to allThreads if empty)
+    const navThreads = folderThreads.length > 0 ? folderThreads : allThreads;
+    
     const prevIndex = currentThreadIndexRef.current - 1;
     
-    if (prevIndex < 0 || allThreads.length === 0) {
-      // No previous emails, stay where we are or go to inbox
+    if (prevIndex < 0 || navThreads.length === 0) {
+      // No previous emails in this folder, stay where we are
       return;
     }
 
-    const prevThread = allThreads[prevIndex];
+    const prevThread = navThreads[prevIndex];
     
     if (prevThread) {
       setSelectedThread(prevThread);
@@ -277,7 +309,7 @@ export function FloMailApp() {
       currentThreadIndexRef.current = prevIndex;
       setCurrentView('chat');
     }
-  }, [allThreads]);
+  }, [folderThreads, allThreads]);
 
   const handleClearDraft = useCallback(() => {
     setCurrentDraft(null);
@@ -355,25 +387,35 @@ export function FloMailApp() {
         <div className="flex items-center gap-1">
           {currentView !== 'inbox' ? (
             <>
-              {/* Back to inbox */}
+              {/* Back to folder list */}
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={handleGoToInbox}
                 className="p-2 -ml-2 rounded-lg hover:bg-slate-800 transition-colors"
-                title="Back to inbox"
+                title="Back to folder list"
               >
-                <Inbox className="w-5 h-5 text-slate-300" />
+                <ArrowLeft className="w-5 h-5 text-slate-300" />
               </motion.button>
               
+              {/* Current folder indicator */}
+              <div className="flex items-center gap-1.5 px-2 py-1 bg-slate-800/60 rounded-lg">
+                <span className="text-xs font-medium text-purple-400">
+                  {FOLDER_LABELS[currentMailFolder]}
+                </span>
+                <span className="text-xs text-slate-500">
+                  {currentThreadIndexRef.current + 1}/{folderThreads.length || allThreads.length}
+                </span>
+              </div>
+              
               {/* Previous/Next navigation - clear labeled buttons */}
-              <div className="flex items-center gap-1 ml-2">
+              <div className="flex items-center gap-1 ml-1">
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handlePreviousEmail}
-                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800/60 hover:bg-slate-700 transition-colors text-slate-400 hover:text-slate-200"
-                  title="Previous email"
+                  className="flex items-center gap-1 px-2 py-1.5 rounded-lg bg-slate-800/60 hover:bg-slate-700 transition-colors text-slate-400 hover:text-slate-200"
+                  title={`Previous in ${FOLDER_LABELS[currentMailFolder]}`}
                 >
                   <ChevronLeft className="w-4 h-4" />
                   <span className="text-xs font-medium">Prev</span>
@@ -382,8 +424,8 @@ export function FloMailApp() {
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handleNextEmail}
-                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800/60 hover:bg-slate-700 transition-colors text-slate-400 hover:text-slate-200"
-                  title="Next email"
+                  className="flex items-center gap-1 px-2 py-1.5 rounded-lg bg-slate-800/60 hover:bg-slate-700 transition-colors text-slate-400 hover:text-slate-200"
+                  title={`Next in ${FOLDER_LABELS[currentMailFolder]}`}
                 >
                   <span className="text-xs font-medium">Next</span>
                   <ChevronRight className="w-4 h-4" />
