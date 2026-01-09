@@ -14,6 +14,7 @@ interface DraftCardProps {
   onCancel: () => void;
   isSending?: boolean;
   isSaving?: boolean;
+  isStreaming?: boolean; // Content is still being streamed in
 }
 
 // Format file size for display
@@ -30,7 +31,7 @@ function getFileIcon(mimeType: string) {
   return File;
 }
 
-export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSending, isSaving }: DraftCardProps) {
+export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSending, isSaving, isStreaming }: DraftCardProps) {
   const [editedDraft, setEditedDraft] = useState<EmailDraft>(draft);
   
   // Count original attachments (from forward)
@@ -338,14 +339,26 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSend
         <div className="border-t border-cyan-500/10 my-2"></div>
 
         {/* Body - one scrollable container, textareas expand */}
-        <div ref={containerRef} className="max-h-[60vh] overflow-y-auto">
+        <div ref={containerRef} className="max-h-[60vh] overflow-y-auto relative">
+          {/* Streaming indicator overlay */}
+          {isStreaming && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="absolute bottom-0 left-0 right-0 flex items-center gap-2 py-2 px-1 bg-gradient-to-t from-slate-800/90 to-transparent"
+            >
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+              <span className="text-xs text-cyan-400">Writing draft...</span>
+            </motion.div>
+          )}
+          
           <textarea
             ref={bodyRef}
             value={editedDraft.body}
             onChange={(e) => setEditedDraft({ ...editedDraft, body: e.target.value })}
-            placeholder="Write your message..."
-            disabled={isSending}
-            className="w-full bg-transparent text-slate-300 text-sm leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden"
+            placeholder={isStreaming ? "AI is drafting..." : "Write your message..."}
+            disabled={isSending || isStreaming}
+            className={`w-full bg-transparent text-slate-300 text-sm leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden ${isStreaming ? 'animate-pulse' : ''}`}
           />
 
           {/* Quoted content - different display for reply vs forward */}
@@ -512,13 +525,14 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSend
             onClick={() => onSaveDraft(editedDraft)}
             disabled={isSending || isSaving}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium transition-colors disabled:opacity-50"
+            title="Save as Gmail draft"
           >
             {isSaving ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
             ) : (
               <Save className="w-3.5 h-3.5" />
             )}
-            {isSaving ? 'Saving...' : 'Save Draft'}
+            {isSaving ? 'Saving...' : 'Save'}
           </motion.button>
         )}
         

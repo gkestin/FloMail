@@ -2,6 +2,24 @@ import Anthropic from '@anthropic-ai/sdk';
 import { EmailThread } from '@/types';
 import { getAnthropicTools, parseToolCalls, ToolCall } from './agent-tools';
 
+// Status messages for different tool calls
+const TOOL_STATUS_MESSAGES: Record<string, string> = {
+  'prepare_draft': '✍️ Drafting email...',
+  'send_email': '📤 Sending email...',
+  'archive_email': '📥 Archiving...',
+  'move_to_inbox': '📤 Moving to inbox...',
+  'star_email': '⭐ Starring...',
+  'unstar_email': '☆ Unstarring...',
+  'go_to_next_email': '➡️ Moving to next...',
+  'go_to_inbox': '🏠 Going to inbox...',
+};
+
+// Stream event type
+interface StreamEvent {
+  type: 'status' | 'text' | 'tool_start' | 'tool_args' | 'tool_done' | 'done' | 'error';
+  data: any;
+}
+
 // Initialize Anthropic client (server-side only)
 function getAnthropicClient() {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -29,7 +47,7 @@ const FLOMAIL_AGENT_PROMPT = `You are FloMail, a voice-first email assistant age
   * type: "reply" (responding to current email), "forward" (forwarding to someone), or "new" (new email)
   * to: recipient email(s)
   * subject: Use "Re: [subject]" for replies, "Fwd: [subject]" for forwards
-  * body: The email content
+  * body: The new message content only. For forwards, just include the user's note (e.g. "FYI, see below") - the original message is added automatically.
 - send_email: Call when user confirms they want to send.
 - archive_email: Remove from inbox. ONLY works if email is currently in inbox. If viewing archived email, tell user it's already archived.
 - move_to_inbox: Move archived email back to inbox. ONLY use when viewing archived email.
@@ -209,5 +227,132 @@ export async function agentChatClaude(
       };
     }
     throw error;
+  }
+}
+
+// Helper to try parsing partial JSON (for streaming tool arguments)
+function tryParsePartialJSON(str: string): Record<string, any> | null {
+  const result: Record<string, any> = {};
+  
+  // Match "key": "value" patterns
+  const stringPattern = /"(\w+)":\s*"([^"]*)"?/g;
+  let match;
+  while ((match = stringPattern.exec(str)) !== null) {
+    result[match[1]] = match[2];
+  }
+  
+  // Match "key": [...] patterns for arrays
+  const arrayPattern = /"(\w+)":\s*\[([^\]]*)\]?/g;
+  while ((match = arrayPattern.exec(str)) !== null) {
+    try {
+      const arrayContent = match[2];
+      const items = arrayContent.match(/"([^"]*)"/g);
+      if (items) {
+        result[match[1]] = items.map(item => item.replace(/"/g, ''));
+      }
+    } catch {
+      // Ignore parse errors
+    }
+  }
+  
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+// Streaming agent chat with tool calling
+export async function* agentChatStreamClaude(
+  messages: { role: 'user' | 'assistant'; content: string }[],
+  thread?: EmailThread,
+  model: ClaudeModel = 'claude-sonnet-4-20250514',
+  folder: string = 'inbox'
+): AsyncGenerator<StreamEvent> {
+  const anthropic = getAnthropicClient();
+
+  let systemPrompt = FLOMAIL_AGENT_PROMPT;
+  if (thread) {
+    systemPrompt += `\n\n${buildEmailContext(thread, folder)}`;
+  }
+
+  try {
+    const stream = await anthropic.messages.stream({
+      model,
+      max_tokens: 2000,
+      system: systemPrompt,
+      tools: getAnthropicTools() as any,
+      messages: messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      })),
+    });
+
+    let currentContent = '';
+    let currentToolName = '';
+    let currentToolInput = '';
+    let toolAnnounced = false;
+
+    for await (const event of stream) {
+      // Handle different event types from Anthropic's streaming API
+      if (event.type === 'content_block_start') {
+        const block = (event as any).content_block;
+        
+        if (block?.type === 'tool_use') {
+          currentToolName = block.name;
+          currentToolInput = '';
+          toolAnnounced = false;
+          
+          // Announce tool start with status message
+          const statusMessage = TOOL_STATUS_MESSAGES[currentToolName] || `Processing ${currentToolName}...`;
+          yield { type: 'status', data: { message: statusMessage, tool: currentToolName } };
+          yield { type: 'tool_start', data: { name: currentToolName, id: block.id } };
+          toolAnnounced = true;
+        }
+      } else if (event.type === 'content_block_delta') {
+        const delta = (event as any).delta;
+        
+        // Handle text delta
+        if (delta?.type === 'text_delta' && delta.text) {
+          currentContent += delta.text;
+          yield { type: 'text', data: { token: delta.text, fullContent: currentContent } };
+        }
+        
+        // Handle tool input delta
+        if (delta?.type === 'input_json_delta' && delta.partial_json) {
+          currentToolInput += delta.partial_json;
+          
+          // Try to parse partial JSON for draft preview
+          if (currentToolName === 'prepare_draft') {
+            const partialArgs = tryParsePartialJSON(currentToolInput);
+            if (partialArgs) {
+              yield { type: 'tool_args', data: { name: currentToolName, partial: partialArgs } };
+            }
+          }
+        }
+      } else if (event.type === 'content_block_stop') {
+        // Tool call completed
+        if (currentToolName && currentToolInput) {
+          try {
+            const args = JSON.parse(currentToolInput);
+            yield { type: 'tool_done', data: { name: currentToolName, arguments: args } };
+          } catch (e) {
+            console.error(`Failed to parse tool arguments for ${currentToolName}:`, e);
+          }
+          currentToolName = '';
+          currentToolInput = '';
+        }
+      }
+    }
+
+  } catch (error: any) {
+    console.error('[Claude Stream] Error:', error.message);
+    
+    // Try fallback model
+    if (error.message?.includes('model') || error.status === 404) {
+      console.log('[Claude Stream] Trying fallback model: claude-3-5-sonnet-20241022');
+      yield { type: 'status', data: { message: 'Switching to fallback model...' } };
+      
+      yield* agentChatStreamClaude(messages, thread, 'claude-3-5-sonnet-20241022', folder);
+      return;
+    }
+    
+    yield { type: 'error', data: { message: error.message } };
   }
 }

@@ -74,6 +74,7 @@ interface UIMessage extends ChatMessage {
   isTranscribing?: boolean;
   isEditing?: boolean;
   isCancelled?: boolean;
+  isStreaming?: boolean; // Content is still being streamed
   draftCancelled?: boolean; // Draft was cancelled but kept for history
   isSystemMessage?: boolean; // For action confirmations (archive, navigate, etc.)
   systemType?: 'archived' | 'sent' | 'navigated' | 'context'; // Type of system message
@@ -103,9 +104,11 @@ export function ChatInterface({
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingStatus, setLoadingStatus] = useState<string>('Thinking...');
   const [isSending, setIsSending] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [currentDraft, setCurrentDraft] = useState<EmailDraft | null>(null);
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [provider, setProvider] = useState<AIProvider>('anthropic');
   const [model, setModel] = useState<string>('claude-sonnet-4-20250514');
   const [showSettings, setShowSettings] = useState(false);
@@ -311,10 +314,15 @@ export function ChatInterface({
     }
   }, [thread, onDraftCreated, archiveWithNotification, onMoveToInbox, onStar, onUnstar, onNextEmail, onGoToInbox]);
 
-  // Send message to AI
+  // Send message to AI with streaming
   const sendToAI = useCallback(async (messageId: string, content: string) => {
     setIsLoading(true);
+    setLoadingStatus('Thinking...');
     abortControllerRef.current = new AbortController();
+
+    // Create a placeholder for the streaming assistant message
+    const assistantMessageId = (Date.now() + 1).toString();
+    setStreamingMessageId(assistantMessageId);
 
     try {
       // Get all messages for context (excluding cancelled ones)
@@ -325,7 +333,7 @@ export function ChatInterface({
       // Add the current message
       contextMessages.push({ role: 'user' as const, content });
 
-      const response = await fetch('/api/ai/chat', {
+      const response = await fetch('/api/ai/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -342,46 +350,186 @@ export function ChatInterface({
         throw new Error('Failed to get response');
       }
 
-      const data = await response.json();
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('No response body');
 
-      // Handle tool calls
-      if (data.toolCalls && data.toolCalls.length > 0) {
-        handleToolCalls(data.toolCalls);
+      const decoder = new TextDecoder();
+      let streamedContent = '';
+      let toolCalls: ToolCall[] = [];
+      let hasAddedMessage = false;
+      let streamingDraft: EmailDraft | null = null;
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          
+          try {
+            const event = JSON.parse(line.slice(6));
+            
+            switch (event.type) {
+              case 'status':
+                // Update loading status message
+                setLoadingStatus(event.data.message);
+                break;
+
+              case 'text':
+                // Stream text content
+                streamedContent = event.data.fullContent;
+                
+                // Add or update the message
+                if (!hasAddedMessage) {
+                  hasAddedMessage = true;
+                  setIsLoading(false); // Hide loading indicator once text starts
+                  const newMessage: UIMessage = {
+                    id: assistantMessageId,
+                    role: 'assistant',
+                    content: streamedContent,
+                    timestamp: new Date(),
+                    isStreaming: true,
+                  };
+                  setMessages(prev => [...prev, newMessage]);
+                } else {
+                  // Update existing message with new content
+                  setMessages(prev => prev.map(m => 
+                    m.id === assistantMessageId 
+                      ? { ...m, content: streamedContent }
+                      : m
+                  ));
+                }
+                break;
+
+              case 'tool_start':
+                // Tool call started - already showing status via 'status' event
+                break;
+
+              case 'tool_args':
+                // Streaming tool arguments - update draft preview
+                if (event.data.name === 'prepare_draft' && event.data.partial) {
+                  const partial = event.data.partial;
+                  streamingDraft = {
+                    to: partial.to ? (Array.isArray(partial.to) ? partial.to : [partial.to]) : [],
+                    subject: partial.subject || '',
+                    body: partial.body || '',
+                    type: partial.type || 'reply',
+                    threadId: thread?.id,
+                  };
+                  
+                  // Show/update the streaming draft in the message
+                  if (!hasAddedMessage) {
+                    hasAddedMessage = true;
+                    setIsLoading(false);
+                    const newMessage: UIMessage = {
+                      id: assistantMessageId,
+                      role: 'assistant',
+                      content: "Here's a draft for you:",
+                      timestamp: new Date(),
+                      isStreaming: true,
+                      draft: streamingDraft,
+                    };
+                    setMessages(prev => [...prev, newMessage]);
+                  } else {
+                    setMessages(prev => prev.map(m => 
+                      m.id === assistantMessageId 
+                        ? { ...m, draft: streamingDraft, content: m.content || "Here's a draft for you:" }
+                        : m
+                    ));
+                  }
+                }
+                break;
+
+              case 'tool_done':
+                // Tool call completed with full arguments
+                const completedTool: ToolCall = {
+                  name: event.data.name,
+                  arguments: event.data.arguments,
+                };
+                toolCalls.push(completedTool);
+                
+                // Handle tool calls
+                handleToolCalls([completedTool]);
+                
+                // If it's a draft, build the full draft
+                if (event.data.name === 'prepare_draft') {
+                  const finalDraft = buildDraftFromToolCall(event.data.arguments, thread);
+                  setCurrentDraft(finalDraft);
+                  onDraftCreated?.(finalDraft);
+                  
+                  // Update message with final draft
+                  if (!hasAddedMessage) {
+                    hasAddedMessage = true;
+                    setIsLoading(false);
+                    const newMessage: UIMessage = {
+                      id: assistantMessageId,
+                      role: 'assistant',
+                      content: "Here's a draft for you:",
+                      timestamp: new Date(),
+                      toolCalls: toolCalls,
+                      draft: finalDraft,
+                    };
+                    setMessages(prev => [...prev, newMessage]);
+                  } else {
+                    setMessages(prev => prev.map(m => 
+                      m.id === assistantMessageId 
+                        ? { 
+                            ...m, 
+                            draft: finalDraft, 
+                            toolCalls: toolCalls,
+                            isStreaming: false,
+                            content: m.content || "Here's a draft for you:",
+                          }
+                        : m
+                    ));
+                  }
+                }
+                break;
+
+              case 'done':
+                // Stream completed
+                setMessages(prev => prev.map(m => 
+                  m.id === assistantMessageId 
+                    ? { ...m, isStreaming: false, toolCalls: toolCalls.length > 0 ? toolCalls : undefined }
+                    : m
+                ));
+                
+                // If no message was added yet (edge case), add an empty one
+                if (!hasAddedMessage && toolCalls.length === 0) {
+                  const newMessage: UIMessage = {
+                    id: assistantMessageId,
+                    role: 'assistant',
+                    content: "I'm here to help! You can ask me to summarize this email, draft a reply, archive it, or move to the next email.",
+                    timestamp: new Date(),
+                  };
+                  setMessages(prev => [...prev, newMessage]);
+                }
+                break;
+
+              case 'error':
+                throw new Error(event.data.message);
+            }
+          } catch (parseError) {
+            // Skip malformed SSE lines (but not real errors)
+            if (parseError instanceof SyntaxError) continue;
+            throw parseError;
+          }
+        }
       }
-
-      // Check for prepare_draft in tool calls
-      const draftToolCall = data.toolCalls?.find((tc: ToolCall) => tc.name === 'prepare_draft');
-      const messageDraft = draftToolCall ? buildDraftFromToolCall(draftToolCall.arguments, thread) : undefined;
-
-      // Generate response content
-      let responseContent = data.content || '';
-      if (!responseContent && data.toolCalls && data.toolCalls.length > 0) {
-        const toolNames = data.toolCalls.map((tc: ToolCall) => tc.name);
-        if (toolNames.includes('prepare_draft')) responseContent = "Here's a draft for you:";
-        else if (toolNames.includes('archive_email')) responseContent = "Archived!";
-        else if (toolNames.includes('go_to_next_email')) responseContent = "Moving to next...";
-        else if (toolNames.includes('go_to_inbox')) responseContent = "Back to inbox...";
-        else if (toolNames.includes('send_email')) responseContent = "Sending...";
-      }
-
-      const assistantMessage: UIMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: responseContent,
-        timestamp: new Date(),
-        toolCalls: data.toolCalls,
-        draft: messageDraft,
-      };
-
-      setMessages(prev => [...prev, assistantMessage]);
     } catch (error: any) {
       if (error.name === 'AbortError') {
-        // Request was cancelled - don't show error
+        // Request was cancelled
+        setMessages(prev => prev.filter(m => m.id !== assistantMessageId));
         return;
       }
       console.error('Chat error:', error);
       const errorMessage: UIMessage = {
-        id: (Date.now() + 1).toString(),
+        id: (Date.now() + 2).toString(),
         role: 'assistant',
         content: 'Sorry, I encountered an error. Please try again.',
         timestamp: new Date(),
@@ -389,9 +537,11 @@ export function ChatInterface({
       setMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
+      setLoadingStatus('Thinking...');
+      setStreamingMessageId(null);
       abortControllerRef.current = null;
     }
-  }, [messages, thread, provider, model, handleToolCalls]);
+  }, [messages, thread, folder, provider, model, handleToolCalls, onDraftCreated]);
 
   // Send a text message
   const sendMessage = useCallback(async (content: string) => {
@@ -957,6 +1107,7 @@ export function ChatInterface({
                     onCancel={handleCancelDraft}
                     isSending={isSending}
                     isSaving={isSaving}
+                    isStreaming={message.isStreaming}
                   />
                 )}
               </div>
@@ -1005,7 +1156,7 @@ export function ChatInterface({
           >
             <div className="bg-slate-800/80 rounded-2xl px-4 py-3 flex items-center gap-3">
               <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
-              <span className="text-sm text-slate-400">Thinking...</span>
+              <span className="text-sm text-slate-400">{loadingStatus}</span>
               <button
                 onClick={cancelAIResponse}
                 className="p-1 rounded hover:bg-slate-700 transition-colors"

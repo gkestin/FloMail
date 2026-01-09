@@ -79,6 +79,10 @@ ANTHROPIC_API_KEY=...
 ### Google Cloud Console
 - OAuth consent screen configured
 - OAuth 2.0 credentials with authorized origins/redirects
+- **⚠️ Currently in TESTING mode** (not Production)
+  - Only test users added to the OAuth consent screen can sign in
+  - Add test user emails in: Google Cloud Console → APIs & Services → OAuth consent screen → Test users
+  - To go to Production: Submit for verification (requires privacy policy, etc.)
 
 ## Setup (from clone)
 

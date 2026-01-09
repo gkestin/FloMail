@@ -46,7 +46,7 @@ export const AGENT_TOOLS: AgentTool[] = [
         },
         body: {
           type: 'string',
-          description: 'The full email body text',
+          description: 'The email body text. For forwards, ONLY include the new message (e.g. "FYI, see below") - the forwarded content is added automatically. Do NOT include "---------- Forwarded message ----------" or the original message text.',
         },
       },
       required: ['type', 'to', 'subject', 'body'],
@@ -322,13 +322,22 @@ export function buildDraftFromToolCall(
   }
   // For 'new', no threading or quoted content
   
+  // Sanitize body - remove any forwarded message headers the AI might have included
+  // (we add these automatically via quotedContent)
+  let body = args.body || '';
+  if (draftType === 'forward') {
+    // Remove forwarded message header patterns that the AI might have included
+    const forwardHeaderPattern = /\n*-{5,}\s*Forwarded message\s*-{5,}[\s\S]*$/i;
+    body = body.replace(forwardHeaderPattern, '').trim();
+  }
+  
   return {
     threadId,
     to: args.to?.split(',').map((e: string) => e.trim()) || [],
     cc: args.cc?.split(',').map((e: string) => e.trim()).filter(Boolean),
     bcc: args.bcc?.split(',').map((e: string) => e.trim()).filter(Boolean),
     subject: args.subject || '',
-    body: args.body || '',
+    body,
     quotedContent,
     type: draftType,
     inReplyTo,
