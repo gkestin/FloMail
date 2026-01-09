@@ -15,11 +15,11 @@
   --border-default: #404040;  /* Default borders */
   --border-strong: #525252;   /* Emphasized borders */
   
-  /* Text hierarchy - HIGHER CONTRAST for readability */
-  --text-primary: #ececec;    /* Primary text - high contrast (white) */
-  --text-secondary: #c5c5c5;  /* Secondary/read text - very light gray, still readable */
-  --text-muted: #8e8e8e;      /* Muted text - timestamps, hints */
-  --text-disabled: #5a5a5a;   /* Disabled state */
+  /* Text hierarchy - MAXIMUM CONTRAST for readability */
+  --text-primary: #ffffff;    /* Primary text - pure white for maximum pop */
+  --text-secondary: #d9d9d9;  /* Secondary text - very light gray, still high contrast */
+  --text-muted: #9a9a9a;      /* Muted text - timestamps, hints */
+  --text-disabled: #666666;   /* Disabled state */
   
   /* Accent colors - used sparingly for interactive elements */
   --accent-purple: #a855f7;
