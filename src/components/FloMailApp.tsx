@@ -5,15 +5,14 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/contexts/AuthContext';
 import { LoginScreen } from './LoginScreen';
 import { InboxList, MailFolder } from './InboxList';
-import { EmailView } from './EmailView';
 import { ChatInterface } from './ChatInterface';
 import { EmailThread, EmailDraft } from '@/types';
-import { Loader2, LogOut, User, MessageSquare, Inbox, ArrowLeft, ChevronLeft, ChevronRight, Archive } from 'lucide-react';
+import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive } from 'lucide-react';
 import { sendEmail, archiveThread, fetchInbox, getAttachment, createGmailDraft } from '@/lib/gmail';
 import { emailCache } from '@/lib/email-cache';
 import { DraftAttachment } from '@/types';
 
-type View = 'inbox' | 'email' | 'chat';
+type View = 'inbox' | 'chat';
 
 // Folder display names
 const FOLDER_LABELS: Record<MailFolder, string> = {
@@ -80,14 +79,10 @@ export function FloMailApp() {
   }, [allThreads]);
 
   const handleBack = useCallback(() => {
-    if (currentView === 'chat') {
-      setCurrentView('email');
-    } else {
-      setSelectedThread(null);
-      setCurrentDraft(null);
-      setCurrentView('inbox');
-    }
-  }, [currentView]);
+    setSelectedThread(null);
+    setCurrentDraft(null);
+    setCurrentView('inbox');
+  }, []);
 
   const handleGoToInbox = useCallback(() => {
     setSelectedThread(null);
@@ -96,9 +91,6 @@ export function FloMailApp() {
     loadThreads(); // Refresh
   }, [loadThreads]);
 
-  const handleOpenChat = useCallback(() => {
-    setCurrentView('chat');
-  }, []);
 
   const handleDraftCreated = useCallback((draft: EmailDraft) => {
     setCurrentDraft(draft);
@@ -325,15 +317,11 @@ export function FloMailApp() {
     }
   }, [folderThreads, allThreads]);
 
-  const handleClearDraft = useCallback(() => {
-    setCurrentDraft(null);
-  }, []);
-
   // Loading state
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-purple-400" />
+      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--bg-base)' }}>
+        <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
       </div>
     );
   }
@@ -345,7 +333,7 @@ export function FloMailApp() {
 
   // Main app
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+    <div className="min-h-screen flex flex-col" style={{ background: 'var(--bg-base)', color: 'var(--text-primary)' }}>
       {/* Profile dropdown */}
       <AnimatePresence>
         {showProfile && (
@@ -361,9 +349,10 @@ export function FloMailApp() {
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
-              className="absolute top-16 right-4 z-50 w-64 bg-slate-800 rounded-xl border border-slate-700 shadow-2xl overflow-hidden"
+              className="absolute top-16 right-4 z-50 w-64 rounded-xl shadow-2xl overflow-hidden"
+              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)' }}
             >
-              <div className="p-4 border-b border-slate-700">
+              <div className="p-4" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
                 <div className="flex items-center gap-3">
                   {user.photoURL ? (
                     <img
@@ -377,18 +366,19 @@ export function FloMailApp() {
                     </div>
                   )}
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium text-slate-200 truncate">
+                    <p className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>
                       {user.displayName || 'User'}
                     </p>
-                    <p className="text-sm text-slate-400 truncate">{user.email}</p>
+                    <p className="text-sm truncate" style={{ color: 'var(--text-secondary)' }}>{user.email}</p>
                   </div>
                 </div>
               </div>
               <button
                 onClick={signOut}
-                className="w-full flex items-center gap-3 px-4 py-3 text-left text-slate-300 hover:bg-slate-700/50 transition-colors"
+                className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors hover:opacity-80"
+                style={{ color: 'var(--text-secondary)' }}
               >
-                <LogOut className="w-5 h-5 text-slate-400" />
+                <LogOut className="w-5 h-5" style={{ color: 'var(--text-muted)' }} />
                 Sign out
               </button>
             </motion.div>
@@ -397,7 +387,7 @@ export function FloMailApp() {
       </AnimatePresence>
 
       {/* Top bar */}
-      <div className="flex items-center justify-between px-4 py-3 bg-slate-900/80 backdrop-blur-lg border-b border-slate-800/50 safe-top">
+      <div className="flex items-center justify-between px-4 py-3 safe-top" style={{ background: 'var(--bg-sidebar)', borderBottom: '1px solid var(--border-subtle)' }}>
         <div className="flex items-center gap-1">
           {currentView !== 'inbox' ? (
             <>
@@ -406,21 +396,29 @@ export function FloMailApp() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={handleGoToInbox}
-                className="p-2 -ml-2 rounded-lg hover:bg-slate-800 transition-colors"
+                className="p-2 -ml-2 rounded-lg transition-colors"
+                style={{ color: 'var(--text-secondary)' }}
                 title="Back to folder list"
               >
-                <ArrowLeft className="w-5 h-5 text-slate-300" />
+                <ArrowLeft className="w-5 h-5" />
               </motion.button>
               
-              {/* Current folder indicator */}
-              <div className="flex items-center gap-1.5 px-2 py-1 bg-slate-800/60 rounded-lg">
-                <span className="text-xs font-medium text-purple-400">
+              {/* Current folder indicator - clickable to go back */}
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={handleGoToInbox}
+                className="flex items-center gap-1.5 px-2 py-1 rounded-lg cursor-pointer hover:bg-blue-500/10 transition-colors"
+                style={{ background: 'var(--bg-interactive)' }}
+                title={`Back to ${FOLDER_LABELS[currentMailFolder]}`}
+              >
+                <span className="text-xs font-medium text-blue-400">
                   {FOLDER_LABELS[currentMailFolder]}
                 </span>
-                <span className="text-xs text-slate-500">
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
                   {currentThreadIndexRef.current + 1}/{folderThreads.length || allThreads.length}
                 </span>
-              </div>
+              </motion.button>
               
               {/* Previous/Next navigation - clear labeled buttons */}
               <div className="flex items-center gap-1 ml-1">
@@ -428,7 +426,8 @@ export function FloMailApp() {
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handlePreviousEmail}
-                  className="flex items-center gap-1 px-2 py-1.5 rounded-lg bg-slate-800/60 hover:bg-slate-700 transition-colors text-slate-400 hover:text-slate-200"
+                  className="flex items-center gap-1 px-2 py-1.5 rounded-lg transition-colors"
+                  style={{ background: 'var(--bg-interactive)', color: 'var(--text-secondary)' }}
                   title={`Previous in ${FOLDER_LABELS[currentMailFolder]}`}
                 >
                   <ChevronLeft className="w-4 h-4" />
@@ -438,7 +437,8 @@ export function FloMailApp() {
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handleNextEmail}
-                  className="flex items-center gap-1 px-2 py-1.5 rounded-lg bg-slate-800/60 hover:bg-slate-700 transition-colors text-slate-400 hover:text-slate-200"
+                  className="flex items-center gap-1 px-2 py-1.5 rounded-lg transition-colors"
+                  style={{ background: 'var(--bg-interactive)', color: 'var(--text-secondary)' }}
                   title={`Next in ${FOLDER_LABELS[currentMailFolder]}`}
                 >
                   <span className="text-xs font-medium">Next</span>
@@ -451,10 +451,11 @@ export function FloMailApp() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={handleTopBarArchive}
-                className="p-2 ml-1 rounded-lg hover:bg-slate-800 hover:text-blue-400 transition-colors"
+                className="p-2 ml-1 rounded-lg transition-colors hover:text-blue-400"
+                style={{ color: 'var(--text-muted)' }}
                 title="Archive"
               >
-                <Archive className="w-4 h-4 text-slate-400" />
+                <Archive className="w-4 h-4" />
               </motion.button>
             </>
           ) : (
@@ -462,40 +463,12 @@ export function FloMailApp() {
               <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-cyan-500 flex items-center justify-center">
                 <span className="text-white font-bold text-sm">F</span>
               </div>
-              <span className="font-semibold text-slate-200 ml-2">FloMail</span>
+              <span className="font-semibold ml-2" style={{ color: 'var(--text-primary)' }}>FloMail</span>
             </>
           )}
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* View toggle */}
-          {selectedThread && (
-            <div className="flex bg-slate-800 rounded-lg p-1">
-              <button
-                onClick={() => setCurrentView('email')}
-                className={`p-1.5 rounded transition-colors ${
-                  currentView === 'email'
-                    ? 'bg-slate-700 text-slate-200'
-                    : 'text-slate-400 hover:text-slate-300'
-                }`}
-                title="Email view"
-              >
-                <Inbox className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setCurrentView('chat')}
-                className={`p-1.5 rounded transition-colors ${
-                  currentView === 'chat'
-                    ? 'bg-slate-700 text-slate-200'
-                    : 'text-slate-400 hover:text-slate-300'
-                }`}
-                title="Chat view"
-              >
-                <MessageSquare className="w-4 h-4" />
-              </button>
-            </div>
-          )}
-
+          <div className="flex items-center gap-2">
           {/* Profile */}
           <button
             onClick={() => setShowProfile(!showProfile)}
@@ -505,7 +478,8 @@ export function FloMailApp() {
               <img
                 src={user.photoURL}
                 alt={user.displayName || 'User'}
-                className="w-8 h-8 rounded-full ring-2 ring-slate-700"
+                className="w-8 h-8 rounded-full"
+                style={{ boxShadow: '0 0 0 2px var(--border-default)' }}
               />
             ) : (
               <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-cyan-500 flex items-center justify-center">
@@ -530,25 +504,7 @@ export function FloMailApp() {
               <InboxList
                 onSelectThread={handleSelectThread}
                 selectedThreadId={selectedThread?.id}
-              />
-            </motion.div>
-          )}
-
-          {currentView === 'email' && selectedThread && (
-            <motion.div
-              key="email"
-              initial={{ opacity: 0, x: 50 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -50 }}
-              className="absolute inset-0"
-            >
-              <EmailView
-                thread={selectedThread}
-                onBack={handleGoToInbox}
-                onArchive={handleArchive}
-                onOpenChat={handleOpenChat}
-                currentDraft={currentDraft}
-                onClearDraft={handleClearDraft}
+                defaultFolder={currentMailFolder}
               />
             </motion.div>
           )}

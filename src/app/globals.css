@@ -1,8 +1,40 @@
 @import "tailwindcss";
 
 :root {
-  --background: #020617;
-  --foreground: #f1f5f9;
+  /* New clean color palette - matched exactly to ChatGPT reference */
+  /* Background hierarchy (darkest to lightest - NO alternating) */
+  --bg-base: #0d0d0d;        /* True black - app background */
+  --bg-sidebar: #171717;      /* RGB 23,23,23 - sidebar/nav areas */
+  --bg-primary: #1e1e1e;      /* RGB 30,30,30 - main content areas */
+  --bg-elevated: #2f2f2f;     /* RGB 47,47,47 - cards, bubbles, elevated surfaces */
+  --bg-interactive: #343541;  /* RGB 52,53,65 - inputs, buttons (ChatGPT input style) */
+  --bg-hover: #40414f;        /* Hover state for interactive elements */
+  
+  /* Borders - subtle 1px lines for section separation */
+  --border-subtle: #2a2a2a;   /* Very subtle, between same-level sections */
+  --border-default: #404040;  /* Default borders */
+  --border-strong: #525252;   /* Emphasized borders */
+  
+  /* Text hierarchy - HIGHER CONTRAST for readability */
+  --text-primary: #ececec;    /* Primary text - high contrast (white) */
+  --text-secondary: #c5c5c5;  /* Secondary/read text - very light gray, still readable */
+  --text-muted: #8e8e8e;      /* Muted text - timestamps, hints */
+  --text-disabled: #5a5a5a;   /* Disabled state */
+  
+  /* Accent colors - used sparingly for interactive elements */
+  --accent-purple: #a855f7;
+  --accent-cyan: #06b6d4;
+  --accent-gradient: linear-gradient(135deg, #a855f7, #06b6d4);
+  
+  /* Status colors */
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --error: #ef4444;
+  --info: #3b82f6;
+  
+  /* Legacy compatibility */
+  --background: var(--bg-base);
+  --foreground: var(--text-primary);
 }
 
 @theme inline {

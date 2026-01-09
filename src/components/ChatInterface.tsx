@@ -876,7 +876,7 @@ export function ChatInterface({
   };
 
   return (
-    <div className="flex flex-col h-full bg-gradient-to-b from-slate-900 to-slate-950">
+    <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)' }}>
       {/* Email Thread Preview */}
       {thread && <ThreadPreview thread={thread} folder={folder} defaultExpanded={false} />}
 
@@ -885,13 +885,13 @@ export function ChatInterface({
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && !isRecording && (
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
-            <div className="w-14 h-14 rounded-full bg-gradient-to-br from-purple-500/20 to-cyan-500/20 flex items-center justify-center mb-4">
-              <Sparkles className="w-7 h-7 text-purple-400" />
+            <div className="w-14 h-14 rounded-full bg-gradient-to-br from-blue-500/20 to-cyan-500/20 flex items-center justify-center mb-4">
+              <Sparkles className="w-7 h-7 text-blue-400" />
             </div>
-            <h3 className="text-lg font-semibold text-slate-200 mb-2">
+            <h3 className="text-lg font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
               {thread ? 'Ready to Help' : 'FloMail Agent'}
             </h3>
-            <p className="text-slate-400 text-sm max-w-xs mb-4">
+            <p className="text-sm max-w-xs mb-4" style={{ color: 'var(--text-secondary)' }}>
               {thread
                 ? 'Tap the mic or type. Say "summarize", "draft reply", or anything!'
                 : 'Select an email from your inbox to get started.'}
@@ -903,7 +903,12 @@ export function ChatInterface({
                   <button
                     key={suggestion}
                     onClick={() => sendMessage(suggestion)}
-                    className="px-4 py-2.5 rounded-full bg-slate-800/80 text-slate-300 text-sm font-medium hover:bg-slate-700 transition-colors border border-slate-700/50"
+                    className="px-4 py-2.5 rounded-full text-sm font-medium transition-colors"
+                    style={{ 
+                      background: 'var(--bg-interactive)', 
+                      color: 'var(--text-secondary)',
+                      border: '1px solid var(--border-subtle)'
+                    }}
                   >
                     {suggestion}
                   </button>
@@ -911,13 +916,23 @@ export function ChatInterface({
                 {/* Direct actions - no AI needed */}
                 <button
                   onClick={() => archiveWithNotification()}
-                  className="px-4 py-2.5 rounded-full bg-slate-800/80 text-slate-300 text-sm font-medium hover:bg-blue-500/20 hover:text-blue-300 hover:border-blue-500/30 transition-colors border border-slate-700/50"
+                  className="px-4 py-2.5 rounded-full text-sm font-medium transition-colors hover:bg-blue-500/20 hover:text-blue-300"
+                  style={{ 
+                    background: 'var(--bg-interactive)', 
+                    color: 'var(--text-secondary)',
+                    border: '1px solid var(--border-subtle)'
+                  }}
                 >
                   Archive
                 </button>
                 <button
                   onClick={() => onNextEmail?.()}
-                  className="px-4 py-2.5 rounded-full bg-slate-800/80 text-slate-300 text-sm font-medium hover:bg-green-500/20 hover:text-green-300 hover:border-green-500/30 transition-colors border border-slate-700/50"
+                  className="px-4 py-2.5 rounded-full text-sm font-medium transition-colors hover:bg-green-500/20 hover:text-green-300"
+                  style={{ 
+                    background: 'var(--bg-interactive)', 
+                    color: 'var(--text-secondary)',
+                    border: '1px solid var(--border-subtle)'
+                  }}
                 >
                   Next
                 </button>
@@ -1065,15 +1080,20 @@ export function ChatInterface({
                     </div>
                   </div>
                 ) : (
-                  // Normal display
+                  // Normal display - user messages get gray bubble
                   <>
-                    <div className={`rounded-2xl px-4 py-3 ${
-                      message.isTranscribing 
-                        ? 'bg-slate-700 border border-slate-600'
-                        : 'bg-gradient-to-r from-purple-500 to-cyan-500 text-white'
-                    }`}>
+                    <div 
+                      className="rounded-2xl px-4 py-3"
+                      style={message.isTranscribing ? {
+                        background: 'var(--bg-interactive)',
+                        border: '1px solid var(--border-default)'
+                      } : {
+                        background: 'var(--bg-elevated)',
+                        color: 'var(--text-primary)'
+                      }}
+                    >
                       {message.isTranscribing ? (
-                        <div className="flex items-center gap-2 text-slate-300">
+                        <div className="flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
                           <Loader2 className="w-4 h-4 animate-spin" />
                           <span className="text-sm">Transcribing...</span>
                         </div>
@@ -1117,16 +1137,18 @@ export function ChatInterface({
               </div>
             )}
 
-            {/* Assistant message */}
+            {/* Assistant message - no bubble, just text */}
             {!message.isSystemMessage && message.role === 'assistant' && message.content?.trim() && (
-              <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-slate-800/80 text-slate-200">
-                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+              <div className="max-w-[85%] px-1 py-2">
+                <p className="text-sm whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+                  {message.content}
+                </p>
               </div>
             )}
 
             {/* Draft card - active or cancelled */}
             {message.draft && message.role === 'assistant' && (
-              <div className="w-full max-w-sm mt-3">
+              <div className="w-full max-w-[85%] mt-3">
                 {message.draftCancelled ? (
                   <CancelledDraftPreview draft={message.draft} />
                 ) : (
@@ -1146,9 +1168,9 @@ export function ChatInterface({
 
             {/* Tool action indicator */}
             {!message.content?.trim() && message.toolCalls && message.toolCalls.length > 0 && !message.draft && message.role === 'assistant' && (
-              <div className="bg-slate-800/60 rounded-2xl px-4 py-3 flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-purple-400" />
-                <span className="text-sm text-slate-400">
+              <div className="rounded-2xl px-4 py-3 flex items-center gap-2" style={{ background: 'var(--bg-elevated)' }}>
+                <Sparkles className="w-4 h-4 text-blue-400" />
+                <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
                   {message.toolCalls[0].name === 'archive_email' && 'Archived!'}
                   {message.toolCalls[0].name === 'go_to_next_email' && 'Moving to next...'}
                   {message.toolCalls[0].name === 'go_to_inbox' && 'Going to inbox...'}
@@ -1164,7 +1186,7 @@ export function ChatInterface({
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="w-full max-w-sm mx-auto"
+            className="w-full max-w-[85%]"
           >
             <DraftCard
               draft={currentDraft}
@@ -1185,15 +1207,16 @@ export function ChatInterface({
             animate={{ opacity: 1 }}
             className="flex justify-start"
           >
-            <div className="bg-slate-800/80 rounded-2xl px-4 py-3 flex items-center gap-3">
-              <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
-              <span className="text-sm text-slate-400">{loadingStatus}</span>
+            <div className="rounded-2xl px-4 py-3 flex items-center gap-3" style={{ background: 'var(--bg-elevated)' }}>
+              <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
+              <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{loadingStatus}</span>
               <button
                 onClick={cancelAIResponse}
-                className="p-1 rounded hover:bg-slate-700 transition-colors"
+                className="p-1 rounded transition-colors"
                 title="Cancel"
+                style={{ color: 'var(--text-muted)' }}
               >
-                <X className="w-4 h-4 text-slate-500 hover:text-red-400" />
+                <X className="w-4 h-4 hover:text-red-400" />
               </button>
             </div>
           </motion.div>
@@ -1203,7 +1226,7 @@ export function ChatInterface({
       </div>
 
       {/* Input Area */}
-      <div className="p-4 border-t border-slate-800/50 bg-slate-900/80 backdrop-blur-lg">
+      <div className="p-4" style={{ background: 'var(--bg-sidebar)', borderTop: '1px solid var(--border-subtle)' }}>
         {/* Recording state */}
         <AnimatePresence>
           {isRecording && (
@@ -1211,7 +1234,8 @@ export function ChatInterface({
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
               exit={{ opacity: 0, height: 0 }}
-              className="mb-3 p-3 bg-slate-800/50 rounded-2xl border border-red-500/30"
+              className="mb-3 p-3 rounded-2xl"
+              style={{ background: 'var(--bg-elevated)', border: '1px solid rgba(239, 68, 68, 0.3)' }}
             >
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3 flex-1">
@@ -1226,13 +1250,14 @@ export function ChatInterface({
                     compact
                     className="flex-1 max-w-[160px]"
                   />
-                  <span className="text-xs font-mono text-slate-400">{formatDuration(recordingDuration)}</span>
+                  <span className="text-xs font-mono" style={{ color: 'var(--text-secondary)' }}>{formatDuration(recordingDuration)}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   {/* Cancel recording button */}
                   <button
                     onClick={cancelRecording}
-                    className="p-2.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+                    className="p-2.5 rounded-xl transition-colors"
+                    style={{ background: 'var(--bg-interactive)', color: 'var(--text-secondary)' }}
                     title="Cancel recording"
                   >
                     <X className="w-4 h-4" />
@@ -1280,7 +1305,12 @@ export function ChatInterface({
               placeholder={isRecording ? 'Recording...' : 'Type or tap mic...'}
               rows={1}
               disabled={isRecording}
-              className="w-full px-4 py-3 bg-slate-800/50 border border-slate-700/50 rounded-2xl text-slate-200 placeholder-slate-500 focus:outline-none focus:border-purple-500/50 focus:ring-2 focus:ring-purple-500/20 resize-none disabled:opacity-50"
+              className="w-full px-4 py-3 rounded-2xl focus:outline-none focus:ring-2 focus:ring-purple-500/30 resize-none disabled:opacity-50"
+              style={{ 
+                background: 'var(--bg-interactive)', 
+                border: '1px solid var(--border-subtle)',
+                color: 'var(--text-primary)'
+              }}
             />
           </div>
           
@@ -1289,7 +1319,8 @@ export function ChatInterface({
             whileTap={{ scale: 0.95 }}
             type="submit"
             disabled={!input.trim() || isLoading || isRecording}
-            className="p-3 rounded-xl bg-gradient-to-r from-purple-500 to-cyan-500 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+            className="p-3 rounded-xl text-white disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ background: '#3b82f6' }}
             title="Add to chat"
           >
             <ArrowUp className="w-5 h-5" />
@@ -1300,11 +1331,14 @@ export function ChatInterface({
             <button
               type="button"
               onClick={() => setShowSettings(!showSettings)}
-              className={`p-3 rounded-xl transition-colors ${
-                showSettings
-                  ? 'bg-purple-500/20 text-purple-300'
-                  : 'bg-slate-800 text-slate-400 hover:text-slate-300 hover:bg-slate-700'
-              }`}
+              className="p-3 rounded-xl transition-colors"
+              style={showSettings ? {
+                background: 'rgba(168, 85, 247, 0.2)',
+                color: 'rgb(216, 180, 254)'
+              } : {
+                background: 'var(--bg-interactive)',
+                color: 'var(--text-muted)'
+              }}
             >
               <Settings className="w-5 h-5" />
             </button>
@@ -1324,34 +1358,48 @@ export function ChatInterface({
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: 10, scale: 0.95 }}
                     transition={{ duration: 0.15 }}
-                    className="absolute bottom-full right-0 mb-2 w-64 p-4 bg-slate-800 border border-slate-700/50 rounded-2xl shadow-xl z-50"
+                    className="absolute bottom-full right-0 mb-2 w-64 p-4 rounded-2xl shadow-xl z-50"
+                    style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)' }}
                   >
                     {/* Arrow */}
-                    <div className="absolute -bottom-2 right-4 w-4 h-4 bg-slate-800 border-r border-b border-slate-700/50 rotate-45" />
+                    <div 
+                      className="absolute -bottom-2 right-4 w-4 h-4 rotate-45"
+                      style={{ background: 'var(--bg-elevated)', borderRight: '1px solid var(--border-default)', borderBottom: '1px solid var(--border-default)' }}
+                    />
                     
                     <div className="space-y-4 relative">
                       <div>
-                        <label className="block text-xs text-slate-400 mb-2 uppercase tracking-wide">Provider</label>
+                        <label className="block text-xs mb-2 uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>Provider</label>
                         <div className="flex gap-2">
                           <button
                             type="button"
                             onClick={() => setProvider('anthropic')}
-                            className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                              provider === 'anthropic'
-                                ? 'bg-purple-500/20 text-purple-300 border border-purple-500/50'
-                                : 'bg-slate-700/50 text-slate-400 hover:bg-slate-700'
-                            }`}
+                            className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all"
+                            style={provider === 'anthropic' ? {
+                              background: 'rgba(168, 85, 247, 0.2)',
+                              color: 'rgb(216, 180, 254)',
+                              border: '1px solid rgba(168, 85, 247, 0.5)'
+                            } : {
+                              background: 'var(--bg-interactive)',
+                              color: 'var(--text-secondary)',
+                              border: '1px solid transparent'
+                            }}
                           >
                             Claude
                           </button>
                           <button
                             type="button"
                             onClick={() => setProvider('openai')}
-                            className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                              provider === 'openai'
-                                ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/50'
-                                : 'bg-slate-700/50 text-slate-400 hover:bg-slate-700'
-                            }`}
+                            className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all"
+                            style={provider === 'openai' ? {
+                              background: 'rgba(6, 182, 212, 0.2)',
+                              color: 'rgb(103, 232, 249)',
+                              border: '1px solid rgba(6, 182, 212, 0.5)'
+                            } : {
+                              background: 'var(--bg-interactive)',
+                              color: 'var(--text-secondary)',
+                              border: '1px solid transparent'
+                            }}
                           >
                             GPT
                           </button>
@@ -1359,18 +1407,23 @@ export function ChatInterface({
                       </div>
 
                       <div>
-                        <label className="block text-xs text-slate-400 mb-2 uppercase tracking-wide">Model</label>
+                        <label className="block text-xs mb-2 uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>Model</label>
                         <div className="relative">
                           <select
                             value={model}
                             onChange={(e) => setModel(e.target.value)}
-                            className="w-full px-3 py-2 rounded-lg bg-slate-700/50 border border-slate-600/50 text-slate-200 text-sm appearance-none cursor-pointer focus:outline-none focus:border-purple-500/50"
+                            className="w-full px-3 py-2 rounded-lg text-sm appearance-none cursor-pointer focus:outline-none"
+                            style={{ 
+                              background: 'var(--bg-interactive)', 
+                              border: '1px solid var(--border-subtle)',
+                              color: 'var(--text-primary)'
+                            }}
                           >
                             {Object.entries(availableModels).map(([id, name]) => (
                               <option key={id} value={id}>{name}</option>
                             ))}
                           </select>
-                          <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+                          <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none" style={{ color: 'var(--text-muted)' }} />
                         </div>
                       </div>
                     </div>

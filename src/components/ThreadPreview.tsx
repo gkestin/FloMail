@@ -156,10 +156,7 @@ export function ThreadPreview({ thread, folder = 'inbox', defaultExpanded = fals
   return (
     <div>
       {/* Main content with background */}
-      <div className="relative bg-slate-800/70">
-        {/* Top gradient overlay for purple tint */}
-        <div className="absolute inset-0 bg-gradient-to-b from-purple-950/50 via-purple-950/20 to-transparent pointer-events-none z-0"></div>
-        
+      <div className="relative" style={{ background: 'var(--bg-sidebar)' }}>
         {/* Header row - contains subject AND expand/collapse controls */}
         <div className="relative z-10 flex items-center gap-3 px-4 py-2.5">
         {/* Clickable subject area */}
@@ -167,16 +164,16 @@ export function ThreadPreview({ thread, folder = 'inbox', defaultExpanded = fals
           onClick={() => setIsExpanded(!isExpanded)}
           className="flex items-center gap-3 flex-1 min-w-0 hover:opacity-80 transition-opacity text-left"
         >
-          <div className="p-1.5 rounded-lg bg-purple-500/20">
-            <Mail className="w-4 h-4 text-purple-400" />
+          <div className="p-1.5 rounded-lg bg-blue-500/20">
+            <Mail className="w-4 h-4 text-blue-400" />
           </div>
           
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <span className="font-medium text-slate-100 truncate">
+              <span className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>
                 {thread.subject || '(No Subject)'}
               </span>
-              <span className="flex-shrink-0 text-xs text-purple-300/70 bg-purple-500/10 px-1.5 py-0.5 rounded">
+              <span className="flex-shrink-0 text-xs text-blue-300/70 bg-blue-500/10 px-1.5 py-0.5 rounded">
                 {thread.messages.length}
               </span>
               {/* Folder badge - always show for consistency */}
@@ -190,7 +187,7 @@ export function ThreadPreview({ thread, folder = 'inbox', defaultExpanded = fals
                 </span>
               )}
             </div>
-            <p className="text-xs text-slate-500 truncate">
+            <p className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>
               {thread.participants.map((p) => p.name || p.email.split('@')[0]).join(', ')}
             </p>
           </div>
@@ -199,23 +196,25 @@ export function ThreadPreview({ thread, folder = 'inbox', defaultExpanded = fals
             animate={{ rotate: isExpanded ? 180 : 0 }}
             transition={{ duration: 0.2 }}
           >
-            <ChevronDown className="w-4 h-4 text-purple-400/60" />
+            <ChevronDown className="w-4 h-4 text-blue-400/60" />
           </motion.div>
         </button>
 
         {/* Expand/Collapse controls - only show when expanded, inline */}
         {isExpanded && thread.messages.length > 1 && (
-          <div className="flex items-center gap-1 flex-shrink-0 border-l border-slate-700/50 pl-3">
+          <div className="flex items-center gap-1 flex-shrink-0 pl-3" style={{ borderLeft: '1px solid var(--border-subtle)' }}>
             <button
               onClick={(e) => { e.stopPropagation(); expandAll(); }}
-              className="p-1.5 text-slate-500 hover:text-purple-400 transition-colors"
+              className="p-1.5 transition-colors hover:text-blue-400"
+              style={{ color: 'var(--text-muted)' }}
               title="Expand all"
             >
               <Maximize2 className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); collapseAll(); }}
-              className="p-1.5 text-slate-500 hover:text-purple-400 transition-colors"
+              className="p-1.5 transition-colors hover:text-blue-400"
+              style={{ color: 'var(--text-muted)' }}
               title="Collapse all"
             >
               <Minimize2 className="w-3.5 h-3.5" />
@@ -263,12 +262,12 @@ export function ThreadPreview({ thread, folder = 'inbox', defaultExpanded = fals
           onMouseDown={handleMouseDown}
           className="group relative cursor-ns-resize"
         >
-          {/* Gradient line */}
-          <div className="h-[2px] bg-gradient-to-r from-purple-500/50 via-blue-500/50 to-purple-500/50 group-hover:from-purple-500/70 group-hover:via-blue-500/70 group-hover:to-purple-500/70 transition-colors"></div>
+          {/* Subtle separator line */}
+          <div className="h-px" style={{ background: 'var(--border-default)' }}></div>
           
           {/* Drag handle indicator */}
           <div className="absolute left-1/2 -translate-x-1/2 -top-2 opacity-0 group-hover:opacity-100 transition-opacity">
-            <GripHorizontal className="w-5 h-5 text-slate-500" />
+            <GripHorizontal className="w-5 h-5" style={{ color: 'var(--text-muted)' }} />
           </div>
           
           {/* Larger hit area for easier grabbing */}
@@ -278,11 +277,11 @@ export function ThreadPreview({ thread, folder = 'inbox', defaultExpanded = fals
       
       {/* Simple line when collapsed */}
       {!isExpanded && (
-        <div className="h-[2px] bg-gradient-to-r from-purple-500/50 via-blue-500/50 to-purple-500/50"></div>
+        <div className="h-px" style={{ background: 'var(--border-default)' }}></div>
       )}
       
-      {/* Shadow below */}
-      <div className="h-3 bg-gradient-to-b from-black/30 to-transparent"></div>
+      {/* Subtle shadow for depth */}
+      <div className="h-2" style={{ background: 'linear-gradient(to bottom, rgba(0,0,0,0.15), transparent)' }}></div>
     </div>
   );
 }
@@ -310,11 +309,15 @@ function MessageItem({
   const isDraft = message.labels?.includes('DRAFT');
 
   return (
-    <div className={`${isLast ? '' : 'border-b border-slate-800/50'} ${isDraft ? 'bg-red-500/5' : ''}`}>
+    <div 
+      className={isDraft ? 'bg-red-500/5' : ''}
+      style={!isLast ? { borderBottom: '1px solid var(--border-subtle)' } : {}}
+    >
       {/* Message Header - Clickable to expand/collapse */}
       <button
         onClick={onToggle}
-        className={`w-full flex items-center gap-3 py-2 hover:bg-white/5 transition-colors text-left ${isExpanded ? 'bg-white/[0.03]' : ''}`}
+        className="w-full flex items-center gap-3 py-2 transition-colors text-left"
+        style={{ background: isExpanded ? 'rgba(255,255,255,0.02)' : 'transparent' }}
       >
         {/* Avatar - Red border for drafts */}
         <div
@@ -332,16 +335,19 @@ function MessageItem({
                 Draft
               </span>
             ) : (
-              <span className={`font-medium text-sm ${isLast ? 'text-slate-100' : 'text-slate-300'}`}>
+              <span 
+                className="font-medium text-sm"
+                style={{ color: 'var(--text-primary)' }}
+              >
                 {senderName}
               </span>
             )}
-            <span className="text-xs text-slate-500">
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
               {formatDate(message.date)}
             </span>
           </div>
           {!isExpanded && (
-            <p className="text-xs text-slate-500 truncate mt-0.5">
+            <p className="text-xs truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
               {message.snippet || message.body.slice(0, 100)}
             </p>
           )}
@@ -368,15 +374,18 @@ function MessageItem({
           >
             <div className="pl-11 pb-3">
               {/* Recipients info - inline, minimal */}
-              <div className="text-xs text-slate-500 mb-1.5">
+              <div className="text-xs mb-1.5" style={{ color: 'var(--text-muted)' }}>
                 To: {message.to.map((t) => t.email).join(', ')}
                 {message.cc && message.cc.length > 0 && (
                   <span className="ml-2">· Cc: {message.cc.map((c) => c.email).join(', ')}</span>
                 )}
               </div>
 
-              {/* Email body - clean display, no left border for expanded messages */}
-              <div className={`text-sm ${isDraft ? 'text-slate-400 italic' : 'text-slate-300'} whitespace-pre-wrap leading-relaxed`}>
+              {/* Email body - clean display, high contrast text */}
+              <div 
+                className={`text-sm whitespace-pre-wrap leading-relaxed ${isDraft ? 'italic' : ''}`}
+                style={{ color: isDraft ? 'var(--text-secondary)' : 'var(--text-primary)' }}
+              >
                 {message.body}
                 {isDraft && (
                   <div className="mt-2 text-xs text-red-400/70 not-italic">

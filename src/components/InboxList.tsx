@@ -46,9 +46,10 @@ const FOLDER_CONFIG: Record<MailFolder, {
 interface InboxListProps {
   onSelectThread: (thread: EmailThread, folder: MailFolder, folderThreads: EmailThread[]) => void;
   selectedThreadId?: string;
+  defaultFolder?: MailFolder; // Folder to show when returning from email view
 }
 
-export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) {
+export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'inbox' }: InboxListProps) {
   const { getAccessToken } = useAuth();
   const [threads, setThreads] = useState<EmailThread[]>([]);
   const [drafts, setDrafts] = useState<GmailDraftInfo[]>([]);
@@ -58,11 +59,18 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
   const [loadingMore, setLoadingMore] = useState(false); // Loading next page
   const [nextPageToken, setNextPageToken] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
-  const [currentFolder, setCurrentFolder] = useState<MailFolder>('inbox');
+  const [currentFolder, setCurrentFolder] = useState<MailFolder>(defaultFolder);
   const loadMoreRef = useRef<HTMLDivElement>(null); // For intersection observer
   // Always skip entrance animations - they cause visual glitches and delays
   // Keeping this as a constant true instead of removing to minimize code changes
   const skipAnimation = true;
+
+  // Sync with defaultFolder when returning from email view
+  useEffect(() => {
+    if (defaultFolder !== currentFolder) {
+      setCurrentFolder(defaultFolder);
+    }
+  }, [defaultFolder]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadFolder = useCallback(async (folder: MailFolder, forceRefresh = false) => {
     try {
@@ -353,15 +361,15 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 className="w-8 h-8 animate-spin text-purple-400" />
+      <div className="flex items-center justify-center h-full" style={{ background: 'var(--bg-primary)' }}>
+        <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-full p-4 text-center">
+      <div className="flex flex-col items-center justify-center h-full p-4 text-center" style={{ background: 'var(--bg-primary)' }}>
         <p className="text-red-400 mb-4">{error}</p>
         <button
           onClick={() => loadFolder(currentFolder)}
@@ -379,9 +387,9 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
   const FOLDER_ORDER: MailFolder[] = ['inbox', 'archive', 'sent', 'drafts', 'starred', 'all'];
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full" style={{ background: 'var(--bg-sidebar)' }}>
       {/* Folder tabs - combined with header (selected folder is prominent) */}
-      <div className="flex items-center gap-1 px-2 py-2.5 border-b border-slate-800/50 overflow-x-auto">
+      <div className="flex items-center gap-1 px-2 py-2.5 overflow-x-auto" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
         {FOLDER_ORDER.map((folder) => {
           const config = FOLDER_CONFIG[folder];
           const Icon = config.icon;
@@ -391,11 +399,19 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
             <button
               key={folder}
               onClick={() => handleFolderChange(folder)}
-              className={`flex items-center gap-1.5 rounded-lg font-medium whitespace-nowrap transition-all ${
-                isActive 
-                  ? 'px-4 py-2 bg-purple-500/25 text-purple-200 border border-purple-500/40 text-base shadow-sm' 
-                  : 'px-3 py-1.5 text-sm text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-              }`}
+              className="flex items-center gap-1.5 rounded-lg font-medium whitespace-nowrap transition-all"
+              style={isActive ? {
+                padding: '8px 16px',
+                background: 'rgba(59, 130, 246, 0.2)',
+                color: 'rgb(147, 197, 253)',
+                border: '1px solid rgba(59, 130, 246, 0.4)',
+                fontSize: '1rem',
+              } : {
+                padding: '6px 12px',
+                fontSize: '0.875rem',
+                color: 'var(--text-secondary)',
+                background: 'transparent',
+              }}
             >
               <Icon className={isActive ? 'w-5 h-5' : 'w-4 h-4'} />
               {config.label}
@@ -409,20 +425,21 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
           whileTap={{ scale: 0.95 }}
           onClick={() => loadFolder(currentFolder, true)}
           disabled={refreshing}
-          className="ml-auto p-2 rounded-lg hover:bg-slate-800 transition-colors flex-shrink-0"
+          className="ml-auto p-2 rounded-lg transition-colors flex-shrink-0"
+          style={{ color: 'var(--text-muted)' }}
         >
-          <RefreshCw className={`w-5 h-5 text-slate-400 ${refreshing ? 'animate-spin' : ''}`} />
+          <RefreshCw className={`w-5 h-5 ${refreshing ? 'animate-spin' : ''}`} />
         </motion.button>
       </div>
 
       {/* Email List */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-primary)' }}>
         {/* Drafts folder - show drafts */}
         {currentFolder === 'drafts' ? (
           drafts.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center p-4">
-              <FileEdit className="w-12 h-12 text-slate-600 mb-4" />
-              <p className="text-slate-400">No drafts</p>
+              <FileEdit className="w-12 h-12 mb-4" style={{ color: 'var(--text-disabled)' }} />
+              <p style={{ color: 'var(--text-secondary)' }}>No drafts</p>
             </div>
           ) : (
             <div>
@@ -432,7 +449,8 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
                   initial={skipAnimation ? { opacity: 1, y: 0 } : { opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={skipAnimation ? { duration: 0 } : { delay: index * 0.02 }}
-                  className="px-4 py-3 border-b border-slate-800/50 hover:bg-slate-800/30 cursor-pointer transition-colors"
+                  className="px-4 py-3 cursor-pointer transition-colors"
+                  style={{ borderBottom: '1px solid var(--border-subtle)' }}
                   onClick={() => handleDraftSelect(draft)}
                 >
                   <div className="flex items-start gap-3">
@@ -444,18 +462,18 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-amber-400 font-medium">DRAFT</span>
-                        <span className="text-sm text-slate-400 truncate">
+                        <span className="text-sm truncate" style={{ color: 'var(--text-secondary)' }}>
                           To: {draft.to.length > 0 ? draft.to.join(', ') : '(no recipient)'}
                         </span>
                       </div>
-                      <div className="text-sm font-medium text-slate-200 truncate mt-0.5">
+                      <div className="text-sm font-medium truncate mt-0.5" style={{ color: 'var(--text-primary)' }}>
                         {draft.subject || '(No Subject)'}
                       </div>
-                      <div className="text-xs text-slate-500 truncate mt-0.5">
+                      <div className="text-xs truncate mt-0.5" style={{ color: 'var(--text-muted)' }}>
                         {draft.snippet}
                       </div>
                     </div>
-                    <div className="text-xs text-slate-500 flex-shrink-0">
+                    <div className="text-xs flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
                       {formatDate(draft.date)}
                     </div>
                   </div>
@@ -465,8 +483,8 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
           )
         ) : threads.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-4">
-            <FolderIcon className="w-12 h-12 text-slate-600 mb-4" />
-            <p className="text-slate-400">No emails in {FOLDER_CONFIG[currentFolder].label.toLowerCase()}</p>
+            <FolderIcon className="w-12 h-12 mb-4" style={{ color: 'var(--text-disabled)' }} />
+            <p style={{ color: 'var(--text-secondary)' }}>No emails in {FOLDER_CONFIG[currentFolder].label.toLowerCase()}</p>
           </div>
         ) : (
           <AnimatePresence>
@@ -491,16 +509,16 @@ export function InboxList({ onSelectThread, selectedThreadId }: InboxListProps) 
         {!loading && threads.length > 0 && (
           <div ref={loadMoreRef} className="py-4 flex justify-center">
             {loadingMore ? (
-              <div className="flex items-center gap-2 text-slate-400">
+              <div className="flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
                 <Loader2 className="w-4 h-4 animate-spin" />
                 <span className="text-sm">Loading more...</span>
               </div>
             ) : nextPageToken ? (
-              <div className="text-xs text-slate-500">
+              <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
                 Scroll for more
               </div>
             ) : threads.length > 20 ? (
-              <div className="text-xs text-slate-500">
+              <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
                 All {threads.length} emails loaded
               </div>
             ) : null}
@@ -610,7 +628,10 @@ function SwipeableEmailRow({
       <motion.div
         initial={{ opacity: 1, height: 'auto' }}
         animate={{ opacity: 1, height: 'auto' }}
-        className="bg-gradient-to-r from-green-900/40 to-green-800/30 border-b border-green-700/30"
+        style={{ 
+          background: 'linear-gradient(to right, rgba(22, 163, 74, 0.15), rgba(21, 128, 61, 0.1))',
+          borderBottom: '1px solid rgba(22, 163, 74, 0.2)'
+        }}
       >
         <div className="flex items-center justify-between px-4 py-3">
           <div className="flex items-center gap-2 text-green-400">
@@ -623,7 +644,8 @@ function SwipeableEmailRow({
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={handleUndo}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition-all text-sm font-medium"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all text-sm font-medium"
+            style={{ background: 'var(--bg-interactive)', color: 'var(--text-secondary)' }}
           >
             <Undo2 className="w-3.5 h-3.5" />
             Undo
@@ -692,23 +714,25 @@ function SwipeableEmailRow({
         dragMomentum={false}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
-        style={{ x }}
+        style={{ 
+          x,
+          background: isSelected 
+            ? 'rgba(168, 85, 247, 0.08)' 
+            : !thread.isRead 
+              ? 'var(--bg-elevated)' 
+              : 'var(--bg-primary)'
+        }}
         whileDrag={{ cursor: 'grabbing' }}
         onClick={handleClick}
-        className={`
-          relative cursor-pointer bg-slate-900
-          ${isSelected ? 'bg-purple-500/10' : 'hover:bg-slate-800/50'}
-          ${!thread.isRead ? 'bg-slate-800/30' : ''}
-          transition-colors touch-pan-y select-none
-        `}
+        className="relative cursor-pointer transition-colors touch-pan-y select-none"
       >
-        <div className="flex items-start gap-3 px-4 py-3 border-b border-slate-800/30">
+        <div className="flex items-start gap-3 px-4 py-3" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
           {/* Unread indicator */}
           <div className="flex-shrink-0 pt-1">
             {thread.isRead ? (
-              <MailOpen className="w-5 h-5 text-slate-600" />
+              <MailOpen className="w-5 h-5" style={{ color: 'var(--text-disabled)' }} />
             ) : (
-              <Mail className="w-5 h-5 text-purple-400" />
+              <Mail className="w-5 h-5 text-blue-400" />
             )}
           </div>
 
@@ -716,12 +740,15 @@ function SwipeableEmailRow({
           <div className="flex-1 min-w-0">
             <div className="flex items-center justify-between gap-2 mb-1">
               <div className="flex items-center gap-1.5 min-w-0">
-                <span className={`font-medium truncate ${!thread.isRead ? 'text-slate-100' : 'text-slate-300'}`}>
+                <span 
+                  className={`truncate ${!thread.isRead ? 'font-semibold' : 'font-medium'}`}
+                  style={{ color: 'var(--text-primary)' }}
+                >
                   {getSenderNames(thread)}
                 </span>
                 {/* Message count - Gmail style */}
                 {thread.messages.length > 1 && (
-                  <span className="flex-shrink-0 text-xs text-slate-500 font-medium">
+                  <span className="flex-shrink-0 text-xs font-medium" style={{ color: 'var(--text-muted)' }}>
                     ({thread.messages.length})
                   </span>
                 )}
@@ -735,17 +762,20 @@ function SwipeableEmailRow({
               <div className="flex items-center gap-1.5 flex-shrink-0">
                 {/* Attachment indicator */}
                 {thread.messages.some(m => m.hasAttachments) && (
-                  <Paperclip className="w-3.5 h-3.5 text-slate-500" />
+                  <Paperclip className="w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} />
                 )}
-                <span className="text-xs text-slate-500">
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
                   {formatDate(thread.lastMessageDate)}
                 </span>
               </div>
             </div>
-            <p className={`text-sm truncate mb-1 ${!thread.isRead ? 'text-slate-200' : 'text-slate-400'}`}>
+            <p 
+              className={`text-sm truncate mb-1 ${!thread.isRead ? 'font-medium' : ''}`}
+              style={{ color: 'var(--text-primary)' }}
+            >
               {thread.subject || '(No Subject)'}
             </p>
-            <p className="text-xs text-slate-500 truncate">
+            <p className="text-xs truncate" style={{ color: 'var(--text-secondary)' }}>
               {thread.snippet}
             </p>
           </div>
@@ -766,7 +796,8 @@ function SwipeableEmailRow({
                   }, 300);
                 }, UNDO_DURATION);
               }}
-              className="p-2 rounded-lg bg-slate-800/50 hover:bg-green-500/20 text-slate-500 hover:text-green-400 transition-colors"
+              className="p-2 rounded-lg transition-colors hover:bg-green-500/20 hover:text-green-400"
+              style={{ background: 'var(--bg-interactive)', color: 'var(--text-muted)' }}
               title="Archive"
             >
               <Archive className="w-4 h-4" />

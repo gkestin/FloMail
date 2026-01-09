@@ -135,14 +135,15 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSend
     onSend(editedDraft);
   };
 
-  // Common input styles - looks like text until focused
+  // Common input styles - looks like text until focused, high contrast
   const inputBaseClass = `
-    w-full bg-transparent text-slate-200 text-sm
+    w-full bg-transparent text-sm
     border border-transparent rounded-lg px-2 py-1 -mx-2
     transition-all duration-150
-    hover:bg-slate-700/30
-    focus:bg-slate-700/50 focus:border-purple-500/50 focus:outline-none focus:ring-1 focus:ring-purple-500/30
+    hover:bg-white/5
+    focus:bg-white/10 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/30
   `;
+  const inputStyle = { color: 'var(--text-primary)' };
 
   // Switch draft type
   const switchToReply = () => {
@@ -192,11 +193,12 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSend
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`bg-slate-800/60 rounded-lg border-l-2 ${
+      className={`rounded-lg border-l-2 ${
         editedDraft.type === 'new' ? 'border-amber-500/70' :
         editedDraft.type === 'forward' ? 'border-orange-500/50' :
         'border-cyan-500/50'
       }`}
+      style={{ background: 'var(--bg-elevated)' }}
     >
       {/* Header with type switcher */}
       <div className={`px-3 py-2 flex items-center justify-between ${
@@ -266,7 +268,7 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSend
       <div className="px-3 py-2 space-y-2">
         {/* To */}
         <div className="flex items-center gap-3">
-          <span className="text-xs text-slate-500 uppercase tracking-wide w-12 flex-shrink-0">To</span>
+          <span className="text-xs uppercase tracking-wide w-12 flex-shrink-0" style={{ color: 'var(--text-muted)' }}>To</span>
           <input
             type="text"
             value={editedDraft.to.join(', ')}
@@ -277,6 +279,7 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSend
             placeholder="recipient@email.com"
             disabled={isSending}
             className={inputBaseClass}
+            style={inputStyle}
           />
         </div>
 
@@ -284,7 +287,7 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSend
         {showCcBcc ? (
           <>
             <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-500 uppercase tracking-wide w-12 flex-shrink-0">CC</span>
+              <span className="text-xs uppercase tracking-wide w-12 flex-shrink-0" style={{ color: 'var(--text-muted)' }}>CC</span>
               <input
                 type="text"
                 value={editedDraft.cc?.join(', ') || ''}
@@ -295,10 +298,11 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSend
                 placeholder="cc@email.com"
                 disabled={isSending}
                 className={inputBaseClass}
+                style={inputStyle}
               />
             </div>
             <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-500 uppercase tracking-wide w-12 flex-shrink-0">BCC</span>
+              <span className="text-xs uppercase tracking-wide w-12 flex-shrink-0" style={{ color: 'var(--text-muted)' }}>BCC</span>
               <input
                 type="text"
                 value={editedDraft.bcc?.join(', ') || ''}
@@ -309,13 +313,15 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSend
                 placeholder="bcc@email.com"
                 disabled={isSending}
                 className={inputBaseClass}
+                style={inputStyle}
               />
             </div>
           </>
         ) : (
           <button
             onClick={() => setShowCcBcc(true)}
-            className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-cyan-400 transition-colors ml-14"
+            className="flex items-center gap-1.5 text-xs transition-colors ml-14 hover:text-blue-400"
+            style={{ color: 'var(--text-muted)' }}
           >
             <Plus className="w-3 h-3" />
             Add CC/BCC
@@ -324,7 +330,7 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSend
 
         {/* Subject */}
         <div className="flex items-center gap-3">
-          <span className="text-xs text-slate-500 uppercase tracking-wide w-12 flex-shrink-0">Subj</span>
+          <span className="text-xs uppercase tracking-wide w-12 flex-shrink-0" style={{ color: 'var(--text-muted)' }}>Subj</span>
           <input
             type="text"
             value={editedDraft.subject}
@@ -332,11 +338,12 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSend
             placeholder="Email subject"
             disabled={isSending}
             className={inputBaseClass}
+            style={inputStyle}
           />
         </div>
 
         {/* Separator line */}
-        <div className="border-t border-cyan-500/10 my-2"></div>
+        <div className="my-2" style={{ borderTop: '1px solid var(--border-subtle)' }}></div>
 
         {/* Body - one scrollable container, textareas expand */}
         <div ref={containerRef} className="max-h-[60vh] overflow-y-auto relative">
@@ -345,10 +352,11 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSend
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="absolute bottom-0 left-0 right-0 flex items-center gap-2 py-2 px-1 bg-gradient-to-t from-slate-800/90 to-transparent"
+              className="absolute bottom-0 left-0 right-0 flex items-center gap-2 py-2 px-1"
+              style={{ background: 'linear-gradient(to top, var(--bg-elevated), transparent)' }}
             >
-              <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
-              <span className="text-xs text-cyan-400">Writing draft...</span>
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
+              <span className="text-xs text-blue-400">Writing draft...</span>
             </motion.div>
           )}
           
@@ -358,7 +366,8 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSend
             onChange={(e) => setEditedDraft({ ...editedDraft, body: e.target.value })}
             placeholder={isStreaming ? "AI is drafting..." : "Write your message..."}
             disabled={isSending || isStreaming}
-            className={`w-full bg-transparent text-slate-300 text-sm leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden ${isStreaming ? 'animate-pulse' : ''}`}
+            className={`w-full bg-transparent text-sm leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden ${isStreaming ? 'animate-pulse' : ''}`}
+            style={{ color: 'var(--text-primary)' }}
           />
 
           {/* Quoted content - different display for reply vs forward */}
