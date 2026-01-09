@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Loader2, Settings, Sparkles, ChevronDown, ChevronRight, X, Edit2, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp } from 'lucide-react';
+import { Send, Loader2, Settings, Sparkles, ChevronDown, ChevronRight, X, Edit2, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp, EyeOff } from 'lucide-react';
 import { DraftCard } from './DraftCard';
 import { ThreadPreview } from './ThreadPreview';
 import { WaveformVisualizer } from './WaveformVisualizer';
@@ -10,6 +10,14 @@ import { ChatMessage, EmailThread, EmailDraft, AIProvider } from '@/types';
 import { ToolCall, buildDraftFromToolCall } from '@/lib/agent-tools';
 import { OPENAI_MODELS } from '@/lib/openai';
 import { CLAUDE_MODELS } from '@/lib/anthropic';
+import { useAuth } from '@/contexts/AuthContext';
+import { 
+  loadThreadChat, 
+  saveThreadChat, 
+  toPersistedMessage, 
+  fromPersistedMessage,
+  PersistedMessage 
+} from '@/lib/chat-persistence';
 
 // Collapsed view for cancelled drafts
 function CancelledDraftPreview({ draft }: { draft: EmailDraft }) {
@@ -101,6 +109,8 @@ export function ChatInterface({
   onGoToInbox,
   onRegisterArchiveHandler,
 }: ChatInterfaceProps) {
+  const { user } = useAuth();
+  
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -114,6 +124,10 @@ export function ChatInterface({
   const [showSettings, setShowSettings] = useState(false);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState('');
+  
+  // Chat persistence state
+  const [isIncognito, setIsIncognito] = useState(false);
+  const [isLoadingChat, setIsLoadingChat] = useState(false);
   
   // Voice recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -132,63 +146,102 @@ export function ChatInterface({
   const abortControllerRef = useRef<AbortController | null>(null);
   const previousThreadIdRef = useRef<string | null>(null);
   const pendingNavTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Track which thread the current messages belong to (to prevent race conditions)
+  const messagesThreadIdRef = useRef<string | null>(null);
 
   // Get available models based on provider
   const availableModels = provider === 'openai' ? OPENAI_MODELS : CLAUDE_MODELS;
 
-  // Handle thread changes - show context message for new thread (debounced)
+  // Load chat history when thread changes
   useEffect(() => {
-    if (!thread) return;
-    
-    const prevId = previousThreadIdRef.current;
-    const currentId = thread.id;
-    
-    if (prevId !== currentId) {
-      previousThreadIdRef.current = currentId;
-      
-      // Skip if this is initial load
-      if (prevId === null) {
-        return;
-      }
-      
-      // Cancel any pending navigation message (debounce)
-      if (pendingNavTimeoutRef.current) {
-        clearTimeout(pendingNavTimeoutRef.current);
-      }
-      
-      // Store the current thread data
-      const navSubject = thread.subject;
-      const navLastMsg = thread.messages[thread.messages.length - 1];
-      const navSnippet = navLastMsg?.snippet || '';
-      const navPreview = navLastMsg?.body || '';
-      
-      // Wait for state to settle before adding navigation message
-      const navTimestamp = Date.now();
-      pendingNavTimeoutRef.current = setTimeout(() => {
-        pendingNavTimeoutRef.current = null;
-        
-        setMessages(prev => {
-          // Check if the last message is already a nav for this thread (prevent rapid-fire duplicates)
-          const lastMsg = prev[prev.length - 1];
-          if (lastMsg?.isSystemMessage && 
-              lastMsg?.systemType === 'navigated' && 
-              lastMsg.content?.includes(navSubject)) {
-            return prev; // Just navigated here, don't duplicate
-          }
-          return [...prev, {
-            id: `nav-${currentId}-${navTimestamp}`,
-            role: 'assistant' as const,
-            content: `Now viewing: "${navSubject}"`,
-            timestamp: new Date(),
-            isSystemMessage: true,
-            systemType: 'navigated' as const,
-            systemSnippet: navSnippet,
-            systemPreview: navPreview,
-          }];
-        });
-      }, 400); // Wait 400ms for state to settle
+    if (!thread?.id || !user?.uid) {
+      // No thread or user - clear messages
+      setMessages([]);
+      previousThreadIdRef.current = null;
+      messagesThreadIdRef.current = null;
+      return;
     }
-  }, [thread]);
+    
+    const currentId = thread.id;
+    const prevId = previousThreadIdRef.current;
+    
+    // Skip if same thread
+    if (prevId === currentId) {
+      return;
+    }
+    
+    previousThreadIdRef.current = currentId;
+    
+    // IMPORTANT: Cancel any pending persist timeout to prevent saving old messages to new thread
+    if (persistTimeoutRef.current) {
+      clearTimeout(persistTimeoutRef.current);
+      persistTimeoutRef.current = null;
+    }
+    
+    // Cancel any pending navigation timeout
+    if (pendingNavTimeoutRef.current) {
+      clearTimeout(pendingNavTimeoutRef.current);
+      pendingNavTimeoutRef.current = null;
+    }
+    
+    // Set loading state BEFORE clearing messages to avoid flash of empty state
+    setIsLoadingChat(true);
+    
+    // Clear messages and mark that we're switching threads
+    // This prevents any race conditions with persisting
+    messagesThreadIdRef.current = null; // Clear thread association before loading
+    setMessages([]);
+    setCurrentDraft(null);
+    
+    // In incognito mode, just clear messages (already done above)
+    if (isIncognito) {
+      messagesThreadIdRef.current = currentId;
+      setIsLoadingChat(false);
+      return;
+    }
+    
+    // Load chat history for this thread
+    const loadChat = async () => {
+      try {
+        // Double-check we're still on this thread (user might have navigated again)
+        if (previousThreadIdRef.current !== currentId) {
+          return;
+        }
+        
+        const persistedMessages = await loadThreadChat(user.uid, currentId);
+        
+        // Double-check again after async operation
+        if (previousThreadIdRef.current !== currentId) {
+          return;
+        }
+        
+        const uiMessages: UIMessage[] = persistedMessages.map(pm => fromPersistedMessage(pm) as UIMessage);
+        
+        // NOW set the thread ID association - messages are ready
+        messagesThreadIdRef.current = currentId;
+        setMessages(uiMessages);
+        
+        // Restore currentDraft from the last message that has a draft
+        const lastDraftMsg = [...uiMessages].reverse().find(m => m.draft && !m.draftCancelled);
+        if (lastDraftMsg?.draft) {
+          setCurrentDraft(lastDraftMsg.draft);
+        }
+      } catch (error) {
+        console.error('Failed to load chat history:', error);
+        // Even on error, associate with this thread so new messages can be saved
+        if (previousThreadIdRef.current === currentId) {
+          messagesThreadIdRef.current = currentId;
+          setMessages([]);
+        }
+      } finally {
+        if (previousThreadIdRef.current === currentId) {
+          setIsLoadingChat(false);
+        }
+      }
+    };
+    
+    loadChat();
+  }, [thread?.id, user?.uid, isIncognito]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -226,6 +279,80 @@ export function ChatInterface({
       }
     };
   }, []);
+
+  // Persist chat to Firestore (debounced)
+  const persistTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  const persistChat = useCallback((messagesToSave: UIMessage[], threadIdToSave: string) => {
+    // Don't save in incognito mode
+    if (isIncognito || !threadIdToSave || !user?.uid) return;
+    
+    // CRITICAL: Only save if the messages belong to the thread we're saving to
+    // This prevents race conditions when navigating between threads
+    if (messagesThreadIdRef.current !== threadIdToSave) {
+      console.log('[ChatPersist] Skipping save - thread mismatch:', 
+        messagesThreadIdRef.current, '!==', threadIdToSave);
+      return;
+    }
+    
+    // Don't save if no meaningful messages (only system/transient messages)
+    const hasMeaningfulMessages = messagesToSave.some(m => 
+      m.role === 'user' || (m.role === 'assistant' && !m.isSystemMessage && m.content)
+    );
+    if (!hasMeaningfulMessages) return;
+    
+    // Debounce saves
+    if (persistTimeoutRef.current) {
+      clearTimeout(persistTimeoutRef.current);
+    }
+    
+    // Capture the thread ID at the time of scheduling
+    const capturedThreadId = threadIdToSave;
+    
+    persistTimeoutRef.current = setTimeout(async () => {
+      try {
+        // Double-check thread ID hasn't changed during the debounce period
+        if (messagesThreadIdRef.current !== capturedThreadId) {
+          console.log('[ChatPersist] Skipping delayed save - thread changed during debounce');
+          return;
+        }
+        
+        // Filter out transient states before saving
+        const persistableMessages: PersistedMessage[] = messagesToSave
+          .filter(m => !m.isTranscribing && !m.isEditing && !m.isCancelled && !m.isStreaming)
+          .map(m => toPersistedMessage(m));
+        
+        await saveThreadChat(user.uid, capturedThreadId, persistableMessages);
+      } catch (error) {
+        console.error('Failed to persist chat:', error);
+      }
+    }, 1000); // Save 1 second after last change
+  }, [isIncognito, user?.uid]);
+  
+  // Auto-persist when messages change (after initial load)
+  const hasLoadedRef = useRef(false);
+  useEffect(() => {
+    // Skip during initial load
+    if (isLoadingChat) {
+      hasLoadedRef.current = false;
+      return;
+    }
+    
+    // Skip if no thread association yet
+    const currentMessagesThreadId = messagesThreadIdRef.current;
+    if (!currentMessagesThreadId) {
+      return;
+    }
+    
+    // Mark that we've completed loading
+    if (!hasLoadedRef.current) {
+      hasLoadedRef.current = true;
+      return; // Don't save the initial load
+    }
+    
+    // Persist the current messages with the associated thread ID
+    persistChat(messages, currentMessagesThreadId);
+  }, [messages, isLoadingChat, persistChat]);
 
   // Archive with notification - used by both agent and direct button press
   const archiveWithNotification = useCallback(() => {
@@ -548,6 +675,11 @@ export function ChatInterface({
   const sendMessage = useCallback(async (content: string) => {
     if (!content.trim() || isLoading) return;
 
+    // Ensure messages are associated with current thread when user starts chatting
+    if (thread?.id && !messagesThreadIdRef.current) {
+      messagesThreadIdRef.current = thread.id;
+    }
+
     const messageId = Date.now().toString();
     const userMessage: UIMessage = {
       id: messageId,
@@ -560,7 +692,7 @@ export function ChatInterface({
     setInput('');
     
     await sendToAI(messageId, content.trim());
-  }, [isLoading, sendToAI]);
+  }, [isLoading, sendToAI, thread?.id]);
 
   // Start voice recording
   const startRecording = useCallback(async () => {
@@ -883,7 +1015,7 @@ export function ChatInterface({
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.length === 0 && !isRecording && (
+        {messages.length === 0 && !isRecording && !isLoadingChat && (
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
             <div className="w-14 h-14 rounded-full bg-gradient-to-br from-blue-500/20 to-cyan-500/20 flex items-center justify-center mb-4">
               <Sparkles className="w-7 h-7 text-blue-400" />
@@ -939,6 +1071,32 @@ export function ChatInterface({
               </div>
             )}
           </div>
+        )}
+
+        {/* Loading indicator for chat history */}
+        {isLoadingChat && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="flex flex-col items-center justify-center h-full text-center px-4"
+          >
+            <div className="w-14 h-14 rounded-full flex items-center justify-center mb-4" style={{ background: 'var(--bg-interactive)' }}>
+              <Loader2 className="w-7 h-7 animate-spin" style={{ color: 'var(--text-accent-blue)' }} />
+            </div>
+            <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Loading chat...</span>
+          </motion.div>
+        )}
+        
+        {/* Incognito mode indicator */}
+        {isIncognito && messages.length === 0 && !isLoadingChat && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="flex items-center justify-center gap-2 py-4"
+          >
+            <EyeOff className="w-4 h-4 text-red-400" />
+            <span className="text-sm text-red-400/70">Incognito mode - chat won&apos;t be saved</span>
+          </motion.div>
         )}
 
         {messages.map((message) => (
@@ -1326,6 +1484,27 @@ export function ChatInterface({
             <ArrowUp className="w-5 h-5" />
           </motion.button>
 
+          {/* Incognito toggle */}
+          <button
+            type="button"
+            onClick={() => setIsIncognito(!isIncognito)}
+            className="p-3 rounded-xl transition-colors relative group"
+            style={isIncognito ? {
+              background: 'rgba(239, 68, 68, 0.2)',
+              color: 'rgb(252, 165, 165)'
+            } : {
+              background: 'var(--bg-interactive)',
+              color: 'var(--text-muted)'
+            }}
+            title={isIncognito ? 'Incognito mode ON - chat not saved' : 'Click for incognito mode'}
+          >
+            <EyeOff className="w-5 h-5" />
+            {/* Tooltip */}
+            <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 text-xs rounded bg-slate-800 text-slate-200 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+              {isIncognito ? 'Incognito ON (not saving)' : 'Enable incognito'}
+            </span>
+          </button>
+          
           {/* Settings button with popover */}
           <div className="relative">
             <button

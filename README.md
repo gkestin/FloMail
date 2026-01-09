@@ -43,7 +43,9 @@ src/
 │   ├── gmail.ts               # Gmail API functions (fetch, send, archive)
 │   ├── anthropic.ts           # Claude API with agent tools
 │   ├── openai.ts              # GPT API with agent tools
-│   └── agent-tools.ts         # Tool definitions (prepare_draft, send_email, etc.)
+│   ├── agent-tools.ts         # Tool definitions (prepare_draft, send_email, etc.)
+│   ├── email-cache.ts         # Client-side caching for emails
+│   └── chat-persistence.ts    # Firestore persistence for per-thread chat history
 └── types/
     └── index.ts               # TypeScript interfaces
 ```
@@ -77,6 +79,41 @@ ANTHROPIC_API_KEY=...
 - Project: `flomail25`
 - Auth: Google Sign-In enabled
 - Gmail scopes requested: `gmail.readonly`, `gmail.send`, `gmail.modify`
+
+### Firestore Setup (Chat Persistence)
+
+FloMail stores per-thread chat history in Firestore. Each thread has its own chat history that syncs across devices.
+
+1. **Enable Firestore** in Firebase Console → Build → Firestore Database → Create database
+
+2. **Set Security Rules** in Firebase Console → Firestore → Rules:
+
+```javascript
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users can only access their own chat data
+    match /users/{userId}/threadChats/{threadId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}
+```
+
+3. **Data Structure:**
+```
+/users/{userId}/threadChats/{gmailThreadId}
+├── messages: [{ id, role, content, timestamp, draft?, toolCalls? }]
+├── lastUpdated: Timestamp
+├── messageCount: number
+└── lastMessagePreview: string
+```
+
+**Features:**
+- Chat history is automatically saved per thread
+- Drafts are preserved with full content (to, subject, body, attachments)
+- Incognito mode (click the eye icon) disables saving for the current session
+- Cross-device sync happens automatically
 
 ### Google Cloud Console
 - OAuth consent screen configured
@@ -125,6 +162,8 @@ npm run dev -- -p 3001
 3. **Inline Draft Editing**: Click any field (To, Subject, Body) to edit in place
 4. **Email Threading**: Replies/forwards stay in Gmail thread with proper headers
 5. **Model Selection**: Switch between Claude/GPT models via settings popover
+6. **Per-Thread Chat History**: Each email thread has its own chat history, saved and synced across devices
+7. **Incognito Mode**: Click the eye icon to disable chat saving for the current session
 
 ## Deployment (GCP Cloud Run)
 
