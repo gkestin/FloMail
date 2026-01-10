@@ -30,6 +30,7 @@ interface FolderCacheData {
   drafts?: GmailDraftInfo[];
   threadsWithDrafts?: Set<string>;
   snoozedEmails?: SnoozedEmail[];
+  nextPageToken?: string; // For pagination - allows loading more after returning to folder
 }
 
 class EmailCache {

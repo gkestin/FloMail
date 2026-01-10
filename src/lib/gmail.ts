@@ -315,9 +315,6 @@ export async function fetchInbox(
   accessToken: string,
   options: { maxResults?: number; pageToken?: string; query?: string; labelIds?: string[] } = {}
 ): Promise<{ threads: EmailThread[]; nextPageToken?: string }> {
-  const totalStart = performance.now();
-  console.log('[fetchInbox] Starting...');
-  
   const params = new URLSearchParams({
     maxResults: String(options.maxResults || 20),
   });
@@ -335,11 +332,9 @@ export async function fetchInbox(
     params.set('pageToken', options.pageToken);
   }
 
-  const listStart = performance.now();
   const response = await fetch(`${GMAIL_API_BASE}/threads?${params}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
-  console.log(`[fetchInbox] threads.list took ${(performance.now() - listStart).toFixed(0)}ms`);
 
   if (!response.ok) {
     throw new Error(`Failed to fetch inbox: ${response.statusText}`);
@@ -347,21 +342,15 @@ export async function fetchInbox(
 
   const data = await response.json();
   const threads: EmailThread[] = [];
-  const threadCount = data.threads?.length || 0;
-  console.log(`[fetchInbox] Found ${threadCount} threads, fetching metadata...`);
 
   if (data.threads) {
-    // Fetch ALL thread metadata in parallel (not batched)
-    const metadataStart = performance.now();
+    // Fetch ALL thread metadata in parallel (not batched) - much faster!
     const threadDetails = await Promise.all(
       data.threads.map((t: { id: string }) => fetchThreadMetadata(accessToken, t.id))
     );
     threads.push(...threadDetails);
-    console.log(`[fetchInbox] All ${threadCount} metadata fetches took ${(performance.now() - metadataStart).toFixed(0)}ms`);
   }
 
-  console.log(`[fetchInbox] TOTAL: ${(performance.now() - totalStart).toFixed(0)}ms`);
-  
   return {
     threads,
     nextPageToken: data.nextPageToken,
@@ -373,12 +362,10 @@ export async function fetchInbox(
  * Does NOT fetch message bodies, only headers and snippet
  */
 async function fetchThreadMetadata(accessToken: string, threadId: string): Promise<EmailThread> {
-  const start = performance.now();
   // format=metadata returns headers only, no body content
   const response = await fetch(`${GMAIL_API_BASE}/threads/${threadId}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=Cc`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
-  console.log(`[fetchThreadMetadata] ${threadId.slice(0,8)}... took ${(performance.now() - start).toFixed(0)}ms`);
 
   if (!response.ok) {
     throw new Error(`Failed to fetch thread metadata: ${response.statusText}`);
@@ -867,28 +854,21 @@ export interface GmailDraftInfo {
 
 // List all Gmail drafts
 export async function listGmailDrafts(accessToken: string): Promise<GmailDraftInfo[]> {
-  const start = performance.now();
-  console.log('[listGmailDrafts] Starting...');
-  
   const response = await fetch(`${GMAIL_API_BASE}/drafts?maxResults=50`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
-  console.log(`[listGmailDrafts] List call took ${(performance.now() - start).toFixed(0)}ms`);
 
   if (!response.ok) {
     throw new Error('Failed to list drafts');
   }
 
   const data = await response.json();
-  const draftCount = data.drafts?.length || 0;
-  console.log(`[listGmailDrafts] Found ${draftCount} drafts, fetching details in PARALLEL...`);
   
-  if (!data.drafts || draftCount === 0) {
+  if (!data.drafts || data.drafts.length === 0) {
     return [];
   }
 
   // Fetch details for each draft IN PARALLEL (not sequentially!)
-  const detailStart = performance.now();
   const draftPromises = data.drafts.map(async (draft: { id: string }) => {
     try {
       const detailResponse = await fetch(`${GMAIL_API_BASE}/drafts/${draft.id}`, {
@@ -923,11 +903,7 @@ export async function listGmailDrafts(accessToken: string): Promise<GmailDraftIn
   });
   
   const results = await Promise.all(draftPromises);
-  const drafts = results.filter((d): d is GmailDraftInfo => d !== null);
-  console.log(`[listGmailDrafts] Parallel detail fetches took ${(performance.now() - detailStart).toFixed(0)}ms`);
-  console.log(`[listGmailDrafts] TOTAL: ${(performance.now() - start).toFixed(0)}ms`);
-  
-  return drafts;
+  return results.filter((d): d is GmailDraftInfo => d !== null);
 }
 
 

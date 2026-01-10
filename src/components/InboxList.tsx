@@ -103,6 +103,7 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
           setThreads(cachedData.threads);
           setDrafts(cachedData.drafts || []);
           setThreadsWithDrafts(cachedData.threadsWithDrafts || new Set());
+          setNextPageToken(cachedData.nextPageToken); // Restore pagination token!
           setLoading(false);
           setRefreshing(false);
           return;
@@ -114,6 +115,7 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
           setThreads(staleData.threads);
           setDrafts(staleData.drafts || []);
           setThreadsWithDrafts(staleData.threadsWithDrafts || new Set());
+          setNextPageToken(staleData.nextPageToken); // Restore pagination token!
           setLoading(false);
           setRefreshing(true); // Show refresh indicator for background update
         } else {
@@ -162,48 +164,34 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
         // Use labelIds when available (proper Gmail API approach), 
         // fall back to query for archive (which has no label)
         // Also load snoozed and recently unsnoozed data for badges
-        // Use Promise.allSettled for optional data to not fail if permissions are missing
-        const loadStart = performance.now();
-        console.log('[InboxList] Starting parallel data load...');
-        
         const [threadsResult, draftThreadIds, snoozedResult, unsnoozedResult] = await Promise.all([
           fetchInbox(token, { 
             labelIds: config.labelIds,
             query: config.query 
-          }).then(r => { console.log(`[InboxList] fetchInbox done: ${(performance.now() - loadStart).toFixed(0)}ms`); return r; }),
-          getThreadsWithDrafts(token).then(r => { console.log(`[InboxList] getThreadsWithDrafts done: ${(performance.now() - loadStart).toFixed(0)}ms`); return r; }),
-          (user?.uid ? getSnoozedEmails(user.uid).catch(() => []) : Promise.resolve([])).then(r => { console.log(`[InboxList] getSnoozedEmails done: ${(performance.now() - loadStart).toFixed(0)}ms`); return r; }),
-          (user?.uid ? getRecentlyUnsnoozed(user.uid).catch(() => []) : Promise.resolve([])).then(r => { console.log(`[InboxList] getRecentlyUnsnoozed done: ${(performance.now() - loadStart).toFixed(0)}ms`); return r; }),
+          }),
+          getThreadsWithDrafts(token),
+          user?.uid ? getSnoozedEmails(user.uid).catch(() => []) : Promise.resolve([]),
+          user?.uid ? getRecentlyUnsnoozed(user.uid).catch(() => []) : Promise.resolve([]),
         ]);
-        console.log(`[InboxList] All parallel loads done: ${(performance.now() - loadStart).toFixed(0)}ms`);
         
         const { threads: fetchedThreads, nextPageToken: pageToken } = threadsResult;
         
-        const stateStart = performance.now();
         setThreads(fetchedThreads);
         setThreadsWithDrafts(draftThreadIds);
         setNextPageToken(pageToken); // Store for "load more"
         setDrafts([]);
         setSnoozedEmailsData(snoozedResult);
         setRecentlyUnsnoozedData(unsnoozedResult);
-        console.log(`[InboxList] State updates queued: ${(performance.now() - stateStart).toFixed(0)}ms`);
         
-        // Debug logging
-        if (unsnoozedResult.length > 0) {
-          console.log(`[InboxList] Loaded ${unsnoozedResult.length} recently unsnoozed threads:`, unsnoozedResult.map(u => u.threadId));
-        }
-        
-        // Cache the result
-        const cacheStart = performance.now();
+        // Cache the result (including nextPageToken for pagination)
         emailCache.setFolderData(folder, { 
           threads: fetchedThreads, 
-          threadsWithDrafts: draftThreadIds 
+          threadsWithDrafts: draftThreadIds,
+          nextPageToken: pageToken 
         });
         
         // Also cache individual threads for quick access when viewing
         emailCache.setThreads(fetchedThreads);
-        console.log(`[InboxList] Caching done: ${(performance.now() - cacheStart).toFixed(0)}ms`);
-        console.log(`[InboxList] TOTAL loadFolder: ${(performance.now() - loadStart).toFixed(0)}ms`);
       }
     } catch (err: any) {
       console.error('Failed to load folder:', err);
@@ -298,11 +286,12 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
       // Cache the individual threads
       emailCache.setThreads(moreThreads);
       
-      // Update folder cache with all threads
+      // Update folder cache with all threads (including new pageToken)
       const allThreads = [...threads, ...moreThreads];
       emailCache.setFolderData(currentFolder, {
         threads: allThreads,
         threadsWithDrafts,
+        nextPageToken: newPageToken,
       });
     } catch (err) {
       console.error('Failed to load more:', err);
