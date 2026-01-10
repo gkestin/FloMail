@@ -56,9 +56,10 @@ interface InboxListProps {
   defaultFolder?: MailFolder; // Folder to show when returning from email view
   searchQuery?: string; // Search query from parent
   onClearSearch?: () => void; // Callback to clear search
+  onFolderChange?: (folder: MailFolder) => void; // Notify parent when folder changes
 }
 
-export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'inbox', searchQuery = '', onClearSearch }: InboxListProps) {
+export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'inbox', searchQuery = '', onClearSearch, onFolderChange }: InboxListProps) {
   const { getAccessToken, user } = useAuth();
   const [threads, setThreads] = useState<EmailThread[]>([]);
   const [drafts, setDrafts] = useState<GmailDraftInfo[]>([]);
@@ -345,6 +346,9 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
       // Reset pagination for new folder
       setNextPageToken(undefined);
       setCurrentFolder(folder);
+      
+      // Notify parent of folder change
+      onFolderChange?.(folder);
     }
   };
 

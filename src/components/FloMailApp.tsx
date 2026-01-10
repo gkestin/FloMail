@@ -7,10 +7,12 @@ import { LoginScreen } from './LoginScreen';
 import { InboxList, MailFolder } from './InboxList';
 import { ChatInterface } from './ChatInterface';
 import { EmailThread, EmailDraft } from '@/types';
-import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X } from 'lucide-react';
+import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock } from 'lucide-react';
 import { sendEmail, archiveThread, fetchInbox, getAttachment, createGmailDraft, hasSnoozedLabel } from '@/lib/gmail';
 import { emailCache } from '@/lib/email-cache';
 import { DraftAttachment } from '@/types';
+import { SnoozePicker } from './SnoozePicker';
+import { SnoozeOption } from '@/lib/snooze-persistence';
 
 type View = 'inbox' | 'chat';
 
@@ -34,6 +36,8 @@ export function FloMailApp() {
   const [folderThreads, setFolderThreads] = useState<EmailThread[]>([]); // Threads in current folder for navigation
   const [currentMailFolder, setCurrentMailFolder] = useState<MailFolder>('inbox');
   const [searchQuery, setSearchQuery] = useState(''); // Search query for inbox
+  const [snoozePickerOpen, setSnoozePickerOpen] = useState(false);
+  const [snoozeLoading, setSnoozeLoading] = useState(false);
   const currentThreadIndexRef = useRef(0);
   const archiveHandlerRef = useRef<(() => void) | null>(null);
 
@@ -139,6 +143,8 @@ export function FloMailApp() {
     setSelectedThread(null);
     setCurrentDraft(null);
     setCurrentView('inbox');
+    setCurrentMailFolder('inbox'); // Reset to inbox folder
+    setSearchQuery(''); // Clear any search
     loadThreads(); // Refresh
   }, [loadThreads]);
 
@@ -368,6 +374,67 @@ export function FloMailApp() {
     }
   }, [folderThreads, allThreads]);
 
+  // Handler for snooze from the draft card page header
+  const handleSnooze = useCallback(async (option: SnoozeOption, customDate?: Date) => {
+    if (!selectedThread || !user?.uid) return;
+    
+    setSnoozeLoading(true);
+    
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+
+      // Save last snooze option for "repeat" feature
+      const { saveLastSnooze } = await import('./SnoozePicker');
+      saveLastSnooze(option, customDate);
+
+      // Get thread info for the snooze record
+      const lastMessage = selectedThread.messages[selectedThread.messages.length - 1];
+      const emailInfo = {
+        subject: selectedThread.subject || '(No subject)',
+        snippet: selectedThread.snippet || '',
+        senderName: lastMessage?.from?.name || lastMessage?.from?.email || 'Unknown',
+      };
+
+      // Call the snooze API (handles Gmail labels)
+      const response = await fetch('/api/snooze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'snooze',
+          threadId: selectedThread.id,
+          accessToken: token,
+          snoozeOption: option,
+          customDate: customDate?.toISOString(),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to snooze');
+      }
+
+      const data = await response.json();
+      
+      // Save to Firestore client-side (where auth context is available)
+      const { saveSnoozedEmail } = await import('@/lib/snooze-persistence');
+      await saveSnoozedEmail(user.uid, selectedThread.id, new Date(data.snoozeUntil), emailInfo);
+
+      // Close picker and update UI
+      setSnoozePickerOpen(false);
+      
+      // Invalidate caches
+      emailCache.invalidateFolder('inbox');
+      emailCache.invalidateFolder('snoozed');
+      
+      // Navigate to next thread
+      handleNextEmail();
+    } catch (err) {
+      console.error('Failed to snooze:', err);
+    } finally {
+      setSnoozeLoading(false);
+    }
+  }, [selectedThread, user, getAccessToken, handleNextEmail]);
+
   // Loading state
   if (loading) {
     return (
@@ -440,20 +507,23 @@ export function FloMailApp() {
       {/* Top bar */}
       <div className="flex items-center justify-between px-3 pb-2.5 safe-top" style={{ background: 'var(--bg-sidebar)', borderBottom: '1px solid var(--border-subtle)' }}>
         <div className="flex items-center gap-1">
-          {currentView !== 'inbox' ? (
+          {/* FloMail logo - always visible, always clickable to go to inbox */}
+          <button
+            type="button"
+            onClick={handleGoToInbox}
+            className="flex items-center gap-1.5 hover:opacity-80 active:scale-95 transition-all mr-2 cursor-pointer z-10"
+            title="Go to Inbox"
+          >
+            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-purple-500 to-cyan-500 flex items-center justify-center flex-shrink-0">
+              <span className="text-white font-bold text-xs">F</span>
+            </div>
+            {currentView === 'inbox' && (
+              <span className="font-semibold flex-shrink-0 text-sm" style={{ color: 'var(--text-primary)' }}>FloMail</span>
+            )}
+          </button>
+          
+          {currentView !== 'inbox' && (
             <>
-              {/* Back to folder list */}
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={handleGoToInbox}
-                className="p-2 -ml-2 rounded-lg transition-colors"
-                style={{ color: 'var(--text-secondary)' }}
-                title="Back to folder list"
-              >
-                <ArrowLeft className="w-5 h-5" />
-              </motion.button>
-              
               {/* Current folder indicator - clickable to go back */}
               {(() => {
                 // Show "Snoozed" if viewing a snoozed thread from All Mail or search
@@ -507,24 +577,29 @@ export function FloMailApp() {
                 </motion.button>
               </div>
               
+              {/* Quick snooze */}
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => setSnoozePickerOpen(true)}
+                className="p-2 ml-1 rounded-lg transition-colors hover:text-amber-400"
+                style={{ color: 'var(--text-muted)' }}
+                title="Snooze"
+              >
+                <Clock className="w-4 h-4" />
+              </motion.button>
+              
               {/* Quick archive */}
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={handleTopBarArchive}
-                className="p-2 ml-1 rounded-lg transition-colors hover:text-blue-400"
+                className="p-2 rounded-lg transition-colors hover:text-blue-400"
                 style={{ color: 'var(--text-muted)' }}
                 title="Archive"
               >
                 <Archive className="w-4 h-4" />
               </motion.button>
-            </>
-          ) : (
-            <>
-              <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-purple-500 to-cyan-500 flex items-center justify-center flex-shrink-0">
-                <span className="text-white font-bold text-xs">F</span>
-              </div>
-              <span className="font-semibold ml-1.5 mr-2 flex-shrink-0 text-sm" style={{ color: 'var(--text-primary)' }}>FloMail</span>
             </>
           )}
         </div>
@@ -598,6 +673,7 @@ export function FloMailApp() {
                 defaultFolder={currentMailFolder}
                 searchQuery={searchQuery}
                 onClearSearch={() => setSearchQuery('')}
+                onFolderChange={setCurrentMailFolder}
               />
             </motion.div>
           )}
@@ -631,6 +707,18 @@ export function FloMailApp() {
 
       {/* Bottom safe area */}
       <div className="safe-bottom" />
+
+      {/* Snooze Picker Modal */}
+      <SnoozePicker
+        isOpen={snoozePickerOpen}
+        onClose={() => {
+          if (!snoozeLoading) {
+            setSnoozePickerOpen(false);
+          }
+        }}
+        onSelect={handleSnooze}
+        isLoading={snoozeLoading}
+      />
     </div>
   );
 }

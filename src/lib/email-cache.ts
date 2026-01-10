@@ -11,6 +11,7 @@
 import { EmailThread } from '@/types';
 import { MailFolder } from '@/components/InboxList';
 import { GmailDraftInfo } from './gmail';
+import { SnoozedEmail } from './snooze-persistence';
 
 // Cache configuration
 const FOLDER_CACHE_TTL = 2 * 60 * 1000; // 2 minutes for folder lists
@@ -28,6 +29,7 @@ interface FolderCacheData {
   threads: EmailThread[];
   drafts?: GmailDraftInfo[];
   threadsWithDrafts?: Set<string>;
+  snoozedEmails?: SnoozedEmail[];
 }
 
 class EmailCache {
