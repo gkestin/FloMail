@@ -272,9 +272,28 @@ function hasRealTables(content: string): boolean {
       return true;
     }
     
-    // Or if it has border-style in inline CSS (e.g., border: 1px solid black)
-    if (/style\s*=\s*["'][^"']*border[^:]*:\s*[^0none]/i.test(tableTag)) {
-      return true;
+    // Check for visible border in inline CSS
+    // BUT ignore layout properties: border-collapse, border-spacing
+    const styleMatch = tableTag.match(/style\s*=\s*["']([^"']+)["']/i);
+    if (styleMatch) {
+      const styleContent = styleMatch[1];
+      // Look for actual border definitions (border:, border-width:, border-style:, border-color:)
+      // Exclude border-collapse and border-spacing which are layout properties
+      const hasBorderStyle = /(?:^|;)\s*border(?:-(?:width|style|color|top|bottom|left|right))?:/i.test(styleContent);
+      const isOnlyLayoutBorder = /border-(?:collapse|spacing)/i.test(styleContent) && 
+                                  !/(?:^|;)\s*border(?:-(?:width|style|color|top|bottom|left|right))?:/i.test(styleContent);
+      
+      if (hasBorderStyle && !isOnlyLayoutBorder) {
+        // Check if the border value is actually visible (not 0 or none)
+        const borderValue = styleContent.match(/(?:^|;)\s*border(?:-(?:width|style|color|top|bottom|left|right))?:\s*([^;]+)/i);
+        if (borderValue) {
+          const value = borderValue[1].toLowerCase();
+          // Skip if it's explicitly 0, none, or hidden
+          if (!/^(0|none|hidden|0px)/.test(value.trim())) {
+            return true;
+          }
+        }
+      }
     }
   }
   
@@ -306,6 +325,7 @@ export function isRichHtmlContent(content: string): boolean {
   // === CHECK 1: Does it have loadable images? ===
   // Images need the iframe context to render properly
   if (hasLoadableImages(cleaned)) {
+    console.log('[isRichHtml] Triggered by loadable images');
     return true;
   }
   
@@ -316,6 +336,7 @@ export function isRichHtmlContent(content: string): boolean {
     for (const match of bgcolorMatch) {
       const colorValue = match.replace(/bgcolor\s*=\s*["']?/i, '').replace(/["']$/, '').toLowerCase();
       if (!isDefaultColor(colorValue)) {
+        console.log('[isRichHtml] Triggered by bgcolor attr:', colorValue);
         return true;
       }
     }
@@ -329,26 +350,33 @@ export function isRichHtmlContent(content: string): boolean {
       if (colorMatch) {
         const colorValue = colorMatch[2].toLowerCase().trim();
         if (!isDefaultColor(colorValue)) {
+          console.log('[isRichHtml] Triggered by inline background:', colorValue);
           return true;
         }
       }
     }
   }
   
-  // === CHECK 3: Does it have substantial CSS in style tags? ===
-  // This catches newsletters and marketing emails
+  // === CHECK 3: Does CSS define problematic colors? ===
+  // Only care about BACKGROUND colors in CSS - text colors are fine on dark theme
+  // (link colors like blue/purple work great on dark backgrounds)
   const styleBlocks = cleaned.match(/<style[^>]*>([\s\S]*?)<\/style>/gi);
   if (styleBlocks) {
     for (const block of styleBlocks) {
       const cssContent = block.replace(/<\/?style[^>]*>/gi, '');
-      // Remove Outlook-specific mso- properties and whitespace
-      const realCss = cssContent
-        .replace(/mso-[^;:]+:[^;]+;?/gi, '')
-        .replace(/\/\*[\s\S]*?\*\//g, '') // Remove comments
-        .replace(/\s+/g, '');
-      // If there's substantial real CSS (>100 chars), it's a styled email
-      if (realCss.length > 100) {
-        return true;
+      
+      // Only look for BACKGROUND color definitions - these would clash with dark theme
+      // Text colors (including link colors) are fine - they'll be visible on dark
+      const bgColorMatches = cssContent.match(/(?:^|[;\s{])background(?:-color)?\s*:\s*([^;}\s]+)/gi);
+      if (bgColorMatches) {
+        for (const match of bgColorMatches) {
+          const colorValue = match.replace(/.*:\s*/i, '').trim().toLowerCase();
+          // Skip if it's a default background color
+          if (!isDefaultColor(colorValue)) {
+            console.log('[isRichHtml] Triggered by CSS background:', colorValue);
+            return true;
+          }
+        }
       }
     }
   }
@@ -356,6 +384,7 @@ export function isRichHtmlContent(content: string): boolean {
   // === CHECK 4: Real tables with visible structure? ===
   // Only data tables with actual borders, not Outlook layout wrappers
   if (hasRealTables(cleaned)) {
+    console.log('[isRichHtml] Triggered by real tables with borders');
     return true;
   }
   
@@ -383,6 +412,34 @@ function isDefaultColor(color: string): boolean {
   
   // Sometimes emails specify "none" 
   if (c === 'none') return true;
+  
+  return false;
+}
+
+/**
+ * Check if a text color is default/safe for dark theme rendering
+ * (black, dark gray, inherit - colors that would be readable on white)
+ */
+function isDefaultTextColor(color: string): boolean {
+  if (!color) return true;
+  const c = color.toLowerCase().trim();
+  
+  // Black variants (default text color)
+  if (c === 'black' || c === '#000' || c === '#000000') return true;
+  if (c === 'rgb(0,0,0)' || c === 'rgb(0, 0, 0)') return true;
+  
+  // Common dark grays used for text
+  if (c.startsWith('#1') || c.startsWith('#2') || c.startsWith('#3')) return true;
+  if (c.startsWith('rgb(') && /rgb\(\s*(\d+)/.test(c)) {
+    const match = c.match(/rgb\(\s*(\d+)/);
+    if (match && parseInt(match[1]) < 80) return true; // Very dark colors
+  }
+  
+  // windowtext is Outlook's way of saying "use default text color"
+  if (c === 'windowtext') return true;
+  
+  // Inherit/initial means use parent's color
+  if (c === 'inherit' || c === 'initial' || c === 'unset' || c === 'currentcolor') return true;
   
   return false;
 }
