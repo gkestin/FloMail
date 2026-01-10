@@ -863,7 +863,12 @@ async function fetchInBatches<T, R>(
   for (let i = 0; i < items.length; i += batchSize) {
     const batch = items.slice(i, i + batchSize);
     const batchResults = await Promise.all(batch.map(fetchFn));
-    results.push(...batchResults.filter((r): r is R => r !== null));
+    // Filter out nulls and add to results
+    for (const r of batchResults) {
+      if (r !== null) {
+        results.push(r);
+      }
+    }
     
     // Small delay between batches to avoid rate limits
     if (i + batchSize < items.length) {
