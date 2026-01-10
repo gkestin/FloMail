@@ -2,36 +2,45 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, X, Loader2, Reply, Forward, Mail, Plus, Paperclip, File, Image, FileText, Trash2, AlertTriangle, ArrowLeftRight, Save } from 'lucide-react';
+import { Send, X, Loader2, Reply, Forward, Mail, Plus, Paperclip, Trash2, AlertTriangle, ArrowLeftRight, Save, FileIcon as LucideFile, ImageIcon as LucideImage, FileText as LucideFileText, Film, Music, FileArchive, FileCode, FileSpreadsheet, Presentation } from 'lucide-react';
 import { EmailDraft, DraftAttachment, EmailDraftType, EmailThread } from '@/types';
 import { buildReplyQuote } from '@/lib/agent-tools';
+import { formatFileSize, getFileIcon as getFileIconType } from '@/lib/email-parsing';
 
 interface DraftCardProps {
   draft: EmailDraft;
   thread?: EmailThread; // For building quoted content when switching to reply
   onSend: (updatedDraft: EmailDraft) => void;
-  onSaveDraft?: (updatedDraft: EmailDraft) => Promise<void>; // Save as Gmail draft
-  onCancel: () => void;
+  onSaveDraft?: (updatedDraft: EmailDraft) => Promise<EmailDraft | void>; // Save as Gmail draft
+  onDiscard: (draft: EmailDraft) => void; // Discard/delete the draft (also deletes from Gmail if saved)
   isSending?: boolean;
   isSaving?: boolean;
+  isDeleting?: boolean; // Draft is being deleted
   isStreaming?: boolean; // Content is still being streamed in
 }
 
-// Format file size for display
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+// Map file icon type names to Lucide components
+const FILE_ICON_MAP: Record<string, React.ElementType> = {
+  image: LucideImage,
+  video: Film,
+  audio: Music,
+  pdf: LucideFileText,
+  document: LucideFileText,
+  spreadsheet: FileSpreadsheet,
+  presentation: Presentation,
+  archive: FileArchive,
+  code: FileCode,
+  text: LucideFileText,
+  file: LucideFile,
+};
+
+// Get icon component for file type
+function getFileIcon(mimeType: string, filename?: string): React.ElementType {
+  const iconType = getFileIconType(mimeType, filename);
+  return FILE_ICON_MAP[iconType] || LucideFile;
 }
 
-// Get icon for file type
-function getFileIcon(mimeType: string) {
-  if (mimeType.startsWith('image/')) return Image;
-  if (mimeType.includes('pdf') || mimeType.includes('document')) return FileText;
-  return File;
-}
-
-export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSending, isSaving, isStreaming }: DraftCardProps) {
+export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSending, isSaving, isDeleting, isStreaming }: DraftCardProps) {
   const [editedDraft, setEditedDraft] = useState<EmailDraft>(draft);
   
   // Count original attachments (from forward)
@@ -433,7 +442,7 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSend
             {/* List original attachments */}
             <div className="flex flex-wrap gap-1.5 mt-2">
               {originalAttachments.map((att, i) => {
-                const FileIcon = getFileIcon(att.mimeType);
+                const FileIcon = getFileIcon(att.mimeType, att.filename);
                 const globalIndex = editedDraft.attachments?.findIndex(a => a === att) ?? -1;
                 return (
                   <div
@@ -467,7 +476,7 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSend
             </div>
             <div className="flex flex-wrap gap-2">
               {userAttachments.map((att, i) => {
-                const FileIcon = getFileIcon(att.mimeType);
+                const FileIcon = getFileIcon(att.mimeType, att.filename);
                 const globalIndex = editedDraft.attachments?.findIndex(a => a === att) ?? -1;
                 return (
                   <div
@@ -506,11 +515,17 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onCancel, isSend
       {/* Actions - compact row */}
       <div className="flex items-center gap-2 px-3 py-2">
         <button
-          onClick={onCancel}
-          disabled={isSending || isSaving}
-          className="px-3 py-1.5 text-sm text-slate-400 hover:text-red-400 transition-colors disabled:opacity-50"
+          onClick={() => onDiscard(editedDraft)}
+          disabled={isSending || isSaving || isDeleting}
+          className="flex items-center gap-1 px-3 py-1.5 text-sm text-slate-400 hover:text-red-400 transition-colors disabled:opacity-50"
+          title={editedDraft.gmailDraftId ? "Delete draft from Gmail" : "Discard draft"}
         >
-          Cancel
+          {isDeleting ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <Trash2 className="w-3.5 h-3.5" />
+          )}
+          {isDeleting ? 'Deleting...' : 'Discard'}
         </button>
         
         {/* Add attachment button */}

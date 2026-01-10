@@ -248,34 +248,59 @@ function formatQuoteDate(dateStr: string): string {
   }
 }
 
-// Build quoted content for replies - includes the full conversation chain
+// Build quoted content for replies
+// Returns HTML content of the message being replied to, for inclusion in a blockquote
 export function buildReplyQuote(thread: EmailThread): string {
   if (thread.messages.length === 0) return '';
   
-  // Build quotes from most recent to oldest (reverse order for display)
-  // But in email convention, the most recent is at top with older nested below
-  const quotes: string[] = [];
+  // Get the most recent message to quote
+  const lastMessage = thread.messages[thread.messages.length - 1];
+  const senderName = lastMessage.from.name || lastMessage.from.email;
+  const date = formatQuoteDate(lastMessage.date);
   
-  // Start from the most recent message and go backwards
-  for (let i = thread.messages.length - 1; i >= 0; i--) {
-    const msg = thread.messages[i];
-    const senderName = msg.from.name || msg.from.email;
-    const date = formatQuoteDate(msg.date);
-    
-    // Add header and quoted body
-    const quotedBody = msg.body
-      .split('\n')
-      .map(line => `> ${line}`)
-      .join('\n');
-    
-    quotes.push(`On ${date}, ${senderName} wrote:\n${quotedBody}`);
+  // Build the quote header like Gmail does
+  const quoteHeader = `On ${date}, ${senderName} wrote:`;
+  
+  // Use HTML body if available, otherwise convert plain text to simple HTML
+  let messageContent: string;
+  if (lastMessage.bodyHtml) {
+    // Use the original HTML - this preserves formatting
+    messageContent = lastMessage.bodyHtml;
+  } else {
+    // Convert plain text to simple HTML
+    const escaped = lastMessage.body
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>');
+    messageContent = `<div>${escaped}</div>`;
   }
   
-  // Join all quotes - most recent first
-  return '\n\n' + quotes.join('\n\n');
+  return `<div style="color: #777;">${quoteHeader}</div>\n${messageContent}`;
 }
 
-// Build quoted content for forwards - includes full conversation chain
+// Clean HTML from text for forwarding
+function cleanTextForForward(text: string): string {
+  let clean = text;
+  // Remove HTML tags
+  clean = clean.replace(/<[^>]*>/g, '');
+  // Decode common HTML entities
+  clean = clean.replace(/&nbsp;/gi, ' ');
+  clean = clean.replace(/&amp;/gi, '&');
+  clean = clean.replace(/&lt;/gi, '<');
+  clean = clean.replace(/&gt;/gi, '>');
+  clean = clean.replace(/&quot;/gi, '"');
+  clean = clean.replace(/&zwnj;/gi, ''); // Zero-width non-joiner
+  clean = clean.replace(/&zwj;/gi, '');  // Zero-width joiner
+  clean = clean.replace(/&#\d+;/gi, ''); // Numeric entities
+  clean = clean.replace(/&#x[0-9a-f]+;/gi, ''); // Hex entities
+  // Clean up whitespace
+  clean = clean.replace(/\s+/g, ' ');
+  clean = clean.replace(/\n\s*\n/g, '\n\n');
+  return clean.trim();
+}
+
+// Build quoted content for forwards - includes conversation info
 function buildForwardQuote(thread: EmailThread): string {
   if (thread.messages.length === 0) return '';
   
@@ -289,13 +314,20 @@ function buildForwardQuote(thread: EmailThread): string {
     const to = msg.to.map(t => t.name ? `${t.name} <${t.email}>` : t.email).join(', ');
     const date = formatQuoteDate(msg.date);
     
+    // Clean the body - remove HTML tags and entities
+    const cleanBody = cleanTextForForward(msg.body);
+    // Take first 500 chars to avoid huge forwards
+    const truncatedBody = cleanBody.length > 500 
+      ? cleanBody.substring(0, 500) + '...' 
+      : cleanBody;
+    
     parts.push(`---------- Forwarded message ----------
 From: ${from}
 Date: ${date}
 Subject: ${msg.subject}
 To: ${to}
 
-${msg.body}`);
+${truncatedBody}`);
   }
   
   return '\n\n' + parts.join('\n\n');

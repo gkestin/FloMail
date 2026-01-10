@@ -1,7 +1,13 @@
 import { EmailMessage, EmailThread, EmailDraft, EmailAddress, DraftAttachment } from '@/types';
 import { createMimeMessage } from 'mimetext';
+import { parseFrom, parseAddressList, wasSentWithTLS, getListUnsubscribeAction } from './email-parsing';
+import type { ListUnsubscribeAction } from './mail-driver/types';
 
 const GMAIL_API_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
+
+// Re-export list unsubscribe utilities for use in components
+export { getListUnsubscribeAction };
+export type { ListUnsubscribeAction };
 
 // ============================================================================
 // EMAIL BUILDING WITH MIMETEXT (RFC-COMPLIANT)
@@ -13,7 +19,10 @@ const GMAIL_API_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
  * Convert plain text to HTML, preserving line breaks and paragraphs.
  * This prevents Gmail API from inserting unwanted line wraps.
  */
-function textToHtml(text: string): string {
+/**
+ * Convert plain text to HTML paragraphs (body content only, no wrapper)
+ */
+function textToHtmlBody(text: string): string {
   // Escape HTML special characters
   const escaped = text
     .replace(/&/g, '&amp;')
@@ -28,18 +37,68 @@ function textToHtml(text: string): string {
   const paragraphs = normalized.split(/\n\n+/);
   
   // Wrap each paragraph and convert single newlines to <br>
-  const htmlParagraphs = paragraphs.map(p => {
+  return paragraphs.map(p => {
     const withBreaks = p.replace(/\n/g, '<br>\n');
-    return `<p style="margin: 0 0 1em 0;">${withBreaks}</p>`;
-  });
-  
+    return `<div style="margin: 0 0 1em 0;">${withBreaks}</div>`;
+  }).join('\n');
+}
+
+/**
+ * Wrap HTML body content in a full email HTML document
+ */
+function wrapInEmailHtml(bodyContent: string): string {
   return `<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"></head>
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; line-height: 1.5; color: #333;">
-${htmlParagraphs.join('\n')}
+${bodyContent}
 </body>
 </html>`;
+}
+
+/**
+ * Build HTML for a reply with Gmail-style quoted content
+ */
+function buildReplyHtml(userMessageHtml: string, quotedContent: string): string {
+  // Gmail uses a div with class "gmail_quote" for quoted content
+  // The quoted content is wrapped in a blockquote
+  return `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; line-height: 1.5; color: #333;">
+${userMessageHtml}
+<br>
+<div class="gmail_quote">
+<blockquote style="margin: 0 0 0 0.8ex; border-left: 1px solid #ccc; padding-left: 1ex;">
+${quotedContent}
+</blockquote>
+</div>
+</body>
+</html>`;
+}
+
+/**
+ * Build HTML for a forwarded message
+ */
+function buildForwardHtml(userMessageHtml: string, forwardedContent: string): string {
+  return `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; line-height: 1.5; color: #333;">
+${userMessageHtml}
+<br>
+<div style="border-top: 1px solid #ccc; padding-top: 1em; margin-top: 1em;">
+${forwardedContent}
+</div>
+</body>
+</html>`;
+}
+
+/**
+ * Legacy function for simple text to HTML conversion
+ */
+function textToHtml(text: string): string {
+  return wrapInEmailHtml(textToHtmlBody(text));
 }
 
 /**
@@ -76,18 +135,29 @@ function buildEmailForGmail(draft: EmailDraft): string {
     msg.setHeader('References', draft.references);
   }
   
-  // Prepare body content
-  const rawBody = draft.quotedContent 
-    ? draft.body.trim() + '\n\n' + draft.quotedContent.trim() 
-    : draft.body.trim();
+  // Build HTML body with proper quoting
+  // User's new message as HTML
+  const userMessageHtml = textToHtmlBody(draft.body.trim());
   
-  // Convert to HTML to prevent Gmail's line wrapping issues
-  const htmlBody = textToHtml(rawBody);
+  // Build the full HTML email
+  let fullHtmlBody: string;
+  
+  if (draft.type === 'reply' && draft.quotedContent) {
+    // For replies, include the original message in a Gmail-style quote block
+    // The quotedContent should be the raw HTML of the original message (or cleaned text)
+    fullHtmlBody = buildReplyHtml(userMessageHtml, draft.quotedContent);
+  } else if (draft.type === 'forward' && draft.quotedContent) {
+    // For forwards, include the forwarded content
+    fullHtmlBody = buildForwardHtml(userMessageHtml, draft.quotedContent);
+  } else {
+    // New message or no quoted content
+    fullHtmlBody = wrapInEmailHtml(userMessageHtml);
+  }
   
   // Add HTML content (mimetext handles encoding properly)
   msg.addMessage({
     contentType: 'text/html',
-    data: htmlBody,
+    data: fullHtmlBody,
   });
   
   // Add attachments if present
@@ -309,11 +379,26 @@ export async function fetchThread(accessToken: string, threadId: string): Promis
     const headers = msg.payload?.headers || [];
     const { text, html } = extractBody(msg.payload);
     
-    const from = parseEmailAddress(getHeader(headers, 'From'));
+    // Use improved email parsing from email-parsing module
+    const fromHeader = getHeader(headers, 'From');
+    const parsedFrom = parseFrom(fromHeader);
+    const from: EmailAddress = { name: parsedFrom.name || undefined, email: parsedFrom.email };
+    
     const toRaw = getHeader(headers, 'To');
-    const to = toRaw ? toRaw.split(',').map(parseEmailAddress) : [];
+    const parsedTo = parseAddressList(toRaw);
+    const to: EmailAddress[] = parsedTo.map(p => ({ name: p.name || undefined, email: p.email }));
+    
     const ccRaw = getHeader(headers, 'Cc');
-    const cc = ccRaw ? ccRaw.split(',').map(parseEmailAddress) : undefined;
+    const parsedCc = ccRaw ? parseAddressList(ccRaw) : [];
+    const cc: EmailAddress[] | undefined = parsedCc.length > 0 
+      ? parsedCc.map(p => ({ name: p.name || undefined, email: p.email })) 
+      : undefined;
+    
+    const bccRaw = getHeader(headers, 'Bcc');
+    const parsedBcc = bccRaw ? parseAddressList(bccRaw) : [];
+    const bcc: EmailAddress[] | undefined = parsedBcc.length > 0
+      ? parsedBcc.map(p => ({ name: p.name || undefined, email: p.email }))
+      : undefined;
 
     // Track participants
     if (from.email) participants.set(from.email, from);
@@ -322,6 +407,19 @@ export async function fetchThread(accessToken: string, threadId: string): Promis
 
     // Extract attachment details
     const attachments = extractAttachments(msg.payload);
+    
+    // Extract additional headers for advanced features
+    const replyTo = getHeader(headers, 'Reply-To') || undefined;
+    const inReplyTo = getHeader(headers, 'In-Reply-To') || undefined;
+    const references = getHeader(headers, 'References') || undefined;
+    const listUnsubscribe = getHeader(headers, 'List-Unsubscribe') || undefined;
+    const listUnsubscribePost = getHeader(headers, 'List-Unsubscribe-Post') || undefined;
+    
+    // Check TLS status from Received headers
+    const receivedHeaders = headers
+      .filter((h: { name: string; value: string }) => h.name.toLowerCase() === 'received')
+      .map((h: { name: string; value: string }) => h.value);
+    const tls = wasSentWithTLS(receivedHeaders);
     
     messages.push({
       id: msg.id,
@@ -332,6 +430,8 @@ export async function fetchThread(accessToken: string, threadId: string): Promis
       from,
       to,
       cc,
+      bcc,
+      replyTo,
       date: getHeader(headers, 'Date'),
       body: text || html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim(),
       bodyHtml: html || undefined,
@@ -339,6 +439,11 @@ export async function fetchThread(accessToken: string, threadId: string): Promis
       labels: msg.labelIds || [],
       hasAttachments: attachments.length > 0,
       attachments: attachments.length > 0 ? attachments : undefined,
+      inReplyTo,
+      references,
+      listUnsubscribe,
+      listUnsubscribePost,
+      tls,
     });
   }
 
@@ -358,7 +463,48 @@ export async function fetchThread(accessToken: string, threadId: string): Promis
 
 // Send email using mimetext library for proper RFC compliance
 export async function sendEmail(accessToken: string, draft: EmailDraft): Promise<void> {
-  // Build properly formatted email using mimetext library
+  const draftIdToCleanup = draft.gmailDraftId;
+  
+  // If we have a Gmail draft ID, try to use drafts.send which automatically:
+  // 1. Sends the email
+  // 2. Deletes the draft from the Drafts folder
+  // 3. Creates the sent message in the Sent folder
+  if (draftIdToCleanup) {
+    console.log('[sendEmail] Attempting to send saved draft:', draftIdToCleanup);
+    const response = await fetch('/api/gmail/send-draft', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ draftId: draftIdToCleanup }),
+    });
+
+    if (response.ok) {
+      console.log('[sendEmail] Draft sent successfully via drafts.send');
+      return; // Draft is automatically deleted by Gmail
+    }
+    
+    // If draft not found (404), fall back to sending as new message
+    if (response.status === 404) {
+      console.log('[sendEmail] Draft not found in Gmail, falling back to messages/send');
+      // Continue to the regular send flow below
+    } else {
+      // For other errors, throw
+      let errorMessage = 'Failed to send draft';
+      try {
+        const errorData = await response.json();
+        errorMessage = errorData.error || errorMessage;
+      } catch {
+        errorMessage = `Server error (${response.status})`;
+      }
+      console.error('[sendEmail] Draft send failed:', errorMessage);
+      throw new Error(errorMessage);
+    }
+  }
+
+  // Send as a new message (either no draft ID, or draft wasn't found)
+  console.log('[sendEmail] Sending via messages/send');
   const encodedEmail = buildEmailForGmail(draft);
 
   const response = await fetch(`${GMAIL_API_BASE}/messages/send`, {
@@ -376,6 +522,21 @@ export async function sendEmail(accessToken: string, draft: EmailDraft): Promise
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.error?.message || 'Failed to send email');
+  }
+  
+  console.log('[sendEmail] Message sent successfully');
+  
+  // If we had a draft ID and fell back to messages/send, try to clean up the draft
+  // (It might have been in a weird state or the ID was stale)
+  if (draftIdToCleanup) {
+    console.log('[sendEmail] Cleaning up draft after fallback send:', draftIdToCleanup);
+    try {
+      await deleteGmailDraft(accessToken, draftIdToCleanup);
+      console.log('[sendEmail] Draft cleanup successful');
+    } catch (e) {
+      // Draft might already be deleted, that's fine
+      console.log('[sendEmail] Draft cleanup skipped (probably already deleted)');
+    }
   }
 }
 
@@ -534,6 +695,8 @@ export async function trashThread(accessToken: string, threadId: string): Promis
 
 // Create Gmail draft using mimetext library for proper RFC compliance
 export async function createGmailDraft(accessToken: string, draft: EmailDraft): Promise<string> {
+  console.log('[createGmailDraft] Creating draft for thread:', draft.threadId);
+  
   // Build properly formatted email using mimetext library
   const encodedEmail = buildEmailForGmail(draft);
 
@@ -552,15 +715,20 @@ export async function createGmailDraft(accessToken: string, draft: EmailDraft): 
   });
 
   if (!response.ok) {
+    const errorText = await response.text();
+    console.error('[createGmailDraft] Failed:', response.status, errorText);
     throw new Error('Failed to create draft');
   }
 
   const data = await response.json();
+  console.log('[createGmailDraft] Created draft with ID:', data.id);
   return data.id;
 }
 
 // Update an existing Gmail draft
 export async function updateGmailDraft(accessToken: string, draftId: string, draft: EmailDraft): Promise<string> {
+  console.log('[updateGmailDraft] Updating draft:', draftId);
+  
   const encodedEmail = buildEmailForGmail(draft);
 
   const response = await fetch(`${GMAIL_API_BASE}/drafts/${draftId}`, {
@@ -578,10 +746,18 @@ export async function updateGmailDraft(accessToken: string, draftId: string, dra
   });
 
   if (!response.ok) {
+    // If draft not found, create a new one instead
+    if (response.status === 404) {
+      console.log('[updateGmailDraft] Draft not found, creating new draft');
+      return createGmailDraft(accessToken, draft);
+    }
+    const errorText = await response.text();
+    console.error('[updateGmailDraft] Failed:', response.status, errorText);
     throw new Error('Failed to update draft');
   }
 
   const data = await response.json();
+  console.log('[updateGmailDraft] Updated draft, new ID:', data.id);
   return data.id;
 }
 
@@ -667,6 +843,184 @@ export async function getThreadsWithDrafts(accessToken: string): Promise<Set<str
   }
   
   return threadIds;
+}
+
+// Full draft info with body content for editing
+export interface FullGmailDraft {
+  id: string;
+  threadId?: string;
+  subject: string;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  body: string;
+  type: 'reply' | 'forward' | 'new';
+  inReplyTo?: string;
+  references?: string;
+}
+
+// Get full draft details for a specific thread (including body for editing)
+// Optimized: First find draft by threadId using minimal format, then fetch full details only for matching draft
+export async function getDraftForThread(accessToken: string, threadId: string): Promise<FullGmailDraft | null> {
+  // List drafts with minimal info first (includes threadId in message object)
+  const response = await fetch(`${GMAIL_API_BASE}/drafts?maxResults=50`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to list drafts');
+  }
+
+  const data = await response.json();
+  
+  // Find draft that matches our threadId by checking the draft's message.threadId
+  // Gmail drafts list response includes { id, message: { id, threadId } }
+  let matchingDraftId: string | null = null;
+  
+  for (const draft of data.drafts || []) {
+    if (draft.message?.threadId === threadId) {
+      matchingDraftId = draft.id;
+      break;
+    }
+  }
+  
+  // No matching draft found
+  if (!matchingDraftId) {
+    return null;
+  }
+  
+  // Now fetch ONLY the matching draft with full details
+  try {
+    const detailResponse = await fetch(`${GMAIL_API_BASE}/drafts/${matchingDraftId}?format=full`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    
+    if (detailResponse.ok) {
+      const detail = await detailResponse.json();
+      const message = detail.message;
+      
+      if (message?.threadId === threadId) {
+          const headers = message?.payload?.headers || [];
+          const getHeader = (name: string) => 
+            headers.find((h: any) => h.name.toLowerCase() === name.toLowerCase())?.value || '';
+          
+          // Helper to decode HTML entities
+          const decodeHtmlEntities = (text: string): string => {
+            let decoded = text;
+            // Named entities
+            decoded = decoded.replace(/&nbsp;/gi, ' ');
+            decoded = decoded.replace(/&amp;/gi, '&');
+            decoded = decoded.replace(/&lt;/gi, '<');
+            decoded = decoded.replace(/&gt;/gi, '>');
+            decoded = decoded.replace(/&quot;/gi, '"');
+            decoded = decoded.replace(/&#39;/gi, "'");
+            decoded = decoded.replace(/&apos;/gi, "'");
+            decoded = decoded.replace(/&ndash;/gi, '\u2013');
+            decoded = decoded.replace(/&mdash;/gi, '\u2014');
+            decoded = decoded.replace(/&lsquo;/gi, '\u2018');
+            decoded = decoded.replace(/&rsquo;/gi, '\u2019');
+            decoded = decoded.replace(/&ldquo;/gi, '\u201C');
+            decoded = decoded.replace(/&rdquo;/gi, '\u201D');
+            decoded = decoded.replace(/&hellip;/gi, '\u2026');
+            decoded = decoded.replace(/&copy;/gi, '\u00A9');
+            decoded = decoded.replace(/&reg;/gi, '\u00AE');
+            decoded = decoded.replace(/&trade;/gi, '\u2122');
+            // Numeric entities (decimal)
+            decoded = decoded.replace(/&#(\d+);/gi, (_, num) => String.fromCharCode(parseInt(num, 10)));
+            // Numeric entities (hex)
+            decoded = decoded.replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+            return decoded;
+          };
+          
+          // Helper to convert HTML to plain text
+          const htmlToPlainText = (html: string): string => {
+            let text = html;
+            // Convert <br> and <br/> to newlines
+            text = text.replace(/<br\s*\/?>/gi, '\n');
+            // Convert </p> and </div> to newlines (block elements)
+            text = text.replace(/<\/(p|div|li|tr)>/gi, '\n');
+            // Remove all remaining HTML tags
+            text = text.replace(/<[^>]*>/g, '');
+            // Decode HTML entities
+            text = decodeHtmlEntities(text);
+            // Clean up excessive newlines
+            text = text.replace(/\n{3,}/g, '\n\n');
+            return text.trim();
+          };
+          
+          // Extract body from payload
+          let body = '';
+          const payload = message?.payload;
+          
+          if (payload) {
+            // Handle multipart messages
+            if (payload.parts) {
+              const textPart = payload.parts.find((p: any) => p.mimeType === 'text/plain');
+              const htmlPart = payload.parts.find((p: any) => p.mimeType === 'text/html');
+              
+              if (textPart?.body?.data) {
+                const rawText = atob(textPart.body.data.replace(/-/g, '+').replace(/_/g, '/'));
+                // Even plain text might have HTML entities, decode them
+                body = decodeHtmlEntities(rawText);
+              } else if (htmlPart?.body?.data) {
+                // Convert HTML to plain text for editing
+                const html = atob(htmlPart.body.data.replace(/-/g, '+').replace(/_/g, '/'));
+                body = htmlToPlainText(html);
+              }
+            } else if (payload.body?.data) {
+              // Simple message body - might be HTML or plain text
+              const rawBody = atob(payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));
+              // Check if it looks like HTML
+              if (rawBody.includes('<') && rawBody.includes('>')) {
+                body = htmlToPlainText(rawBody);
+              } else {
+                // Decode any HTML entities in plain text
+                body = decodeHtmlEntities(rawBody);
+              }
+            }
+          }
+          
+          // Parse recipients
+          const toHeader = getHeader('To');
+          const ccHeader = getHeader('Cc');
+          const bccHeader = getHeader('Bcc');
+          const inReplyTo = getHeader('In-Reply-To');
+          const references = getHeader('References');
+          const subject = getHeader('Subject');
+          
+          const parseAddresses = (header: string) => 
+            header ? header.split(',').map((s: string) => s.trim()).filter(Boolean) : [];
+          
+          // Determine type based on subject and headers
+          let type: 'reply' | 'forward' | 'new' = 'new';
+          if (inReplyTo || references) {
+            type = 'reply';
+          } else if (subject.toLowerCase().startsWith('fwd:') || subject.toLowerCase().startsWith('fw:')) {
+            type = 'forward';
+          } else if (threadId && message.threadId === threadId) {
+            // Has a thread but no In-Reply-To - could be a reply being composed
+            type = 'reply';
+          }
+          
+        return {
+          id: matchingDraftId!,
+          threadId: message.threadId,
+          subject,
+          to: parseAddresses(toHeader),
+          cc: parseAddresses(ccHeader),
+          bcc: parseAddresses(bccHeader),
+          body: body.trim(),
+          type,
+          inReplyTo: inReplyTo || undefined,
+          references: references || undefined,
+        };
+      }
+    }
+  } catch (e) {
+    console.error('Failed to fetch draft details:', matchingDraftId, e);
+  }
+  
+  return null;
 }
 
 // ============================================================================

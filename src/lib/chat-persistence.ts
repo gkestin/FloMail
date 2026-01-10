@@ -44,6 +44,7 @@ export interface PersistedMessage {
     threadId?: string;
     inReplyTo?: string;
     references?: string;
+    gmailDraftId?: string; // ID of saved Gmail draft for updates
     attachments?: Array<{
       filename: string;
       mimeType: string;
@@ -120,27 +121,46 @@ export function toPersistedMessage(msg: {
   }
 
   if (msg.draft) {
-    persisted.draft = {
+    // Build draft object without undefined values (Firestore doesn't allow undefined)
+    const draft: PersistedMessage['draft'] = {
       to: msg.draft.to,
-      cc: msg.draft.cc,
-      bcc: msg.draft.bcc,
       subject: msg.draft.subject,
       body: msg.draft.body,
       type: msg.draft.type,
-      quotedContent: msg.draft.quotedContent,
-      threadId: msg.draft.threadId,
-      inReplyTo: msg.draft.inReplyTo,
-      references: msg.draft.references,
-      attachments: msg.draft.attachments?.map(att => ({
-        filename: att.filename,
-        mimeType: att.mimeType,
-        size: att.size,
-        data: att.data,
-        isFromOriginal: att.isFromOriginal,
-        messageId: att.messageId,
-        attachmentId: att.attachmentId,
-      })),
     };
+    
+    // Only add optional fields if they have values
+    if (msg.draft.cc && msg.draft.cc.length > 0) draft.cc = msg.draft.cc;
+    if (msg.draft.bcc && msg.draft.bcc.length > 0) draft.bcc = msg.draft.bcc;
+    if (msg.draft.quotedContent) draft.quotedContent = msg.draft.quotedContent;
+    if (msg.draft.threadId) draft.threadId = msg.draft.threadId;
+    if (msg.draft.inReplyTo) draft.inReplyTo = msg.draft.inReplyTo;
+    if (msg.draft.references) draft.references = msg.draft.references;
+    if (msg.draft.gmailDraftId) draft.gmailDraftId = msg.draft.gmailDraftId;
+    if (msg.draft.attachments && msg.draft.attachments.length > 0) {
+      draft.attachments = msg.draft.attachments.map(att => {
+        const attachment: {
+          filename: string;
+          mimeType: string;
+          size: number;
+          data?: string;
+          isFromOriginal?: boolean;
+          messageId?: string;
+          attachmentId?: string;
+        } = {
+          filename: att.filename,
+          mimeType: att.mimeType,
+          size: att.size,
+        };
+        if (att.data) attachment.data = att.data;
+        if (att.isFromOriginal !== undefined) attachment.isFromOriginal = att.isFromOriginal;
+        if (att.messageId) attachment.messageId = att.messageId;
+        if (att.attachmentId) attachment.attachmentId = att.attachmentId;
+        return attachment;
+      });
+    }
+    
+    persisted.draft = draft;
   }
 
   if (msg.draftCancelled) persisted.draftCancelled = true;
@@ -195,6 +215,7 @@ export function fromPersistedMessage(persisted: PersistedMessage): {
       threadId: persisted.draft.threadId,
       inReplyTo: persisted.draft.inReplyTo,
       references: persisted.draft.references,
+      gmailDraftId: persisted.draft.gmailDraftId,
       attachments: persisted.draft.attachments?.map(att => ({
         filename: att.filename,
         mimeType: att.mimeType,

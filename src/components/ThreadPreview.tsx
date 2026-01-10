@@ -2,8 +2,10 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, FolderOpen, Clock } from 'lucide-react';
+import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, FolderOpen, Clock, Shield, ShieldOff } from 'lucide-react';
 import { EmailThread, EmailMessage } from '@/types';
+import { EmailHtmlViewer, isRichHtmlContent, stripBasicHtml } from './EmailHtmlViewer';
+import { UnsubscribeButton } from './UnsubscribeButton';
 
 // Folder type and display config
 type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'drafts' | 'snoozed';
@@ -374,25 +376,64 @@ function MessageItem({
           >
             <div className="pl-11 pb-3">
               {/* Recipients info - inline, minimal */}
-              <div className="text-xs mb-1.5" style={{ color: 'var(--text-muted)' }}>
-                To: {message.to.map((t) => t.email).join(', ')}
-                {message.cc && message.cc.length > 0 && (
-                  <span className="ml-2">· Cc: {message.cc.map((c) => c.email).join(', ')}</span>
+              <div className="text-xs mb-1.5 flex items-center gap-2 flex-wrap" style={{ color: 'var(--text-muted)' }}>
+                <span>
+                  To: {message.to.map((t) => t.email).join(', ')}
+                  {message.cc && message.cc.length > 0 && (
+                    <span className="ml-2">· Cc: {message.cc.map((c) => c.email).join(', ')}</span>
+                  )}
+                </span>
+                
+                {/* TLS indicator */}
+                {message.tls !== undefined && (
+                  <span 
+                    className={`flex items-center gap-0.5 ${message.tls ? 'text-green-400' : 'text-yellow-400'}`}
+                    title={message.tls ? 'Sent with TLS encryption' : 'Not encrypted with TLS'}
+                  >
+                    {message.tls ? <Shield className="w-3 h-3" /> : <ShieldOff className="w-3 h-3" />}
+                  </span>
+                )}
+                
+                {/* Unsubscribe button */}
+                {message.listUnsubscribe && (
+                  <span className="ml-auto">
+                    <UnsubscribeButton
+                      listUnsubscribe={message.listUnsubscribe}
+                      listUnsubscribePost={message.listUnsubscribePost}
+                      variant="subtle"
+                    />
+                  </span>
                 )}
               </div>
 
-              {/* Email body - clean display, high contrast text */}
-              <div 
-                className={`text-sm whitespace-pre-wrap leading-relaxed ${isDraft ? 'italic' : ''}`}
-                style={{ color: isDraft ? 'var(--text-secondary)' : 'var(--text-primary)' }}
-              >
-                {message.body}
-                {isDraft && (
-                  <div className="mt-2 text-xs text-red-400/70 not-italic">
-                    — This is a draft, not yet sent
-                  </div>
-                )}
-              </div>
+              {/* Email body - use HTML viewer only for rich HTML content (tables, images, styles) */}
+              {message.bodyHtml && isRichHtmlContent(message.bodyHtml) ? (
+                <div className={isDraft ? 'italic' : ''}>
+                  <EmailHtmlViewer
+                    html={message.bodyHtml}
+                    plainText={message.body}
+                    maxHeight={600}
+                  />
+                  {isDraft && (
+                    <div className="mt-2 text-xs text-red-400/70 not-italic">
+                      — This is a draft, not yet sent
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div 
+                  className={`text-sm whitespace-pre-wrap leading-relaxed ${isDraft ? 'italic' : ''}`}
+                  style={{ color: isDraft ? 'var(--text-secondary)' : 'var(--text-primary)' }}
+                >
+                  {/* Use plain text body if available, otherwise strip HTML from bodyHtml */}
+                  {message.body || (message.bodyHtml ? stripBasicHtml(message.bodyHtml) : '')}
+                  {isDraft && (
+                    <div className="mt-2 text-xs text-red-400/70 not-italic">
+                      — This is a draft, not yet sent
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </motion.div>
         )}

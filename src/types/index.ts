@@ -8,6 +8,8 @@ export interface EmailMessage {
   from: EmailAddress;
   to: EmailAddress[];
   cc?: EmailAddress[];
+  bcc?: EmailAddress[];  // BCC recipients (usually only visible to sender)
+  replyTo?: string;      // Reply-To header
   date: string;
   body: string;
   bodyHtml?: string;
@@ -15,6 +17,12 @@ export interface EmailMessage {
   labels: string[];
   hasAttachments?: boolean;
   attachments?: Attachment[];
+  // Additional headers for advanced features
+  inReplyTo?: string;           // In-Reply-To header for threading
+  references?: string;          // References header for threading
+  listUnsubscribe?: string;     // List-Unsubscribe header
+  listUnsubscribePost?: string; // List-Unsubscribe-Post header (RFC 8058 one-click)
+  tls?: boolean;                // Was sent with TLS encryption
 }
 
 export interface EmailAddress {
@@ -71,6 +79,7 @@ export interface EmailDraft {
   inReplyTo?: string;     // The Message-ID of the email being replied to
   references?: string;    // Chain of Message-IDs for threading
   attachments?: DraftAttachment[]; // Attachments to include
+  gmailDraftId?: string;  // ID of existing Gmail draft (for updates)
 }
 
 // Chat Types

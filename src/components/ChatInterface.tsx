@@ -18,6 +18,7 @@ import {
   fromPersistedMessage,
   PersistedMessage 
 } from '@/lib/chat-persistence';
+import { getDraftForThread, FullGmailDraft } from '@/lib/gmail';
 
 // Collapsed view for cancelled drafts
 function CancelledDraftPreview({ draft }: { draft: EmailDraft }) {
@@ -65,7 +66,8 @@ interface ChatInterfaceProps {
   threadLabels?: string[]; // Current Gmail labels on the thread
   onDraftCreated?: (draft: EmailDraft) => void;
   onSendEmail?: (draft: EmailDraft) => Promise<void>;
-  onSaveDraft?: (draft: EmailDraft) => Promise<void>;
+  onSaveDraft?: (draft: EmailDraft) => Promise<EmailDraft>;
+  onDeleteDraft?: (draftId: string) => Promise<void>; // Delete draft from Gmail
   onArchive?: () => void;
   onMoveToInbox?: () => void;
   onStar?: () => void;
@@ -110,6 +112,7 @@ export function ChatInterface({
   onDraftCreated,
   onSendEmail,
   onSaveDraft,
+  onDeleteDraft,
   onArchive,
   onMoveToInbox,
   onStar,
@@ -126,6 +129,7 @@ export function ChatInterface({
   const [loadingStatus, setLoadingStatus] = useState<string>('Thinking...');
   const [isSending, setIsSending] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [currentDraft, setCurrentDraft] = useState<EmailDraft | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [provider, setProvider] = useState<AIProvider>('anthropic');
@@ -217,7 +221,11 @@ export function ChatInterface({
           return;
         }
         
-        const persistedMessages = await loadThreadChat(user.uid, currentId);
+        // Load both persisted chat history and check for existing Gmail draft
+        const [persistedMessages, accessToken] = await Promise.all([
+          loadThreadChat(user.uid, currentId),
+          getAccessToken(),
+        ]);
         
         // Double-check again after async operation
         if (previousThreadIdRef.current !== currentId) {
@@ -226,14 +234,54 @@ export function ChatInterface({
         
         const uiMessages: UIMessage[] = persistedMessages.map(pm => fromPersistedMessage(pm) as UIMessage);
         
+        // Check if there's an unsent draft from chat history
+        const lastDraftMsg = [...uiMessages].reverse().find(m => m.draft && !m.draftCancelled);
+        let draftToRestore: EmailDraft | null = lastDraftMsg?.draft || null;
+        
+        // Also check Gmail for an existing draft for this thread
+        // This handles drafts saved via "Save Draft" button that may not be in chat history
+        if (accessToken && !draftToRestore) {
+          try {
+            const gmailDraft = await getDraftForThread(accessToken, currentId);
+            if (gmailDraft && previousThreadIdRef.current === currentId) {
+              // Convert Gmail draft to EmailDraft format
+              draftToRestore = {
+                to: gmailDraft.to,
+                cc: gmailDraft.cc,
+                bcc: gmailDraft.bcc,
+                subject: gmailDraft.subject,
+                body: gmailDraft.body,
+                type: gmailDraft.type,
+                threadId: gmailDraft.threadId,
+                inReplyTo: gmailDraft.inReplyTo,
+                references: gmailDraft.references,
+                gmailDraftId: gmailDraft.id, // Store the Gmail draft ID for updates
+              };
+              
+              // Add a system message indicating the draft was loaded
+              uiMessages.push({
+                id: `draft-loaded-${Date.now()}`,
+                role: 'assistant',
+                content: 'You have an unsent draft for this thread. You can continue editing it below.',
+                timestamp: new Date(),
+                draft: draftToRestore,
+                isSystemMessage: true,
+                systemType: 'context',
+              });
+            }
+          } catch (e) {
+            console.error('Failed to check for Gmail draft:', e);
+            // Continue without draft - not critical
+          }
+        }
+        
         // NOW set the thread ID association - messages are ready
         messagesThreadIdRef.current = currentId;
         setMessages(uiMessages);
         
-        // Restore currentDraft from the last message that has a draft
-        const lastDraftMsg = [...uiMessages].reverse().find(m => m.draft && !m.draftCancelled);
-        if (lastDraftMsg?.draft) {
-          setCurrentDraft(lastDraftMsg.draft);
+        // Restore the draft if we found one
+        if (draftToRestore) {
+          setCurrentDraft(draftToRestore);
         }
       } catch (error) {
         console.error('Failed to load chat history:', error);
@@ -388,11 +436,15 @@ export function ChatInterface({
   }, [archiveWithNotification, onRegisterArchiveHandler]);
 
   // Handle tool calls from the agent
-  const handleToolCalls = useCallback((toolCalls: ToolCall[]) => {
+  const handleToolCalls = useCallback((toolCalls: ToolCall[], existingDraft?: EmailDraft | null) => {
     for (const toolCall of toolCalls) {
       switch (toolCall.name) {
         case 'prepare_draft':
-          const draft = buildDraftFromToolCall(toolCall.arguments, thread);
+          const newDraft = buildDraftFromToolCall(toolCall.arguments, thread);
+          // Preserve gmailDraftId if we're modifying an existing draft
+          const draft = existingDraft?.gmailDraftId 
+            ? { ...newDraft, gmailDraftId: existingDraft.gmailDraftId }
+            : newDraft;
           setCurrentDraft(draft);
           onDraftCreated?.(draft);
           break;
@@ -456,18 +508,24 @@ export function ChatInterface({
     setLoadingStatus('Thinking...');
     abortControllerRef.current = new AbortController();
 
+    // Capture the current draft at the start - we'll use this to preserve gmailDraftId
+    const draftAtStart = currentDraft;
+
     // Create a placeholder for the streaming assistant message
     const assistantMessageId = (Date.now() + 1).toString();
     setStreamingMessageId(assistantMessageId);
 
     try {
-      // Get all messages for context (excluding cancelled ones)
+      // Get all messages for context (excluding cancelled ones and empty ones)
+      // Anthropic requires all messages to have non-empty content
       const contextMessages = messages
-        .filter(m => !m.isCancelled && !m.isTranscribing)
+        .filter(m => !m.isCancelled && !m.isTranscribing && m.content && m.content.trim())
         .map(m => ({ role: m.role, content: m.content }));
       
-      // Add the current message
-      contextMessages.push({ role: 'user' as const, content });
+      // Add the current message (only if it has content)
+      if (content && content.trim()) {
+        contextMessages.push({ role: 'user' as const, content });
+      }
 
       // Get access token for email search functionality
       const accessToken = await getAccessToken();
@@ -482,6 +540,7 @@ export function ChatInterface({
           provider,
           model,
           accessToken, // For email search
+          currentDraft: currentDraft, // Pass existing draft so AI can modify it
         }),
         signal: abortControllerRef.current.signal,
       });
@@ -594,12 +653,16 @@ export function ChatInterface({
                 };
                 toolCalls.push(completedTool);
                 
-                // Handle tool calls
-                handleToolCalls([completedTool]);
+                // Handle tool calls (pass existing draft to preserve gmailDraftId)
+                handleToolCalls([completedTool], draftAtStart);
                 
                 // If it's a draft, build the full draft
                 if (event.data.name === 'prepare_draft') {
-                  const finalDraft = buildDraftFromToolCall(event.data.arguments, thread);
+                  const newDraft = buildDraftFromToolCall(event.data.arguments, thread);
+                  // Preserve gmailDraftId if we're modifying an existing draft
+                  const finalDraft = draftAtStart?.gmailDraftId 
+                    ? { ...newDraft, gmailDraftId: draftAtStart.gmailDraftId }
+                    : newDraft;
                   setCurrentDraft(finalDraft);
                   onDraftCreated?.(finalDraft);
                   
@@ -703,7 +766,7 @@ export function ChatInterface({
       setStreamingMessageId(null);
       abortControllerRef.current = null;
     }
-  }, [messages, thread, folder, provider, model, handleToolCalls, onDraftCreated]);
+  }, [messages, thread, folder, provider, model, handleToolCalls, onDraftCreated, currentDraft, getAccessToken]);
 
   // Send a text message
   const sendMessage = useCallback(async (content: string) => {
@@ -966,8 +1029,18 @@ export function ChatInterface({
     
     setIsSaving(true);
     try {
-      await onSaveDraft(updatedDraft);
+      // Save and get back the draft with gmailDraftId
+      const savedDraft = await onSaveDraft(updatedDraft);
       setCurrentDraft(null);
+      
+      // Update any messages with drafts to have the latest values including gmailDraftId
+      // This ensures when chat is reloaded, the saved draft values are used
+      setMessages(prev => prev.map(m => 
+        m.draft && !m.draftCancelled 
+          ? { ...m, draft: savedDraft }
+          : m
+      ));
+      
       const confirmMessage: UIMessage = {
         id: Date.now().toString(),
         role: 'assistant',
@@ -1019,20 +1092,43 @@ export function ChatInterface({
     onGoToInbox?.();
   }, [onGoToInbox]);
 
-  const handleCancelDraft = () => {
-    setCurrentDraft(null);
-    // Mark any draft in messages as cancelled (keeps it in history but collapsed)
-    setMessages(prev => prev.map(m => 
-      m.draft ? { ...m, draftCancelled: true } : m
-    ));
-    // Add brief confirmation
-    const cancelMessage: UIMessage = {
-      id: Date.now().toString(),
-      role: 'assistant',
-      content: '↩️ Cancelled. What next?',
-      timestamp: new Date(),
-    };
-    setMessages(prev => [...prev, cancelMessage]);
+  const handleDiscardDraft = async (draftToDiscard: EmailDraft) => {
+    setIsDeleting(true);
+    
+    try {
+      // If the draft was saved to Gmail, delete it
+      if (draftToDiscard.gmailDraftId && onDeleteDraft) {
+        await onDeleteDraft(draftToDiscard.gmailDraftId);
+      }
+      
+      setCurrentDraft(null);
+      // Mark any draft in messages as cancelled (keeps it in history but collapsed)
+      setMessages(prev => prev.map(m => 
+        m.draft ? { ...m, draftCancelled: true, draft: undefined } : m
+      ));
+      
+      // Add brief confirmation
+      const discardMessage: UIMessage = {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: draftToDiscard.gmailDraftId ? '🗑️ Draft deleted.' : '↩️ Discarded. What next?',
+        timestamp: new Date(),
+        isSystemMessage: true,
+        systemType: 'archived',
+      };
+      setMessages(prev => [...prev, discardMessage]);
+    } catch (error) {
+      console.error('Failed to delete draft:', error);
+      const errorMessage: UIMessage = {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: '⚠️ Failed to delete draft from Gmail. Try again?',
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   const formatDuration = (seconds: number) => {
@@ -1395,9 +1491,10 @@ export function ChatInterface({
                     thread={thread}
                     onSend={handleSendDraft}
                     onSaveDraft={onSaveDraft ? handleSaveDraft : undefined}
-                    onCancel={handleCancelDraft}
+                    onDiscard={handleDiscardDraft}
                     isSending={isSending}
                     isSaving={isSaving}
+                    isDeleting={isDeleting}
                     isStreaming={message.isStreaming}
                   />
                 )}
@@ -1431,9 +1528,10 @@ export function ChatInterface({
               thread={thread}
               onSend={handleSendDraft}
               onSaveDraft={onSaveDraft ? handleSaveDraft : undefined}
-              onCancel={handleCancelDraft}
+              onDiscard={handleDiscardDraft}
               isSending={isSending}
               isSaving={isSaving}
+              isDeleting={isDeleting}
             />
           </motion.div>
         )}

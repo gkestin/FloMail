@@ -1,0 +1,453 @@
+'use client';
+
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import DOMPurify from 'dompurify';
+
+interface EmailHtmlViewerProps {
+  html: string;
+  plainText?: string;
+  className?: string;
+  maxHeight?: number;
+}
+
+/**
+ * EmailHtmlViewer - A secure HTML email viewer component
+ * 
+ * Displays HTML emails exactly as they were designed, with a white background
+ * like Gmail. Does NOT modify colors or inject dark mode styles.
+ * 
+ * Security features:
+ * - DOMPurify sanitization (removes XSS vectors)
+ * - Sandboxed iframe (no scripts, no forms)
+ * - Links open in new tab
+ */
+export function EmailHtmlViewer({
+  html,
+  plainText,
+  className = '',
+  maxHeight = 600,
+}: EmailHtmlViewerProps) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [iframeHeight, setIframeHeight] = useState(150);
+  const [isLoading, setIsLoading] = useState(true);
+  const heightCheckRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Sanitize HTML with DOMPurify - DO NOT modify colors
+  const sanitizedHtml = useMemo(() => {
+    if (!html || html.trim().length === 0) {
+      return null;
+    }
+
+    // First, strip CID images since we can't display them (prevents console errors)
+    const htmlWithoutCidImages = stripCidImages(html);
+
+    // Configure DOMPurify for email content
+    const config = {
+      ALLOWED_TAGS: [
+        'a', 'abbr', 'address', 'article', 'aside', 'b', 'bdi', 'bdo', 'blockquote',
+        'br', 'caption', 'cite', 'code', 'col', 'colgroup', 'data', 'dd', 'del',
+        'details', 'dfn', 'div', 'dl', 'dt', 'em', 'figcaption', 'figure', 'footer',
+        'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hr', 'i', 'img', 'ins',
+        'kbd', 'li', 'main', 'mark', 'nav', 'ol', 'p', 'pre', 'q', 's', 'samp',
+        'section', 'small', 'span', 'strong', 'sub', 'summary', 'sup', 'table',
+        'tbody', 'td', 'tfoot', 'th', 'thead', 'time', 'tr', 'u', 'ul', 'var', 'wbr',
+        'style', 'center', 'font',
+      ],
+      ALLOWED_ATTR: [
+        'href', 'src', 'alt', 'title', 'class', 'id', 'style', 'width', 'height',
+        'border', 'cellpadding', 'cellspacing', 'colspan', 'rowspan', 'align',
+        'valign', 'bgcolor', 'color', 'face', 'size', 'target', 'rel',
+      ],
+      ALLOW_DATA_ATTR: true,
+      ADD_ATTR: ['target'],
+      ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|data|cid):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+    };
+
+    // Just sanitize - DO NOT modify colors or styles
+    return DOMPurify.sanitize(htmlWithoutCidImages, config);
+  }, [html]);
+
+  // Build the full HTML document for the iframe
+  // Use WHITE background like Gmail - display email as intended
+  const iframeContent = useMemo(() => {
+    if (!sanitizedHtml) {
+      return null;
+    }
+
+    // Minimal styles - white background, let email's own styles take over
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <base target="_blank">
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 8px;
+      background: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      color: #222222;
+      word-wrap: break-word;
+    }
+    img { max-width: 100%; height: auto; }
+    table { border-collapse: collapse; max-width: 100%; }
+    a { color: #1a73e8; }
+    /* Hide tracking pixels */
+    img[width="1"], img[height="1"] { display: none !important; }
+  </style>
+</head>
+<body>${sanitizedHtml}</body>
+</html>`;
+  }, [sanitizedHtml]);
+
+  // Measure height from parent by accessing iframe document
+  const measureHeight = useCallback(() => {
+    if (!iframeRef.current) return;
+    
+    try {
+      const iframeDoc = iframeRef.current.contentDocument || iframeRef.current.contentWindow?.document;
+      if (iframeDoc && iframeDoc.body) {
+        const height = Math.max(
+          iframeDoc.body.scrollHeight,
+          iframeDoc.body.offsetHeight,
+          iframeDoc.documentElement?.scrollHeight || 0,
+          iframeDoc.documentElement?.offsetHeight || 0
+        );
+        
+        if (height > 0) {
+          const clampedHeight = Math.min(height + 16, maxHeight);
+          setIframeHeight(clampedHeight);
+          setIsLoading(false);
+        }
+      }
+    } catch {
+      setIframeHeight(300);
+      setIsLoading(false);
+    }
+  }, [maxHeight]);
+
+  // Write content to iframe and measure height
+  useEffect(() => {
+    if (!iframeRef.current || !iframeContent) return;
+    
+    const iframe = iframeRef.current;
+    
+    if (heightCheckRef.current) {
+      clearInterval(heightCheckRef.current);
+    }
+    
+    try {
+      const doc = iframe.contentDocument || iframe.contentWindow?.document;
+      if (doc) {
+        doc.open();
+        doc.write(iframeContent);
+        doc.close();
+        
+        // Measure immediately
+        measureHeight();
+        
+        // Check height a few times as images load
+        let checks = 0;
+        heightCheckRef.current = setInterval(() => {
+          measureHeight();
+          checks++;
+          if (checks >= 5) {
+            if (heightCheckRef.current) {
+              clearInterval(heightCheckRef.current);
+            }
+          }
+        }, 300);
+      }
+    } catch (e) {
+      console.error('Error writing to iframe:', e);
+      setIsLoading(false);
+    }
+    
+    return () => {
+      if (heightCheckRef.current) {
+        clearInterval(heightCheckRef.current);
+      }
+    };
+  }, [iframeContent, measureHeight]);
+
+  // Fallback to plain text
+  if (!sanitizedHtml) {
+    if (plainText) {
+      return (
+        <div 
+          className={`whitespace-pre-wrap text-sm leading-relaxed ${className}`}
+          style={{ color: 'var(--text-primary)' }}
+        >
+          {plainText}
+        </div>
+      );
+    }
+    return (
+      <div className={`text-sm ${className}`} style={{ color: 'var(--text-muted)' }}>
+        (No content to display)
+      </div>
+    );
+  }
+
+  return (
+    <div className={`relative rounded overflow-hidden ${className}`}>
+      {isLoading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-white/50 rounded">
+          <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        </div>
+      )}
+      <iframe
+        ref={iframeRef}
+        title="Email Content"
+        sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+        style={{
+          width: '100%',
+          height: `${iframeHeight}px`,
+          border: 'none',
+          borderRadius: '4px',
+          background: '#ffffff',
+          opacity: isLoading ? 0 : 1,
+          transition: 'opacity 0.15s ease-in-out',
+        }}
+      />
+    </div>
+  );
+}
+
+/**
+ * Helper function to check if content is HTML (any HTML tags)
+ */
+export function isHtmlContent(content: string): boolean {
+  if (!content) return false;
+  const htmlPattern = /<(?:html|head|body|div|p|table|span|a|img|br|hr)[^>]*>/i;
+  return htmlPattern.test(content);
+}
+
+/**
+ * Remove CID (Content-ID) image references that can't be displayed
+ * These are embedded images like signatures that reference attachments
+ */
+export function stripCidImages(html: string): string {
+  if (!html) return html;
+  // Remove img tags with cid: src
+  return html.replace(/<img[^>]*src=["']cid:[^"']*["'][^>]*\/?>/gi, '');
+}
+
+/**
+ * Check if content has loadable images (not just cid: references)
+ */
+function hasLoadableImages(content: string): boolean {
+  // Find all img tags
+  const imgTags = content.match(/<img[^>]*>/gi) || [];
+  
+  for (const img of imgTags) {
+    // Check if src is NOT a cid: reference
+    const srcMatch = img.match(/src=["']([^"']+)["']/i);
+    if (srcMatch && !srcMatch[1].startsWith('cid:')) {
+      return true; // Has a loadable image (http, https, data:, etc.)
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * Check if content has "real" data tables with VISIBLE borders
+ * Not layout tables used for formatting (common in HTML emails)
+ * 
+ * We're VERY conservative here - only return true if there's definitely a visible table
+ */
+function hasRealTables(content: string): boolean {
+  // Find all table tags
+  const tableTags = content.match(/<table[^>]*>/gi) || [];
+  
+  for (const tableTag of tableTags) {
+    // Only flag as "real" table if it has an EXPLICIT border > 0
+    const borderMatch = tableTag.match(/border\s*=\s*["']?(\d+)["']?/i);
+    if (borderMatch && parseInt(borderMatch[1]) > 0) {
+      return true;
+    }
+    
+    // Or if it has border-style in inline CSS (e.g., border: 1px solid black)
+    if (/style\s*=\s*["'][^"']*border[^:]*:\s*[^0none]/i.test(tableTag)) {
+      return true;
+    }
+  }
+  
+  // All other tables (no border, border=0, Outlook tables) are layout tables
+  return false;
+}
+
+/**
+ * Check if content requires iframe rendering (has its own visual styling)
+ * vs can be displayed with app's dark theme
+ * 
+ * STRATEGY: Only use iframe if the email EXPLICITLY sets visual styling.
+ * Default to dark theme for everything else (the safer, cleaner approach).
+ * 
+ * We check for:
+ * 1. Explicit background colors (not white - white is the default we'd use anyway)
+ * 2. Loadable images (http/https/data: - need proper rendering context)
+ * 3. Real tables with visible borders (actual data tables, not layout)
+ * 4. Complex CSS in style tags (newsletters, marketing emails)
+ * 
+ * Everything else (divs, spans, basic formatting) → dark theme plain text
+ */
+export function isRichHtmlContent(content: string): boolean {
+  if (!content) return false;
+  
+  // Strip CID images first (can't display them, they just cause errors)
+  const cleaned = stripCidImages(content);
+  
+  // === CHECK 1: Does it have loadable images? ===
+  // Images need the iframe context to render properly
+  if (hasLoadableImages(cleaned)) {
+    return true;
+  }
+  
+  // === CHECK 2: Does it have explicit background colors? ===
+  // Any bgcolor attribute (except white/transparent/inherit)
+  const bgcolorMatch = cleaned.match(/bgcolor\s*=\s*["']?([^"'\s>]+)/gi);
+  if (bgcolorMatch) {
+    for (const match of bgcolorMatch) {
+      const colorValue = match.replace(/bgcolor\s*=\s*["']?/i, '').replace(/["']$/, '').toLowerCase();
+      if (!isDefaultColor(colorValue)) {
+        return true;
+      }
+    }
+  }
+  
+  // Any background or background-color in inline styles
+  const inlineStyleBgMatches = cleaned.match(/style\s*=\s*["'][^"']*background(-color)?\s*:\s*([^;"']+)/gi);
+  if (inlineStyleBgMatches) {
+    for (const match of inlineStyleBgMatches) {
+      const colorMatch = match.match(/background(-color)?\s*:\s*([^;"']+)/i);
+      if (colorMatch) {
+        const colorValue = colorMatch[2].toLowerCase().trim();
+        if (!isDefaultColor(colorValue)) {
+          return true;
+        }
+      }
+    }
+  }
+  
+  // === CHECK 3: Does it have substantial CSS in style tags? ===
+  // This catches newsletters and marketing emails
+  const styleBlocks = cleaned.match(/<style[^>]*>([\s\S]*?)<\/style>/gi);
+  if (styleBlocks) {
+    for (const block of styleBlocks) {
+      const cssContent = block.replace(/<\/?style[^>]*>/gi, '');
+      // Remove Outlook-specific mso- properties and whitespace
+      const realCss = cssContent
+        .replace(/mso-[^;:]+:[^;]+;?/gi, '')
+        .replace(/\/\*[\s\S]*?\*\//g, '') // Remove comments
+        .replace(/\s+/g, '');
+      // If there's substantial real CSS (>100 chars), it's a styled email
+      if (realCss.length > 100) {
+        return true;
+      }
+    }
+  }
+  
+  // === CHECK 4: Real tables with visible structure? ===
+  // Only data tables with actual borders, not Outlook layout wrappers
+  if (hasRealTables(cleaned)) {
+    return true;
+  }
+  
+  // === Everything else: render as dark theme plain text ===
+  // This includes: divs, spans, p tags, br tags, font tags with just black text,
+  // Outlook layout tables (border=0), and any other basic HTML formatting
+  return false;
+}
+
+/**
+ * Check if a color value is a "default" that doesn't require special rendering
+ * (white, transparent, inherit, or no color)
+ */
+function isDefaultColor(color: string): boolean {
+  if (!color) return true;
+  const c = color.toLowerCase().trim();
+  
+  // White variants
+  if (c === 'white' || c === '#fff' || c === '#ffffff') return true;
+  if (c === 'rgb(255,255,255)' || c === 'rgb(255, 255, 255)') return true;
+  if (c === 'rgba(255,255,255,1)' || c === 'rgba(255, 255, 255, 1)') return true;
+  
+  // Transparent/inherit (not setting a color)
+  if (c === 'transparent' || c === 'inherit' || c === 'initial' || c === 'unset') return true;
+  
+  // Sometimes emails specify "none" 
+  if (c === 'none') return true;
+  
+  return false;
+}
+
+/**
+ * Helper function to convert plain text to basic HTML
+ */
+export function plainTextToHtml(text: string): string {
+  if (!text) return '';
+  
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+  
+  html = html.replace(
+    /(https?:\/\/[^\s<>"{}|\\^`\[\]]+)/gi,
+    '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>'
+  );
+  
+  html = html.replace(
+    /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi,
+    '<a href="mailto:$1">$1</a>'
+  );
+  
+  html = html.replace(/\n/g, '<br>');
+  
+  return html;
+}
+
+/**
+ * Strip basic HTML tags and convert to clean text for display
+ * Preserves line breaks and decodes HTML entities
+ */
+export function stripBasicHtml(html: string): string {
+  if (!html) return '';
+  
+  // First strip CID images
+  let text = stripCidImages(html);
+  
+  // Convert <br> to newlines
+  text = text.replace(/<br\s*\/?>/gi, '\n');
+  
+  // Convert block elements to newlines
+  text = text.replace(/<\/(p|div|li|tr|h[1-6])>/gi, '\n');
+  text = text.replace(/<(p|div|li|h[1-6])[^>]*>/gi, '');
+  
+  // Remove all other HTML tags
+  text = text.replace(/<[^>]+>/g, '');
+  
+  // Decode common HTML entities
+  text = text.replace(/&nbsp;/gi, ' ');
+  text = text.replace(/&amp;/gi, '&');
+  text = text.replace(/&lt;/gi, '<');
+  text = text.replace(/&gt;/gi, '>');
+  text = text.replace(/&quot;/gi, '"');
+  text = text.replace(/&#39;/gi, "'");
+  text = text.replace(/&apos;/gi, "'");
+  text = text.replace(/&#(\d+);/gi, (_, num) => String.fromCharCode(parseInt(num, 10)));
+  text = text.replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+  
+  // Clean up excessive whitespace/newlines
+  text = text.replace(/\n{3,}/g, '\n\n');
+  
+  return text.trim();
+}

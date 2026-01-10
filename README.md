@@ -16,9 +16,11 @@ A **voice-first, AI-powered email assistant** that integrates with Gmail. The co
 ## Tech Stack
 
 - **Next.js 15** with TypeScript, Tailwind CSS, Framer Motion
-- **Firebase**: Authentication (Google Sign-In with Gmail scopes)
+- **Firebase**: Authentication (Google Sign-In with Gmail scopes), Firestore for persistence
 - **AI**: Anthropic Claude + OpenAI GPT (switchable), Whisper for transcription
 - **Gmail API**: OAuth 2.0 for email operations
+- **DOMPurify**: HTML sanitization for secure email rendering
+- **email-addresses**: RFC 5322 compliant email address parsing
 
 ## Project Structure
 
@@ -40,19 +42,23 @@ src/
 │   ├── InboxList.tsx          # Gmail inbox with thread counts, attachments
 │   ├── ThreadPreview.tsx      # Collapsible email thread viewer
 │   ├── FloMailApp.tsx         # App orchestration (inbox ↔ chat views)
-│   └── SnoozePicker.tsx       # Snooze time picker modal
+│   ├── SnoozePicker.tsx       # Snooze time picker modal
+│   ├── EmailHtmlViewer.tsx    # Secure HTML email rendering (DOMPurify + iframe)
+│   └── UnsubscribeButton.tsx  # One-click list unsubscribe UI
 ├── contexts/
 │   └── AuthContext.tsx        # Firebase auth + Gmail token management
 ├── lib/
 │   ├── firebase.ts            # Firebase initialization
-│   ├── gmail.ts               # Gmail API functions (fetch, send, archive, snooze)
+│   ├── gmail.ts               # Gmail API functions (fetch, send, archive, snooze, drafts)
 │   ├── anthropic.ts           # Claude API with agent tools
 │   ├── openai.ts              # GPT API with agent tools
 │   ├── agent-tools.ts         # Tool definitions (prepare_draft, send_email, snooze_email, etc.)
 │   ├── email-cache.ts         # Client-side caching for emails
+│   ├── email-parsing.ts       # Email utilities (unsubscribe, address parsing, TLS info)
 │   ├── chat-persistence.ts    # Firestore persistence for per-thread chat history
 │   ├── snooze-persistence.ts  # Firestore persistence for snooze/unsnooze tracking
-│   └── snooze-server.ts       # Server-side snooze utilities
+│   ├── snooze-server.ts       # Server-side snooze utilities
+│   └── mail-driver/           # Multi-provider abstraction (Gmail driver, future Outlook)
 └── types/
     └── index.ts               # TypeScript interfaces
 ```
@@ -373,12 +379,70 @@ gcloud run domain-mappings create \
 
 Then update DNS records as instructed.
 
+## Architecture Notes
+
+### HTML Email Rendering
+
+FloMail uses a smart detection system to render emails appropriately for the dark theme:
+
+**The logic (`isRichHtmlContent` in `EmailHtmlViewer.tsx`):**
+- **Default:** Render emails as dark-themed plain text (matches app theme)
+- **Exception:** Use white-background iframe ONLY if the email explicitly sets its own styling:
+  - Loadable images (http/https/data: URLs)
+  - Non-white background colors (bgcolor attribute or CSS)
+  - Substantial CSS in style tags (>100 chars, excluding Outlook mso- properties)
+  - Tables with explicit visible borders (border > 0)
+
+This approach avoids false positives where simple HTML-formatted text (divs, spans, Outlook layout tables) was incorrectly rendered with a white background.
+
+### Multi-Provider Architecture
+
+The `src/lib/mail-driver/` directory contains a provider abstraction layer:
+
+```typescript
+// types.ts - Provider-agnostic interfaces
+interface MailDriver {
+  getThreads(folder, options): Promise<ParsedThread[]>;
+  getMessage(messageId): Promise<ParsedMessage>;
+  sendMessage(message): Promise<void>;
+  createDraft(data): Promise<string>;
+  // ... etc
+}
+
+// gmail-driver.ts - Gmail implementation
+// (Future: outlook-driver.ts, etc.)
+```
+
+Currently only Gmail is implemented. The abstraction allows future Outlook/other provider support without major refactoring.
+
+### Draft Sync with Gmail
+
+Drafts are synced bidirectionally with Gmail:
+- **Save:** Creates/updates Gmail draft via `drafts.create` or `drafts.update`
+- **Send:** Uses server-side proxy (`/api/gmail/send-draft`) to call `drafts/{id}/send` (avoids CORS)
+- **Fallback:** If draft send fails (404), falls back to `messages/send` and cleans up stale draft
+- **Delete:** Deletes from Gmail via `drafts.delete`
+
+The `gmailDraftId` is tracked in the `EmailDraft` type and persisted in chat history.
+
+### Server-Side API Routes
+
+| Route | Purpose |
+|-------|---------|
+| `/api/gmail/send-draft` | Proxy for Gmail `drafts.send` (bypasses CORS) |
+| `/api/unsubscribe` | Proxy for List-Unsubscribe POST requests |
+| `/api/ai/chat/stream` | Streaming AI chat with tool calling |
+| `/api/snooze` | Snooze/unsnooze Gmail operations |
+| `/api/search` | Web search via Tavily |
+| `/api/browse` | URL content fetching |
+
 ## Future Plans
 
 - Task manager integration
 - Custom labels management
 - Keyboard shortcuts
 - Background snooze processing (currently only processes when app is open)
+- Outlook/Microsoft 365 provider support (mail-driver architecture ready)
 
 ## iOS App (When Ready)
 

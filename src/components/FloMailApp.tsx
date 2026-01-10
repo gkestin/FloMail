@@ -8,13 +8,39 @@ import { InboxList, MailFolder } from './InboxList';
 import { ChatInterface } from './ChatInterface';
 import { EmailThread, EmailDraft } from '@/types';
 import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock } from 'lucide-react';
-import { sendEmail, archiveThread, fetchInbox, getAttachment, createGmailDraft, hasSnoozedLabel } from '@/lib/gmail';
+import { sendEmail, archiveThread, fetchInbox, getAttachment, createGmailDraft, updateGmailDraft, hasSnoozedLabel, fetchThread } from '@/lib/gmail';
 import { emailCache } from '@/lib/email-cache';
 import { DraftAttachment } from '@/types';
 import { SnoozePicker } from './SnoozePicker';
 import { SnoozeOption } from '@/lib/snooze-persistence';
 
+import { User as UserType } from '@/types';
+
 type View = 'inbox' | 'chat';
+
+// User avatar component with fallback
+function UserAvatar({ user }: { user: UserType }) {
+  const [imgError, setImgError] = useState(false);
+  
+  if (user.photoURL && !imgError) {
+    return (
+      <img
+        src={user.photoURL}
+        alt={user.displayName || 'User'}
+        className="w-8 h-8 rounded-full object-cover"
+        style={{ boxShadow: '0 0 0 2px var(--border-default)' }}
+        referrerPolicy="no-referrer"
+        onError={() => setImgError(true)}
+      />
+    );
+  }
+  
+  return (
+    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-cyan-500 flex items-center justify-center">
+      <User className="w-4 h-4 text-white" />
+    </div>
+  );
+}
 
 // Folder display names
 const FOLDER_LABELS: Record<MailFolder, string> = {
@@ -185,16 +211,39 @@ export function FloMailApp() {
     }
     
     await sendEmail(token, processedDraft);
+    // Note: If draft.gmailDraftId exists, sendEmail uses drafts.send which 
+    // automatically deletes the draft - no manual cleanup needed!
+    
     setCurrentDraft(null);
     
-    // Invalidate sent folder cache (new email there) and current thread
+    // Invalidate sent folder cache (new email there), drafts cache, and current thread
     emailCache.invalidateFolder('sent');
+    emailCache.invalidateFolder('drafts');
+    
+    // Refresh the current thread to show the sent message immediately
     if (selectedThread) {
       emailCache.invalidateThread(selectedThread.id);
+      try {
+        // Fetch the updated thread with the new sent message
+        const updatedThread = await fetchThread(token, selectedThread.id);
+        if (updatedThread) {
+          // Update the selected thread to show the sent message
+          setSelectedThread(updatedThread);
+          // Also update the thread in the threads lists
+          setAllThreads(prev => prev.map((t: EmailThread) => 
+            t.id === updatedThread.id ? updatedThread : t
+          ));
+          setFolderThreads(prev => prev.map((t: EmailThread) => 
+            t.id === updatedThread.id ? updatedThread : t
+          ));
+        }
+      } catch (e) {
+        console.error('Failed to refresh thread after send:', e);
+      }
     }
   }, [getAccessToken, selectedThread]);
 
-  const handleSaveDraft = useCallback(async (draft: EmailDraft) => {
+  const handleSaveDraft = useCallback(async (draft: EmailDraft): Promise<EmailDraft> => {
     const token = await getAccessToken();
     if (!token) throw new Error('Not authenticated');
     
@@ -222,12 +271,56 @@ export function FloMailApp() {
       };
     }
     
-    await createGmailDraft(token, processedDraft);
-    setCurrentDraft(null);
+    // Update existing draft if we have a gmailDraftId, otherwise create new
+    let savedDraftId: string;
+    if (draft.gmailDraftId) {
+      savedDraftId = await updateGmailDraft(token, draft.gmailDraftId, processedDraft);
+    } else {
+      savedDraftId = await createGmailDraft(token, processedDraft);
+    }
+    
+    // Create the saved draft with the ID
+    const savedDraft = { ...processedDraft, gmailDraftId: savedDraftId };
+    
+    // Update the draft with the saved ID so future saves update instead of create
+    setCurrentDraft(prev => prev ? savedDraft : null);
     
     // Invalidate drafts folder cache
     emailCache.invalidateFolder('drafts');
+    
+    // Return the saved draft with ID for ChatInterface to update its state
+    return savedDraft;
   }, [getAccessToken]);
+
+  const handleDeleteDraft = useCallback(async (draftId: string) => {
+    const token = await getAccessToken();
+    if (!token) throw new Error('Not authenticated');
+    
+    const { deleteGmailDraft } = await import('@/lib/gmail');
+    await deleteGmailDraft(token, draftId);
+    
+    // Invalidate drafts folder cache
+    emailCache.invalidateFolder('drafts');
+    
+    // Refresh current thread to remove draft indicator
+    if (selectedThread) {
+      emailCache.invalidateThread(selectedThread.id);
+      try {
+        const updatedThread = await fetchThread(token, selectedThread.id);
+        if (updatedThread) {
+          setSelectedThread(updatedThread);
+          setAllThreads(prev => prev.map((t: EmailThread) => 
+            t.id === updatedThread.id ? updatedThread : t
+          ));
+          setFolderThreads(prev => prev.map((t: EmailThread) => 
+            t.id === updatedThread.id ? updatedThread : t
+          ));
+        }
+      } catch (e) {
+        console.error('Failed to refresh thread after delete:', e);
+      }
+    }
+  }, [getAccessToken, selectedThread]);
 
   const handleArchive = useCallback(async () => {
     if (!selectedThread) return;
@@ -640,18 +733,7 @@ export function FloMailApp() {
             onClick={() => setShowProfile(!showProfile)}
             className="relative"
           >
-            {user.photoURL ? (
-              <img
-                src={user.photoURL}
-                alt={user.displayName || 'User'}
-                className="w-8 h-8 rounded-full"
-                style={{ boxShadow: '0 0 0 2px var(--border-default)' }}
-              />
-            ) : (
-              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-cyan-500 flex items-center justify-center">
-                <User className="w-4 h-4 text-white" />
-              </div>
-            )}
+            <UserAvatar user={user} />
           </button>
         </div>
       </div>
@@ -692,6 +774,7 @@ export function FloMailApp() {
                 onDraftCreated={handleDraftCreated}
                 onSendEmail={handleSendEmail}
                 onSaveDraft={handleSaveDraft}
+                onDeleteDraft={handleDeleteDraft}
                 onArchive={handleArchive}
                 onMoveToInbox={handleMoveToInbox}
                 onStar={handleStar}
