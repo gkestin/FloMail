@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useRef, useEffect } from 'react';
+// URL state sync uses native browser history API
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/contexts/AuthContext';
 import { LoginScreen } from './LoginScreen';
@@ -15,6 +16,9 @@ import { SnoozePicker } from './SnoozePicker';
 import { SnoozeOption } from '@/lib/snooze-persistence';
 
 import { User as UserType } from '@/types';
+
+// Valid folder names for URL
+const VALID_FOLDERS: MailFolder[] = ['inbox', 'sent', 'drafts', 'snoozed', 'starred', 'all'];
 
 type View = 'inbox' | 'chat';
 
@@ -54,6 +58,7 @@ const FOLDER_LABELS: Record<MailFolder, string> = {
 
 export function FloMailApp() {
   const { user, loading, signOut, getAccessToken } = useAuth();
+  
   const [currentView, setCurrentView] = useState<View>('inbox');
   const [selectedThread, setSelectedThread] = useState<EmailThread | null>(null);
   const [currentDraft, setCurrentDraft] = useState<EmailDraft | null>(null);
@@ -65,8 +70,10 @@ export function FloMailApp() {
   const [snoozePickerOpen, setSnoozePickerOpen] = useState(false);
   const [snoozeLoading, setSnoozeLoading] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0); // Increment to trigger InboxList refresh
+  const [urlInitialized, setUrlInitialized] = useState(false);
   const currentThreadIndexRef = useRef(0);
   const archiveHandlerRef = useRef<(() => void) | null>(null);
+  const isUpdatingFromUrl = useRef(false); // Prevent URL update loops
 
   // NOTE: Threads are loaded by InboxList, not here, to avoid duplicate API calls
   // allThreads is updated via handleSelectThread callback from InboxList
@@ -74,6 +81,126 @@ export function FloMailApp() {
   const triggerRefresh = useCallback(() => {
     setRefreshKey(k => k + 1);
   }, []);
+
+  // === URL STATE SYNC ===
+  // Parse URL params helper
+  const parseUrlParams = useCallback(() => {
+    const params = new URLSearchParams(window.location.search);
+    const folder = params.get('folder');
+    const thread = params.get('thread');
+    const search = params.get('q');
+    return {
+      folder: (folder && VALID_FOLDERS.includes(folder as MailFolder)) ? folder as MailFolder : 'inbox',
+      thread: thread || null,
+      search: search || '',
+    };
+  }, []);
+
+  // Update URL (push to history for navigation, replace for state sync)
+  const updateUrl = useCallback((folder: MailFolder, threadId?: string, search?: string, push = false) => {
+    const params = new URLSearchParams();
+    if (folder !== 'inbox') {
+      params.set('folder', folder);
+    }
+    if (threadId) {
+      params.set('thread', threadId);
+    }
+    if (search) {
+      params.set('q', search);
+    }
+    
+    const newUrl = params.toString() ? `?${params.toString()}` : window.location.pathname;
+    const currentUrl = window.location.search || '/';
+    
+    // Only update if URL actually changed
+    if (newUrl !== currentUrl && `?${params.toString()}` !== currentUrl) {
+      if (push) {
+        window.history.pushState({}, '', newUrl);
+      } else {
+        window.history.replaceState({}, '', newUrl);
+      }
+    }
+  }, []);
+
+  // Read initial state from URL on mount
+  useEffect(() => {
+    if (urlInitialized || !user) return;
+    
+    const { folder, thread, search } = parseUrlParams();
+    
+    console.log('[URL] Initial load:', { folder, thread, search });
+    
+    // Set folder and search from URL
+    setCurrentMailFolder(folder);
+    if (search) setSearchQuery(search);
+    
+    // If there's a thread ID in URL, fetch and show it
+    if (thread) {
+      const loadThreadFromUrl = async () => {
+        try {
+          const token = await getAccessToken();
+          if (!token) return;
+          
+          const threadData = await fetchThread(token, thread);
+          if (threadData) {
+            setSelectedThread(threadData);
+            setCurrentView('chat');
+          }
+        } catch (e) {
+          console.error('Failed to load thread from URL:', e);
+        }
+      };
+      loadThreadFromUrl();
+    }
+    
+    setUrlInitialized(true);
+  }, [user, urlInitialized, parseUrlParams, getAccessToken]);
+
+  // Sync state changes to URL (one-way: state → URL)
+  useEffect(() => {
+    if (!urlInitialized) return;
+    
+    const threadId = currentView === 'chat' && selectedThread ? selectedThread.id : undefined;
+    updateUrl(currentMailFolder, threadId, searchQuery || undefined);
+  }, [currentView, selectedThread?.id, currentMailFolder, searchQuery, urlInitialized, updateUrl]);
+
+  // Handle browser back/forward button (popstate event)
+  useEffect(() => {
+    const handlePopState = async () => {
+      const { folder, thread, search } = parseUrlParams();
+      
+      console.log('[URL] Popstate:', { folder, thread, search });
+      
+      // Update folder
+      setCurrentMailFolder(folder);
+      setSearchQuery(search);
+      
+      // Handle thread navigation
+      if (thread) {
+        // Need to load the thread
+        try {
+          const token = await getAccessToken();
+          if (token) {
+            const threadData = await fetchThread(token, thread);
+            if (threadData) {
+              setSelectedThread(threadData);
+              setCurrentView('chat');
+              return;
+            }
+          }
+        } catch (e) {
+          console.error('Failed to load thread on popstate:', e);
+        }
+      }
+      
+      // No thread in URL, go to inbox view
+      setSelectedThread(null);
+      setCurrentView('inbox');
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [parseUrlParams, getAccessToken]);
 
   // Check for expired snoozes on app load and periodically (client-side with auth)
   useEffect(() => {
@@ -148,6 +275,13 @@ export function FloMailApp() {
     
     setCurrentView('chat'); // Go directly to chat for the "flow" experience
     
+    // Push to browser history so back button works
+    const params = new URLSearchParams();
+    if (folder !== 'inbox') params.set('folder', folder);
+    params.set('thread', thread.id);
+    const newUrl = `?${params.toString()}`;
+    window.history.pushState({}, '', newUrl);
+    
     // If thread only has metadata, fetch full content in background
     if (thread._metadataOnly) {
       try {
@@ -171,9 +305,8 @@ export function FloMailApp() {
   }, [allThreads, getAccessToken]);
 
   const handleBack = useCallback(() => {
-    setSelectedThread(null);
-    setCurrentDraft(null);
-    setCurrentView('inbox');
+    // Use browser history if available
+    window.history.back();
   }, []);
 
   const handleGoToInbox = useCallback(() => {
@@ -183,6 +316,8 @@ export function FloMailApp() {
     setCurrentMailFolder('inbox'); // Reset to inbox folder
     setSearchQuery(''); // Clear any search
     triggerRefresh(); // Signal InboxList to refresh
+    // Update URL to root
+    window.history.pushState({}, '', '/');
   }, [triggerRefresh]);
 
 
