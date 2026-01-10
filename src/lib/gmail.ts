@@ -852,6 +852,28 @@ export interface GmailDraftInfo {
   date: string;
 }
 
+// Helper: fetch drafts in batches to avoid rate limits
+async function fetchInBatches<T, R>(
+  items: T[],
+  batchSize: number,
+  fetchFn: (item: T) => Promise<R | null>
+): Promise<R[]> {
+  const results: R[] = [];
+  
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const batchResults = await Promise.all(batch.map(fetchFn));
+    results.push(...batchResults.filter((r): r is R => r !== null));
+    
+    // Small delay between batches to avoid rate limits
+    if (i + batchSize < items.length) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+  
+  return results;
+}
+
 // List all Gmail drafts
 export async function listGmailDrafts(accessToken: string): Promise<GmailDraftInfo[]> {
   const response = await fetch(`${GMAIL_API_BASE}/drafts?maxResults=50`, {
@@ -868,8 +890,8 @@ export async function listGmailDrafts(accessToken: string): Promise<GmailDraftIn
     return [];
   }
 
-  // Fetch details for each draft IN PARALLEL (not sequentially!)
-  const draftPromises = data.drafts.map(async (draft: { id: string }) => {
+  // Fetch details in batches of 5 to avoid rate limits
+  const fetchDraftDetails = async (draft: { id: string }): Promise<GmailDraftInfo | null> => {
     try {
       const detailResponse = await fetch(`${GMAIL_API_BASE}/drafts/${draft.id}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
@@ -900,25 +922,44 @@ export async function listGmailDrafts(accessToken: string): Promise<GmailDraftIn
       console.error('Failed to fetch draft details:', draft.id, e);
       return null;
     }
-  });
+  };
   
-  const results = await Promise.all(draftPromises);
-  return results.filter((d): d is GmailDraftInfo => d !== null);
+  return fetchInBatches(data.drafts, 5, fetchDraftDetails);
 }
 
 
 // Get threads that have drafts (for showing draft indicator)
+// Uses minimal API call - just drafts.list without fetching full details
 export async function getThreadsWithDrafts(accessToken: string): Promise<Set<string>> {
-  const drafts = await listGmailDrafts(accessToken);
-  const threadIds = new Set<string>();
-  
-  for (const draft of drafts) {
-    if (draft.threadId) {
-      threadIds.add(draft.threadId);
+  try {
+    // Only request the fields we need - avoids fetching full draft content
+    const response = await fetch(
+      `${GMAIL_API_BASE}/drafts?maxResults=100&fields=drafts(id,message(threadId))`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    
+    if (!response.ok) {
+      console.warn('Failed to list drafts for thread check');
+      return new Set();
     }
+    
+    const data = await response.json();
+    const threadIds = new Set<string>();
+    
+    // Extract threadIds directly from the list response (no extra API calls!)
+    if (data.drafts) {
+      for (const draft of data.drafts) {
+        if (draft.message?.threadId) {
+          threadIds.add(draft.message.threadId);
+        }
+      }
+    }
+    
+    return threadIds;
+  } catch (e) {
+    console.error('Error getting threads with drafts:', e);
+    return new Set();
   }
-  
-  return threadIds;
 }
 
 // Full draft info with body content for editing
