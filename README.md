@@ -25,9 +25,13 @@ A **voice-first, AI-powered email assistant** that integrates with Gmail. The co
 ```
 src/
 ├── app/
-│   ├── api/ai/
-│   │   ├── chat/route.ts      # AI chat endpoint (Claude/GPT with tools)
-│   │   └── transcribe/route.ts # Whisper transcription endpoint
+│   ├── api/
+│   │   ├── ai/
+│   │   │   ├── chat/route.ts      # AI chat endpoint (Claude/GPT with tools)
+│   │   │   └── transcribe/route.ts # Whisper transcription endpoint
+│   │   ├── snooze/route.ts        # Snooze/unsnooze Gmail API operations
+│   │   ├── search/route.ts        # Web search via Tavily API
+│   │   └── browse/route.ts        # URL content fetching
 │   ├── page.tsx               # Main app entry
 │   └── layout.tsx             # Root layout with PWA manifest
 ├── components/
@@ -35,17 +39,20 @@ src/
 │   ├── DraftCard.tsx          # Inline-editable email draft UI
 │   ├── InboxList.tsx          # Gmail inbox with thread counts, attachments
 │   ├── ThreadPreview.tsx      # Collapsible email thread viewer
-│   └── FloMailApp.tsx         # App orchestration (inbox ↔ chat views)
+│   ├── FloMailApp.tsx         # App orchestration (inbox ↔ chat views)
+│   └── SnoozePicker.tsx       # Snooze time picker modal
 ├── contexts/
 │   └── AuthContext.tsx        # Firebase auth + Gmail token management
 ├── lib/
 │   ├── firebase.ts            # Firebase initialization
-│   ├── gmail.ts               # Gmail API functions (fetch, send, archive)
+│   ├── gmail.ts               # Gmail API functions (fetch, send, archive, snooze)
 │   ├── anthropic.ts           # Claude API with agent tools
 │   ├── openai.ts              # GPT API with agent tools
-│   ├── agent-tools.ts         # Tool definitions (prepare_draft, send_email, etc.)
+│   ├── agent-tools.ts         # Tool definitions (prepare_draft, send_email, snooze_email, etc.)
 │   ├── email-cache.ts         # Client-side caching for emails
-│   └── chat-persistence.ts    # Firestore persistence for per-thread chat history
+│   ├── chat-persistence.ts    # Firestore persistence for per-thread chat history
+│   ├── snooze-persistence.ts  # Firestore persistence for snooze/unsnooze tracking
+│   └── snooze-server.ts       # Server-side snooze utilities
 └── types/
     └── index.ts               # TypeScript interfaces
 ```
@@ -204,13 +211,36 @@ npm run dev -- -p 3001
 ## Key Features
 
 1. **Voice Input**: Mic button → waveform → Send button → transcribes → AI responds
-2. **AI Agent Tools**: `prepare_draft`, `send_email`, `archive_email`, `go_to_next_email`, `go_to_inbox`
+2. **AI Agent Tools**: `prepare_draft`, `send_email`, `archive_email`, `snooze_email`, `unsnooze_email`, `go_to_next_email`, `go_to_inbox`
 3. **Inline Draft Editing**: Click any field (To, Subject, Body) to edit in place
 4. **Email Threading**: Replies/forwards stay in Gmail thread with proper headers
 5. **Model Selection**: Switch between Claude/GPT models via settings popover
 6. **Per-Thread Chat History**: Each email thread has its own chat history, saved and synced across devices
 7. **Incognito Mode**: Click the eye icon to disable chat saving for the current session
 8. **Web Search**: Ask the AI to search the web or browse URLs from emails for real-time information
+9. **Email Snooze**: Snooze emails with quick options (30 min, 1h, 3h) or schedule (tomorrow, weekend, custom date)
+
+### Snooze Feature
+
+FloMail implements email snooze using Gmail labels + Firestore:
+
+**How it works:**
+- When you snooze an email, it gets a `FloMail/Snoozed` label in Gmail and is removed from inbox
+- Snooze timing is tracked in Firestore (`snoozedEmails` collection)
+- When the app is open, it polls every 60 seconds to check for expired snoozes
+- Expired snoozes are automatically moved back to inbox with a `FloMail/Unsnoozed` label
+- Recently unsnoozed emails show an orange "Unsnoozed" badge for 24 hours
+
+**Snooze options:**
+- **Quick snooze**: 30 minutes, 1 hour, 3 hours
+- **Schedule**: Later today (+4h), Tomorrow (1 PM), This weekend (Sunday 1 PM)
+- **Custom**: Pick any date and time
+- **Repeat**: One-click to repeat your last snooze choice
+
+**Gmail compatibility:**
+- Snoozed emails appear in Gmail with the `FloMail/Snoozed` label
+- You can manage snoozes from either FloMail or Gmail
+- The `FloMail/Unsnoozed` label helps track which emails returned from snooze
 
 ## Deployment (GCP Cloud Run)
 
@@ -346,8 +376,9 @@ Then update DNS records as instructed.
 ## Future Plans
 
 - Task manager integration
-- Labels, star, snooze actions
+- Custom labels management
 - Keyboard shortcuts
+- Background snooze processing (currently only processes when app is open)
 
 ## iOS App (When Ready)
 
