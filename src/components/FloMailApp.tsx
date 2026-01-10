@@ -8,7 +8,7 @@ import { InboxList, MailFolder } from './InboxList';
 import { ChatInterface } from './ChatInterface';
 import { EmailThread, EmailDraft } from '@/types';
 import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock } from 'lucide-react';
-import { sendEmail, archiveThread, fetchInbox, getAttachment, createGmailDraft, updateGmailDraft, hasSnoozedLabel, fetchThread } from '@/lib/gmail';
+import { sendEmail, archiveThread, getAttachment, createGmailDraft, updateGmailDraft, hasSnoozedLabel, fetchThread } from '@/lib/gmail';
 import { emailCache } from '@/lib/email-cache';
 import { DraftAttachment } from '@/types';
 import { SnoozePicker } from './SnoozePicker';
@@ -64,27 +64,16 @@ export function FloMailApp() {
   const [searchQuery, setSearchQuery] = useState(''); // Search query for inbox
   const [snoozePickerOpen, setSnoozePickerOpen] = useState(false);
   const [snoozeLoading, setSnoozeLoading] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0); // Increment to trigger InboxList refresh
   const currentThreadIndexRef = useRef(0);
   const archiveHandlerRef = useRef<(() => void) | null>(null);
 
-  // Load threads for navigation
-  const loadThreads = useCallback(async () => {
-    try {
-      const token = await getAccessToken();
-      if (!token) return;
-      const { threads } = await fetchInbox(token);
-      setAllThreads(threads);
-    } catch (err) {
-      console.error('Failed to load threads:', err);
-    }
-  }, [getAccessToken]);
-
-  // Load threads on mount
-  useEffect(() => {
-    if (user) {
-      loadThreads();
-    }
-  }, [user, loadThreads]);
+  // NOTE: Threads are loaded by InboxList, not here, to avoid duplicate API calls
+  // allThreads is updated via handleSelectThread callback from InboxList
+  // Use refreshKey to trigger InboxList to reload when needed
+  const triggerRefresh = useCallback(() => {
+    setRefreshKey(k => k + 1);
+  }, []);
 
   // Check for expired snoozes on app load and periodically (client-side with auth)
   useEffect(() => {
@@ -136,7 +125,8 @@ export function FloMailApp() {
     return () => clearInterval(interval);
   }, [user, getAccessToken]);
 
-  const handleSelectThread = useCallback((thread: EmailThread, folder: MailFolder = 'inbox', threadsInFolder: EmailThread[] = []) => {
+  const handleSelectThread = useCallback(async (thread: EmailThread, folder: MailFolder = 'inbox', threadsInFolder: EmailThread[] = []) => {
+    // Set thread immediately for fast UI response (shows metadata)
     setSelectedThread(thread);
     setCurrentMailFolder(folder);
     
@@ -157,7 +147,28 @@ export function FloMailApp() {
     }
     
     setCurrentView('chat'); // Go directly to chat for the "flow" experience
-  }, [allThreads]);
+    
+    // If thread only has metadata, fetch full content in background
+    if (thread._metadataOnly) {
+      try {
+        const token = await getAccessToken();
+        if (token) {
+          const fullThread = await fetchThread(token, thread.id);
+          // Update the selected thread with full content
+          setSelectedThread(fullThread);
+          // Also update in the thread lists
+          setAllThreads(prev => prev.map((t: EmailThread) => 
+            t.id === fullThread.id ? fullThread : t
+          ));
+          setFolderThreads(prev => prev.map((t: EmailThread) => 
+            t.id === fullThread.id ? fullThread : t
+          ));
+        }
+      } catch (e) {
+        console.error('Failed to fetch full thread content:', e);
+      }
+    }
+  }, [allThreads, getAccessToken]);
 
   const handleBack = useCallback(() => {
     setSelectedThread(null);
@@ -171,8 +182,8 @@ export function FloMailApp() {
     setCurrentView('inbox');
     setCurrentMailFolder('inbox'); // Reset to inbox folder
     setSearchQuery(''); // Clear any search
-    loadThreads(); // Refresh
-  }, [loadThreads]);
+    triggerRefresh(); // Signal InboxList to refresh
+  }, [triggerRefresh]);
 
 
   const handleDraftCreated = useCallback((draft: EmailDraft) => {
@@ -384,11 +395,11 @@ export function FloMailApp() {
       const { moveToInbox } = await import('@/lib/gmail');
       await moveToInbox(token, selectedThread.id);
       // Refresh the thread list
-      loadThreads();
+      triggerRefresh();
     } catch (err) {
       console.error('Failed to move to inbox:', err);
     }
-  }, [selectedThread, getAccessToken, loadThreads]);
+  }, [selectedThread, getAccessToken, triggerRefresh]);
 
   // Star email
   const handleStar = useCallback(async () => {
@@ -750,6 +761,7 @@ export function FloMailApp() {
               className="absolute inset-0"
             >
               <InboxList
+                key={refreshKey} // Change key to force remount/refresh
                 onSelectThread={handleSelectThread}
                 selectedThreadId={selectedThread?.id}
                 defaultFolder={currentMailFolder}

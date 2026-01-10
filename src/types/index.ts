@@ -23,6 +23,8 @@ export interface EmailMessage {
   listUnsubscribe?: string;     // List-Unsubscribe header
   listUnsubscribePost?: string; // List-Unsubscribe-Post header (RFC 8058 one-click)
   tls?: boolean;                // Was sent with TLS encryption
+  // Performance optimization flag
+  _metadataOnly?: boolean;      // True if only headers loaded (body needs fetch)
 }
 
 export interface EmailAddress {
@@ -39,6 +41,8 @@ export interface EmailThread {
   participants: EmailAddress[];
   isRead: boolean;
   labels: string[];
+  // Performance optimization flag
+  _metadataOnly?: boolean;      // True if only headers loaded (full content needs fetch)
 }
 
 export interface Attachment {

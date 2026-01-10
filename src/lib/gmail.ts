@@ -315,6 +315,9 @@ export async function fetchInbox(
   accessToken: string,
   options: { maxResults?: number; pageToken?: string; query?: string; labelIds?: string[] } = {}
 ): Promise<{ threads: EmailThread[]; nextPageToken?: string }> {
+  const totalStart = performance.now();
+  console.log('[fetchInbox] Starting...');
+  
   const params = new URLSearchParams({
     maxResults: String(options.maxResults || 20),
   });
@@ -332,9 +335,11 @@ export async function fetchInbox(
     params.set('pageToken', options.pageToken);
   }
 
+  const listStart = performance.now();
   const response = await fetch(`${GMAIL_API_BASE}/threads?${params}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
+  console.log(`[fetchInbox] threads.list took ${(performance.now() - listStart).toFixed(0)}ms`);
 
   if (!response.ok) {
     throw new Error(`Failed to fetch inbox: ${response.statusText}`);
@@ -342,22 +347,99 @@ export async function fetchInbox(
 
   const data = await response.json();
   const threads: EmailThread[] = [];
+  const threadCount = data.threads?.length || 0;
+  console.log(`[fetchInbox] Found ${threadCount} threads, fetching metadata...`);
 
   if (data.threads) {
-    // Fetch thread details in parallel (batch of 10)
-    const batchSize = 10;
-    for (let i = 0; i < data.threads.length; i += batchSize) {
-      const batch = data.threads.slice(i, i + batchSize);
-      const threadDetails = await Promise.all(
-        batch.map((t: { id: string }) => fetchThread(accessToken, t.id))
-      );
-      threads.push(...threadDetails);
-    }
+    // Fetch ALL thread metadata in parallel (not batched)
+    const metadataStart = performance.now();
+    const threadDetails = await Promise.all(
+      data.threads.map((t: { id: string }) => fetchThreadMetadata(accessToken, t.id))
+    );
+    threads.push(...threadDetails);
+    console.log(`[fetchInbox] All ${threadCount} metadata fetches took ${(performance.now() - metadataStart).toFixed(0)}ms`);
   }
 
+  console.log(`[fetchInbox] TOTAL: ${(performance.now() - totalStart).toFixed(0)}ms`);
+  
   return {
     threads,
     nextPageToken: data.nextPageToken,
+  };
+}
+
+/**
+ * Fetch thread with METADATA only (fast - for inbox list)
+ * Does NOT fetch message bodies, only headers and snippet
+ */
+async function fetchThreadMetadata(accessToken: string, threadId: string): Promise<EmailThread> {
+  const start = performance.now();
+  // format=metadata returns headers only, no body content
+  const response = await fetch(`${GMAIL_API_BASE}/threads/${threadId}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=Cc`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  console.log(`[fetchThreadMetadata] ${threadId.slice(0,8)}... took ${(performance.now() - start).toFixed(0)}ms`);
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch thread metadata: ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  const messages: EmailMessage[] = [];
+  const participants = new Map<string, EmailAddress>();
+
+  for (const msg of data.messages || []) {
+    const headers = msg.payload?.headers || [];
+    
+    const fromHeader = getHeader(headers, 'From');
+    const parsedFrom = parseFrom(fromHeader);
+    const from: EmailAddress = { name: parsedFrom.name || undefined, email: parsedFrom.email };
+    
+    const toRaw = getHeader(headers, 'To');
+    const parsedTo = parseAddressList(toRaw);
+    const to: EmailAddress[] = parsedTo.map(p => ({ name: p.name || undefined, email: p.email }));
+    
+    const ccRaw = getHeader(headers, 'Cc');
+    const parsedCc = ccRaw ? parseAddressList(ccRaw) : [];
+    const cc: EmailAddress[] | undefined = parsedCc.length > 0 
+      ? parsedCc.map(p => ({ name: p.name || undefined, email: p.email })) 
+      : undefined;
+
+    // Track participants
+    if (from.email) participants.set(from.email, from);
+    to.forEach((t) => participants.set(t.email, t));
+    cc?.forEach((c) => participants.set(c.email, c));
+
+    messages.push({
+      id: msg.id,
+      threadId: msg.threadId,
+      snippet: msg.snippet || '',
+      subject: getHeader(headers, 'Subject'),
+      from,
+      to,
+      cc,
+      date: getHeader(headers, 'Date'),
+      body: msg.snippet || '', // Use snippet as placeholder until full load
+      isRead: !msg.labelIds?.includes('UNREAD'),
+      labels: msg.labelIds || [],
+      hasAttachments: false, // Can't determine from metadata
+      // Flag indicating full content not loaded
+      _metadataOnly: true,
+    });
+  }
+
+  const lastMessage = messages[messages.length - 1];
+
+  return {
+    id: data.id,
+    messages,
+    subject: lastMessage?.subject || '(No Subject)',
+    snippet: lastMessage?.snippet || '',
+    lastMessageDate: lastMessage?.date || '',
+    participants: Array.from(participants.values()),
+    isRead: !data.messages?.some((m: any) => m.labelIds?.includes('UNREAD')),
+    labels: [...new Set(data.messages?.flatMap((m: any) => m.labelIds || []) || [])] as string[],
+    _metadataOnly: true, // Flag to indicate full content needs loading
   };
 }
 
@@ -785,19 +867,29 @@ export interface GmailDraftInfo {
 
 // List all Gmail drafts
 export async function listGmailDrafts(accessToken: string): Promise<GmailDraftInfo[]> {
+  const start = performance.now();
+  console.log('[listGmailDrafts] Starting...');
+  
   const response = await fetch(`${GMAIL_API_BASE}/drafts?maxResults=50`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
+  console.log(`[listGmailDrafts] List call took ${(performance.now() - start).toFixed(0)}ms`);
 
   if (!response.ok) {
     throw new Error('Failed to list drafts');
   }
 
   const data = await response.json();
-  const drafts: GmailDraftInfo[] = [];
+  const draftCount = data.drafts?.length || 0;
+  console.log(`[listGmailDrafts] Found ${draftCount} drafts, fetching details in PARALLEL...`);
+  
+  if (!data.drafts || draftCount === 0) {
+    return [];
+  }
 
-  // Fetch details for each draft
-  for (const draft of data.drafts || []) {
+  // Fetch details for each draft IN PARALLEL (not sequentially!)
+  const detailStart = performance.now();
+  const draftPromises = data.drafts.map(async (draft: { id: string }) => {
     try {
       const detailResponse = await fetch(`${GMAIL_API_BASE}/drafts/${draft.id}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
@@ -814,22 +906,30 @@ export async function listGmailDrafts(accessToken: string): Promise<GmailDraftIn
         const toHeader = getHeader('To');
         const toAddresses = toHeader ? toHeader.split(',').map((s: string) => s.trim()) : [];
         
-        drafts.push({
+        return {
           id: draft.id,
           threadId: message?.threadId,
           subject: getHeader('Subject') || '(No Subject)',
           to: toAddresses,
           snippet: message?.snippet || '',
           date: getHeader('Date') || new Date().toISOString(),
-        });
+        } as GmailDraftInfo;
       }
+      return null;
     } catch (e) {
       console.error('Failed to fetch draft details:', draft.id, e);
+      return null;
     }
-  }
-
+  });
+  
+  const results = await Promise.all(draftPromises);
+  const drafts = results.filter((d): d is GmailDraftInfo => d !== null);
+  console.log(`[listGmailDrafts] Parallel detail fetches took ${(performance.now() - detailStart).toFixed(0)}ms`);
+  console.log(`[listGmailDrafts] TOTAL: ${(performance.now() - start).toFixed(0)}ms`);
+  
   return drafts;
 }
+
 
 // Get threads that have drafts (for showing draft indicator)
 export async function getThreadsWithDrafts(accessToken: string): Promise<Set<string>> {

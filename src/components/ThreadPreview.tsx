@@ -6,6 +6,7 @@ import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inb
 import { EmailThread, EmailMessage } from '@/types';
 import { EmailHtmlViewer, isRichHtmlContent, stripBasicHtml } from './EmailHtmlViewer';
 import { UnsubscribeButton } from './UnsubscribeButton';
+import Linkify from 'linkify-react';
 
 // Folder type and display config
 type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'drafts' | 'snoozed';
@@ -18,6 +19,16 @@ const FOLDER_DISPLAY: Record<MailFolder, { label: string; icon: React.ElementTyp
   drafts: { label: 'Drafts', icon: Mail, color: 'text-red-400 bg-red-500/20' },
   snoozed: { label: 'Snoozed', icon: Clock, color: 'text-amber-400 bg-amber-500/20' },
 };
+
+/**
+ * Clean angle-bracketed URLs like <https://example.com> to just https://example.com
+ * This is a common format in plain text emails
+ */
+function cleanAngleBracketUrls(text: string): string {
+  if (!text) return '';
+  // Match <URL> and extract just the URL
+  return text.replace(/<(https?:\/\/[^>]+)>/gi, '$1');
+}
 
 interface ThreadPreviewProps {
   thread: EmailThread;
@@ -425,8 +436,24 @@ function MessageItem({
                   className={`text-sm whitespace-pre-wrap leading-relaxed ${isDraft ? 'italic' : ''}`}
                   style={{ color: isDraft ? 'var(--text-secondary)' : 'var(--text-primary)' }}
                 >
-                  {/* Use plain text body if available, otherwise strip HTML from bodyHtml */}
-                  {message.body || (message.bodyHtml ? stripBasicHtml(message.bodyHtml) : '')}
+                  {/* Use Linkify to auto-convert URLs and emails to clickable links */}
+                  <Linkify
+                    options={{
+                      target: '_blank',
+                      rel: 'noopener noreferrer',
+                      className: 'text-blue-400 hover:underline',
+                      format: (value: string, type: string) => {
+                        // Truncate long URLs for display
+                        if (type === 'url' && value.length > 50) {
+                          return value.slice(0, 50) + '…';
+                        }
+                        return value;
+                      }
+                    }}
+                  >
+                    {/* Clean angle-bracketed URLs and use plain text or stripped HTML */}
+                    {cleanAngleBracketUrls(message.body || (message.bodyHtml ? stripBasicHtml(message.bodyHtml) : ''))}
+                  </Linkify>
                   {isDraft && (
                     <div className="mt-2 text-xs text-red-400/70 not-italic">
                       — This is a draft, not yet sent
