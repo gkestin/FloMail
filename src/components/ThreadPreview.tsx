@@ -327,9 +327,11 @@ export function ThreadPreview({
   
   const hasRevealedThisGesture = useRef(false);
   const gestureTimeout = useRef<NodeJS.Timeout | null>(null);
+  // Store callback in ref to avoid stale closures
+  const onScrollRevealRef = useRef(onScrollReveal);
+  useEffect(() => { onScrollRevealRef.current = onScrollReveal; }, [onScrollReveal]);
   
   useEffect(() => {
-    if (!isPullToRevealMode || !onScrollReveal) return;
     const container = containerRef.current;
     if (!container) return;
     
@@ -345,6 +347,10 @@ export function ThreadPreview({
     };
     
     const handleWheel = (e: WheelEvent) => {
+      // Check if scroll handling is enabled
+      const scrollHandler = onScrollRevealRef.current;
+      if (!scrollHandler) return;
+      
       const current = revealedCountRef.current;
       const base = baseCountRef.current;
       const total = totalMessagesRef.current;
@@ -354,7 +360,7 @@ export function ThreadPreview({
       // Scroll DOWN (deltaY > 0) at BOTTOM = CLOSE ALL to base
       // Only collapse when at bottom (can't scroll further down)
       if (e.deltaY > 0 && atBottom && current > base) {
-        onScrollReveal(base);
+        scrollHandler(base);
         e.stopPropagation();
         return;
       }
@@ -365,7 +371,7 @@ export function ThreadPreview({
         
         if (!hasRevealedThisGesture.current && accumulatedDelta > threshold) {
           if (current < total) {
-            onScrollReveal(current + 1);
+            scrollHandler(current + 1);
             hasRevealedThisGesture.current = true;
           }
         }
@@ -382,7 +388,7 @@ export function ThreadPreview({
       container.removeEventListener('wheel', handleWheel);
       if (gestureTimeout.current) clearTimeout(gestureTimeout.current);
     };
-  }, [isPullToRevealMode, onScrollReveal]);
+  }, []); // Empty deps - uses refs for all state, always attached
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
