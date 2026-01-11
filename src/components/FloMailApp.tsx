@@ -593,7 +593,7 @@ export function FloMailApp() {
     }
   }, [selectedThread, getAccessToken]);
 
-  const handleNextEmail = useCallback(() => {
+  const handleNextEmail = useCallback(async () => {
     // Use folder-specific threads for navigation (fall back to allThreads if empty)
     const navThreads = folderThreads.length > 0 ? folderThreads : allThreads;
     
@@ -612,16 +612,31 @@ export function FloMailApp() {
     const nextThread = navThreads[nextIndex] || navThreads[navThreads.length - 1];
     
     if (nextThread && nextThread.id !== selectedThread?.id) {
-      setSelectedThread(nextThread);
       setCurrentDraft(null);
       currentThreadIndexRef.current = nextIndex < navThreads.length ? nextIndex : navThreads.length - 1;
       setCurrentView('chat');
+      
+      // Fetch full thread data (navThreads might only have metadata)
+      try {
+        const token = await getAccessToken();
+        if (token) {
+          const fullThread = await fetchThread(token, nextThread.id);
+          if (fullThread) {
+            setSelectedThread(fullThread);
+            return;
+          }
+        }
+      } catch (e) {
+        console.error('Failed to fetch full thread:', e);
+      }
+      // Fallback to cached thread if fetch fails
+      setSelectedThread(nextThread);
     } else if (navThreads.length > 0 && nextIndex >= navThreads.length) {
       // Already at the last email in this folder
     }
-  }, [folderThreads, allThreads, selectedThread]);
+  }, [folderThreads, allThreads, selectedThread, getAccessToken]);
 
-  const handlePreviousEmail = useCallback(() => {
+  const handlePreviousEmail = useCallback(async () => {
     // Use folder-specific threads for navigation (fall back to allThreads if empty)
     const navThreads = folderThreads.length > 0 ? folderThreads : allThreads;
     
@@ -635,12 +650,27 @@ export function FloMailApp() {
     const prevThread = navThreads[prevIndex];
     
     if (prevThread) {
-      setSelectedThread(prevThread);
       setCurrentDraft(null);
       currentThreadIndexRef.current = prevIndex;
       setCurrentView('chat');
+      
+      // Fetch full thread data (navThreads might only have metadata)
+      try {
+        const token = await getAccessToken();
+        if (token) {
+          const fullThread = await fetchThread(token, prevThread.id);
+          if (fullThread) {
+            setSelectedThread(fullThread);
+            return;
+          }
+        }
+      } catch (e) {
+        console.error('Failed to fetch full thread:', e);
+      }
+      // Fallback to cached thread if fetch fails
+      setSelectedThread(prevThread);
     }
-  }, [folderThreads, allThreads]);
+  }, [folderThreads, allThreads, getAccessToken]);
 
   // Handler for snooze from the draft card page header
   const handleSnooze = useCallback(async (option: SnoozeOption, customDate?: Date) => {
