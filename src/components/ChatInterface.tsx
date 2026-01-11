@@ -1402,7 +1402,8 @@ export function ChatInterface({
         {messages.map((message) => (
           <motion.div
             key={message.id}
-            initial={{ opacity: 0, y: 10 }}
+            // Skip y transform for messages with drafts to avoid iOS cursor positioning issues
+            initial={{ opacity: 0, y: message.draft ? 0 : 10 }}
             animate={{ opacity: 1, y: 0 }}
             className={`flex flex-col ${
               message.isSystemMessage 
@@ -1715,8 +1716,9 @@ export function ChatInterface({
         {/* Current draft */}
         {currentDraft && !messages.some(m => m.draft) && (
           <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
+            // Only animate opacity - no transforms to avoid iOS cursor positioning issues in textareas
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
             className="w-full max-w-[85%]"
           >
             <DraftCard

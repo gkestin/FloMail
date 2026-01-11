@@ -200,8 +200,10 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
+      // Only animate opacity - no transforms to avoid iOS cursor positioning issues in textareas
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.2 }}
       className={`rounded-lg border-l-2 ${
         editedDraft.type === 'new' ? 'border-amber-500/70' :
         editedDraft.type === 'forward' ? 'border-orange-500/50' :
@@ -375,8 +377,12 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
             onChange={(e) => setEditedDraft({ ...editedDraft, body: e.target.value })}
             placeholder={isStreaming ? "AI is drafting..." : "Write your message..."}
             disabled={isSending || isStreaming}
-            className={`w-full bg-transparent text-sm leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden ${isStreaming ? 'animate-pulse' : ''}`}
-            style={{ color: 'var(--text-primary)' }}
+            className={`w-full bg-transparent leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden ${isStreaming ? 'animate-pulse' : ''}`}
+            style={{ 
+              color: 'var(--text-primary)',
+              // 16px minimum to prevent iOS auto-zoom on focus
+              fontSize: '16px',
+            }}
           />
 
           {/* Quoted content - different display for reply vs forward */}
@@ -396,7 +402,8 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
                     value={editedDraft.quotedContent}
                     onChange={(e) => setEditedDraft({ ...editedDraft, quotedContent: e.target.value })}
                     disabled={isSending}
-                    className="w-full bg-transparent text-slate-400 text-sm leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden"
+                    className="w-full bg-transparent text-slate-400 leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden"
+                    style={{ fontSize: '16px' }}
                   />
                 </div>
               )}
