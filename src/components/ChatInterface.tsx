@@ -1364,27 +1364,53 @@ export function ChatInterface({
 
             {/* User message with edit/cancel controls */}
             {!message.isSystemMessage && message.role === 'user' && (
-              <div className="max-w-[85%] group relative">
+              <div className={`group relative ${editingMessageId === message.id ? 'w-[85%]' : 'max-w-[85%]'}`}>
                 {editingMessageId === message.id ? (
-                  // Editing mode
-                  <div className="bg-slate-800 rounded-2xl p-3 space-y-2">
+                  // Editing mode - full width of container, height grows with content
+                  <div 
+                    className="w-full rounded-2xl px-4 py-3"
+                    style={{
+                      background: 'var(--bg-interactive)',
+                      border: '1px solid var(--border-default)',
+                    }}
+                  >
                     <textarea
                       value={editingContent}
-                      onChange={(e) => setEditingContent(e.target.value)}
-                      className="w-full bg-transparent text-slate-200 text-sm resize-none focus:outline-none min-w-[200px]"
-                      rows={3}
+                      onChange={(e) => {
+                        setEditingContent(e.target.value);
+                        // Auto-resize height only
+                        e.target.style.height = 'auto';
+                        e.target.style.height = e.target.scrollHeight + 'px';
+                      }}
+                      className="w-full bg-transparent text-sm resize-none focus:outline-none"
+                      style={{ 
+                        color: 'var(--text-primary)',
+                        minHeight: '1.5em',
+                      }}
+                      rows={1}
                       autoFocus
+                      ref={(el) => {
+                        if (el) {
+                          // Auto-size height on mount
+                          el.style.height = 'auto';
+                          el.style.height = el.scrollHeight + 'px';
+                        }
+                      }}
                     />
-                    <div className="flex gap-2 justify-end">
+                    <div className="flex gap-2 justify-end mt-2">
                       <button
                         onClick={cancelEdit}
-                        className="px-3 py-1.5 text-xs rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600"
+                        className="px-3 py-1.5 text-xs rounded-lg transition-colors"
+                        style={{
+                          background: 'var(--bg-elevated)',
+                          color: 'var(--text-secondary)',
+                        }}
                       >
                         Cancel
                       </button>
                       <button
                         onClick={() => saveEdit(message.id)}
-                        className="px-3 py-1.5 text-xs rounded-lg bg-purple-500 text-white hover:bg-purple-600"
+                        className="px-3 py-1.5 text-xs rounded-lg text-white transition-colors bg-blue-500 hover:bg-blue-600"
                       >
                         Resend
                       </button>
