@@ -1,6 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 /**
+ * Get the actual origin, handling proxies and Cloud Run
+ */
+function getOrigin(request: NextRequest): string {
+  // Check for forwarded headers (used by Cloud Run and other proxies)
+  const forwardedHost = request.headers.get('x-forwarded-host');
+  const forwardedProto = request.headers.get('x-forwarded-proto') || 'https';
+  
+  if (forwardedHost) {
+    return `${forwardedProto}://${forwardedHost}`;
+  }
+  
+  // Check the host header
+  const host = request.headers.get('host');
+  if (host && !host.includes('0.0.0.0')) {
+    const proto = host.includes('localhost') ? 'http' : 'https';
+    return `${proto}://${host}`;
+  }
+  
+  // Fallback to nextUrl.origin
+  return request.nextUrl.origin;
+}
+
+/**
  * Handles the OAuth callback from Google
  * Exchanges the authorization code for access and refresh tokens
  */
@@ -8,14 +31,17 @@ export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
   const code = searchParams.get('code');
   const error = searchParams.get('error');
+  
+  const origin = getOrigin(request);
+  console.log('[OAuth Callback] Origin:', origin);
 
   if (error) {
     console.error('[OAuth Callback] Error from Google:', error);
-    return NextResponse.redirect(new URL('/?auth_error=' + error, request.nextUrl.origin));
+    return NextResponse.redirect(new URL('/?auth_error=' + error, origin));
   }
 
   if (!code) {
-    return NextResponse.redirect(new URL('/?auth_error=no_code', request.nextUrl.origin));
+    return NextResponse.redirect(new URL('/?auth_error=no_code', origin));
   }
 
   const clientId = process.env.GOOGLE_CLIENT_ID;
@@ -23,10 +49,9 @@ export async function GET(request: NextRequest) {
 
   if (!clientId || !clientSecret) {
     console.error('[OAuth Callback] Missing client credentials');
-    return NextResponse.redirect(new URL('/?auth_error=config_error', request.nextUrl.origin));
+    return NextResponse.redirect(new URL('/?auth_error=config_error', origin));
   }
 
-  const origin = request.nextUrl.origin;
   const redirectUri = `${origin}/api/auth/google/callback`;
 
   try {
@@ -46,7 +71,7 @@ export async function GET(request: NextRequest) {
     if (!tokenResponse.ok) {
       const errorData = await tokenResponse.json();
       console.error('[OAuth Callback] Token exchange failed:', errorData);
-      return NextResponse.redirect(new URL('/?auth_error=token_exchange_failed', request.nextUrl.origin));
+      return NextResponse.redirect(new URL('/?auth_error=token_exchange_failed', origin));
     }
 
     const tokens = await tokenResponse.json();
@@ -61,13 +86,13 @@ export async function GET(request: NextRequest) {
 
     if (!userInfoResponse.ok) {
       console.error('[OAuth Callback] Failed to get user info');
-      return NextResponse.redirect(new URL('/?auth_error=userinfo_failed', request.nextUrl.origin));
+      return NextResponse.redirect(new URL('/?auth_error=userinfo_failed', origin));
     }
 
     const userInfo = await userInfoResponse.json();
 
     // Create a response that redirects to the app with tokens in a secure cookie
-    const response = NextResponse.redirect(new URL('/', request.nextUrl.origin));
+    const response = NextResponse.redirect(new URL('/', origin));
     
     // Store auth data in a secure HTTP-only cookie
     // The client will read this on load and store in Firestore
@@ -96,6 +121,6 @@ export async function GET(request: NextRequest) {
     return response;
   } catch (error) {
     console.error('[OAuth Callback] Error:', error);
-    return NextResponse.redirect(new URL('/?auth_error=server_error', request.nextUrl.origin));
+    return NextResponse.redirect(new URL('/?auth_error=server_error', origin));
   }
 }
