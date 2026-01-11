@@ -9,7 +9,7 @@ import { InboxList, MailFolder } from './InboxList';
 import { ChatInterface } from './ChatInterface';
 import { EmailThread, EmailDraft } from '@/types';
 import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock } from 'lucide-react';
-import { sendEmail, archiveThread, getAttachment, createGmailDraft, updateGmailDraft, hasSnoozedLabel, fetchThread } from '@/lib/gmail';
+import { sendEmail, archiveThread, getAttachment, createGmailDraft, updateGmailDraft, hasSnoozedLabel, fetchThread, fetchInbox } from '@/lib/gmail';
 import { emailCache } from '@/lib/email-cache';
 import { DraftAttachment } from '@/types';
 import { SnoozePicker } from './SnoozePicker';
@@ -134,13 +134,42 @@ export function FloMailApp() {
     setCurrentMailFolder(folder);
     if (search) setSearchQuery(search);
     
-    // If there's a thread ID in URL, fetch and show it
+    // If there's a thread ID in URL, load folder threads AND the specific thread
     if (thread) {
       const loadThreadFromUrl = async () => {
         try {
           const token = await getAccessToken();
           if (!token) return;
           
+          // Map folder to Gmail labelIds
+          const folderLabelMap: Record<MailFolder, string[] | undefined> = {
+            inbox: ['INBOX'],
+            sent: ['SENT'],
+            drafts: ['DRAFT'],
+            snoozed: undefined, // Special handling
+            starred: ['STARRED'],
+            all: undefined, // No filter = all mail
+          };
+          
+          // Load folder threads first so we have the count and position
+          const labelIds = folderLabelMap[folder];
+          const folderResult = await fetchInbox(token, { labelIds });
+          if (folderResult?.threads) {
+            setFolderThreads(folderResult.threads);
+            setAllThreads(prev => {
+              const existingIds = new Set(prev.map(t => t.id));
+              const newThreads = folderResult.threads.filter((t: EmailThread) => !existingIds.has(t.id));
+              return [...prev, ...newThreads];
+            });
+            
+            // Find the thread index in the folder
+            const idx = folderResult.threads.findIndex((t: EmailThread) => t.id === thread);
+            if (idx !== -1) {
+              currentThreadIndexRef.current = idx;
+            }
+          }
+          
+          // Now fetch the full thread data
           const threadData = await fetchThread(token, thread);
           if (threadData) {
             setSelectedThread(threadData);
