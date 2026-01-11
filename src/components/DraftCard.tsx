@@ -51,10 +51,68 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
   );
   const [showQuoted, setShowQuoted] = useState(false);
   
+  // Responsive button labels - progressively hide as space shrinks
+  // Store width thresholds for each compact level
+  const [compactLevel, setCompactLevel] = useState(0); // 0=full, 1=hide discard text, 2=hide save text, 3=hide send text
+  const actionsRef = useRef<HTMLDivElement>(null);
+  const lastWidthRef = useRef<number>(0);
+  const isInitializedRef = useRef(false);
+  
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const quotedRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  // Observe actions container width and adjust compact level based on available space
+  useEffect(() => {
+    const actionsContainer = actionsRef.current;
+    if (!actionsContainer) return;
+    
+    // Approximate widths for each label (icon is always ~28px, text adds ~50-70px)
+    const DISCARD_TEXT_WIDTH = 60;
+    const SAVE_TEXT_WIDTH = 45;
+    const SEND_TEXT_WIDTH = 45;
+    
+    // Base width with all icons only
+    const BASE_WIDTH = 180; // icons + gaps + padding
+    
+    const calculateCompactLevel = (containerWidth: number) => {
+      // Calculate how much space we have beyond base
+      const availableForText = containerWidth - BASE_WIDTH;
+      
+      if (availableForText >= DISCARD_TEXT_WIDTH + SAVE_TEXT_WIDTH + SEND_TEXT_WIDTH) {
+        return 0; // Room for all labels
+      } else if (availableForText >= SAVE_TEXT_WIDTH + SEND_TEXT_WIDTH) {
+        return 1; // Hide discard text
+      } else if (availableForText >= SEND_TEXT_WIDTH) {
+        return 2; // Hide discard + save text
+      } else {
+        return 3; // Hide all text
+      }
+    };
+    
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      
+      const containerWidth = entry.contentRect.width;
+      
+      // Skip if width hasn't changed significantly (prevents micro-jitter)
+      if (Math.abs(containerWidth - lastWidthRef.current) < 5 && isInitializedRef.current) {
+        return;
+      }
+      
+      lastWidthRef.current = containerWidth;
+      isInitializedRef.current = true;
+      
+      const newLevel = calculateCompactLevel(containerWidth);
+      setCompactLevel(newLevel);
+    });
+    
+    observer.observe(actionsContainer);
+    
+    return () => observer.disconnect();
+  }, [onSaveDraft]); // Re-run when save button visibility changes
 
   // Update editedDraft when draft prop changes
   useEffect(() => {
@@ -535,12 +593,12 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
         accept="*/*"
       />
 
-      {/* Actions - compact row */}
-      <div className="flex items-center gap-2 px-3 py-2">
+      {/* Actions - compact row with dynamic responsive labels */}
+      <div ref={actionsRef} className="flex items-center gap-2 px-3 py-2 overflow-hidden">
         <button
           onClick={() => onDiscard(editedDraft)}
           disabled={isSending || isSaving || isDeleting}
-          className="flex items-center gap-1 px-3 py-1.5 text-sm text-slate-400 hover:text-red-400 transition-colors disabled:opacity-50"
+          className="flex items-center gap-1 px-2 py-1.5 text-sm text-slate-400 hover:text-red-400 transition-colors disabled:opacity-50 whitespace-nowrap"
           title={editedDraft.gmailDraftId ? "Delete draft from Gmail" : "Discard draft"}
         >
           {isDeleting ? (
@@ -548,21 +606,20 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
           ) : (
             <Trash2 className="w-3.5 h-3.5" />
           )}
-          {isDeleting ? 'Deleting...' : 'Discard'}
+          {compactLevel < 1 && <span>{isDeleting ? 'Deleting...' : 'Discard'}</span>}
         </button>
         
-        {/* Add attachment button */}
+        {/* Add attachment button - always icon only */}
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={isSending || isSaving}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-400 hover:text-cyan-400 transition-colors disabled:opacity-50"
+          className="flex items-center px-2 py-1.5 text-sm text-slate-400 hover:text-cyan-400 transition-colors disabled:opacity-50"
           title="Add attachment"
         >
           <Paperclip className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">Attach</span>
         </button>
         
-        <div className="flex-1" />
+        <div className="flex-1 min-w-0" />
         
         {/* Save Draft button */}
         {onSaveDraft && (
@@ -571,7 +628,7 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
             whileTap={{ scale: 0.98 }}
             onClick={() => onSaveDraft(editedDraft)}
             disabled={isSending || isSaving}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium transition-colors disabled:opacity-50"
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium transition-colors disabled:opacity-50 whitespace-nowrap"
             title="Save as Gmail draft"
           >
             {isSaving ? (
@@ -579,7 +636,7 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
             ) : (
               <Save className="w-3.5 h-3.5" />
             )}
-            {isSaving ? 'Saving...' : 'Save'}
+            {compactLevel < 2 && <span>{isSaving ? 'Saving...' : 'Save'}</span>}
           </motion.button>
         )}
         
@@ -589,14 +646,14 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
           whileTap={{ scale: 0.98 }}
           onClick={handleSendClick}
           disabled={isSending || isSaving || editedDraft.to.length === 0}
-          className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-cyan-500/90 hover:bg-cyan-500 text-white text-sm font-medium transition-colors disabled:opacity-50"
+          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-cyan-500/90 hover:bg-cyan-500 text-white text-sm font-medium transition-colors disabled:opacity-50 whitespace-nowrap"
         >
           {isSending ? (
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
           ) : (
             <Send className="w-3.5 h-3.5" />
           )}
-          {isSending ? 'Sending...' : 'Send'}
+          {compactLevel < 3 && <span>{isSending ? 'Sending...' : 'Send'}</span>}
         </motion.button>
       </div>
     </motion.div>
