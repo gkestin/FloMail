@@ -30,6 +30,171 @@ function cleanAngleBracketUrls(text: string): string {
   return text.replace(/<(https?:\/\/[^>]+)>/gi, '$1');
 }
 
+/**
+ * Detect if a line is part of quoted content
+ */
+function isQuotedLine(line: string): boolean {
+  const trimmed = line.trim();
+  // Lines starting with > (quoted reply)
+  if (trimmed.startsWith('>')) return true;
+  return false;
+}
+
+/**
+ * Detect if a line is a quote attribution (e.g., "On Jan 10, 2026, John wrote:")
+ */
+function isQuoteAttribution(line: string): boolean {
+  const trimmed = line.trim();
+  // Match patterns like "On [date], [name] wrote:" or "On [date] at [time] [name] <email> wrote:"
+  if (/^On\s+.+\s+wrote:?\s*$/i.test(trimmed)) return true;
+  // Match "From: ... Sent: ... To: ..." (forwarded email headers)
+  if (/^(From|Sent|To|Subject|Date):\s*.+$/i.test(trimmed)) return true;
+  return false;
+}
+
+/**
+ * Parse email body into main content and quoted content
+ */
+function parseEmailContent(text: string): { mainContent: string; quotedContent: string | null; attributionLine: string | null } {
+  if (!text) return { mainContent: '', quotedContent: null, attributionLine: null };
+  
+  const lines = text.split('\n');
+  const mainLines: string[] = [];
+  const quotedLines: string[] = [];
+  let attributionLine: string | null = null;
+  let inQuotedSection = false;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    
+    // Check if this line starts quoted content
+    if (!inQuotedSection && isQuoteAttribution(line)) {
+      // Found attribution line - everything after is quoted
+      attributionLine = line;
+      inQuotedSection = true;
+      continue;
+    }
+    
+    if (!inQuotedSection && isQuotedLine(line)) {
+      // Found quoted line without attribution
+      inQuotedSection = true;
+    }
+    
+    if (inQuotedSection) {
+      quotedLines.push(line);
+    } else {
+      mainLines.push(line);
+    }
+  }
+  
+  // Trim trailing empty lines from main content
+  while (mainLines.length > 0 && mainLines[mainLines.length - 1].trim() === '') {
+    mainLines.pop();
+  }
+  
+  return {
+    mainContent: mainLines.join('\n'),
+    quotedContent: quotedLines.length > 0 ? quotedLines.join('\n') : null,
+    attributionLine,
+  };
+}
+
+/**
+ * Component to render email body with collapsible quoted content
+ */
+function EmailBodyWithQuotes({ 
+  content, 
+  isDraft = false 
+}: { 
+  content: string; 
+  isDraft?: boolean;
+}) {
+  const [showQuoted, setShowQuoted] = useState(false);
+  const { mainContent, quotedContent, attributionLine } = parseEmailContent(content);
+  
+  return (
+    <div 
+      className={`text-sm leading-relaxed ${isDraft ? 'italic' : ''}`}
+      style={{ color: isDraft ? 'var(--text-secondary)' : 'var(--text-primary)' }}
+    >
+      {/* Main content with Linkify */}
+      <div className="whitespace-pre-wrap">
+        <Linkify
+          options={{
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            className: 'text-blue-400 hover:underline',
+            format: (value: string, type: string) => {
+              if (type === 'url' && value.length > 50) {
+                return value.slice(0, 50) + '…';
+              }
+              return value;
+            }
+          }}
+        >
+          {cleanAngleBracketUrls(mainContent)}
+        </Linkify>
+      </div>
+      
+      {/* Quoted content toggle */}
+      {quotedContent && (
+        <div className="mt-2">
+          <button
+            onClick={() => setShowQuoted(!showQuoted)}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs hover:bg-white/10 transition-colors"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            <span className="tracking-wider">•••</span>
+          </button>
+          
+          <AnimatePresence>
+            {showQuoted && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                className="overflow-hidden"
+              >
+                <div 
+                  className="mt-2 pl-3 border-l-2 whitespace-pre-wrap"
+                  style={{ 
+                    borderColor: 'var(--border-default)',
+                    color: 'var(--text-secondary)'
+                  }}
+                >
+                  {/* Attribution line */}
+                  {attributionLine && (
+                    <div className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
+                      {attributionLine}
+                    </div>
+                  )}
+                  {/* Quoted text */}
+                  <Linkify
+                    options={{
+                      target: '_blank',
+                      rel: 'noopener noreferrer',
+                      className: 'text-blue-400 hover:underline',
+                    }}
+                  >
+                    {cleanAngleBracketUrls(quotedContent)}
+                  </Linkify>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      )}
+      
+      {isDraft && (
+        <div className="mt-2 text-xs text-red-400/70 not-italic">
+          — This is a draft, not yet sent
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface ThreadPreviewProps {
   thread: EmailThread;
   folder?: MailFolder;
@@ -432,34 +597,10 @@ function MessageItem({
                   )}
                 </div>
               ) : (
-                <div 
-                  className={`text-sm whitespace-pre-wrap leading-relaxed ${isDraft ? 'italic' : ''}`}
-                  style={{ color: isDraft ? 'var(--text-secondary)' : 'var(--text-primary)' }}
-                >
-                  {/* Use Linkify to auto-convert URLs and emails to clickable links */}
-                  <Linkify
-                    options={{
-                      target: '_blank',
-                      rel: 'noopener noreferrer',
-                      className: 'text-blue-400 hover:underline',
-                      format: (value: string, type: string) => {
-                        // Truncate long URLs for display
-                        if (type === 'url' && value.length > 50) {
-                          return value.slice(0, 50) + '…';
-                        }
-                        return value;
-                      }
-                    }}
-                  >
-                    {/* Clean angle-bracketed URLs and use plain text or stripped HTML */}
-                    {cleanAngleBracketUrls(message.body || (message.bodyHtml ? stripBasicHtml(message.bodyHtml) : ''))}
-                  </Linkify>
-                  {isDraft && (
-                    <div className="mt-2 text-xs text-red-400/70 not-italic">
-                      — This is a draft, not yet sent
-                    </div>
-                  )}
-                </div>
+                <EmailBodyWithQuotes 
+                  content={message.body || (message.bodyHtml ? stripBasicHtml(message.bodyHtml) : '')}
+                  isDraft={isDraft}
+                />
               )}
             </div>
           </motion.div>
