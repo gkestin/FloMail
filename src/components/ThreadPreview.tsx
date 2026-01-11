@@ -199,21 +199,48 @@ interface ThreadPreviewProps {
   thread: EmailThread;
   folder?: MailFolder;
   defaultExpanded?: boolean;
+  /** Number of messages to reveal (from most recent). 0 = collapsed, 1+ = expanded with N messages. */
+  revealedMessageCount?: number;
+  /** Base count set by manual actions. Scroll-close snaps back to this. */
+  baseRevealedCount?: number;
+  /** Callback for MANUAL actions (header click) - sets both base and current */
+  onRevealedCountChange?: (count: number) => void;
+  /** Callback for SCROLL actions - only sets current, not base */
+  onScrollReveal?: (count: number) => void;
 }
 
 // Storage keys for persisting state
 const STORAGE_KEY_EXPANDED = 'flomail-thread-expanded';
 const STORAGE_KEY_HEIGHT = 'flomail-thread-height';
 
-export function ThreadPreview({ thread, folder = 'inbox', defaultExpanded = false }: ThreadPreviewProps) {
-  // Load persisted expanded state from localStorage
-  const [isExpanded, setIsExpanded] = useState(() => {
+export function ThreadPreview({ 
+  thread, 
+  folder = 'inbox', 
+  defaultExpanded = false,
+  revealedMessageCount,
+  baseRevealedCount = 1,
+  onRevealedCountChange,
+  onScrollReveal,
+}: ThreadPreviewProps) {
+  // If revealedMessageCount is provided (parent-controlled mode):
+  // - 0 means collapsed
+  // - 1+ means expanded with N messages visible
+  const isPullToRevealMode = revealedMessageCount !== undefined;
+  
+  // In parent-controlled mode, expand state is derived from revealedMessageCount
+  // Otherwise, use local state (legacy behavior)
+  const [localIsExpanded, setLocalIsExpanded] = useState(() => {
     if (typeof window === 'undefined') return defaultExpanded;
     const saved = localStorage.getItem(STORAGE_KEY_EXPANDED);
     return saved !== null ? saved === 'true' : defaultExpanded;
   });
   
-  // Always show only the latest message expanded when thread changes
+  // Determine actual expanded state
+  const isExpanded = isPullToRevealMode 
+    ? (revealedMessageCount || 0) > 0 
+    : localIsExpanded;
+  
+  // Tracks which individual messages are expanded (shows full content)
   const [expandedMessages, setExpandedMessages] = useState<Set<string>>(
     new Set([thread.messages[thread.messages.length - 1]?.id])
   );
@@ -231,10 +258,12 @@ export function ThreadPreview({ thread, folder = 'inbox', defaultExpanded = fals
   const containerRef = useRef<HTMLDivElement>(null);
   const previousThreadId = useRef<string | null>(null);
 
-  // Persist expanded state when it changes
+  // Persist expanded state when it changes (only in local mode)
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY_EXPANDED, String(isExpanded));
-  }, [isExpanded]);
+    if (!isPullToRevealMode) {
+      localStorage.setItem(STORAGE_KEY_EXPANDED, String(localIsExpanded));
+    }
+  }, [localIsExpanded, isPullToRevealMode]);
 
   // Persist height when it changes (debounced via mouseUp)
   const saveHeight = useCallback((height: number) => {
@@ -248,6 +277,112 @@ export function ThreadPreview({ thread, folder = 'inbox', defaultExpanded = fals
       previousThreadId.current = thread.id;
     }
   }, [thread.id, thread.messages]);
+
+  // Track previous revealed count to detect when new messages are revealed
+  const prevRevealedCount = useRef(revealedMessageCount || 0);
+  
+  // Auto-expand individual messages when they're revealed by scrolling
+  useEffect(() => {
+    if (!isPullToRevealMode) return;
+    
+    const currentCount = revealedMessageCount || 0;
+    
+    // If revealing more messages than before, add them to the expanded set
+    if (currentCount > prevRevealedCount.current && currentCount > 0) {
+      // Get the messages being revealed
+      const revealedMessages = thread.messages.slice(-currentCount);
+      
+      // Add all newly revealed messages to expanded set
+      setExpandedMessages(prev => {
+        const newSet = new Set(prev);
+        revealedMessages.forEach(msg => newSet.add(msg.id));
+        return newSet;
+      });
+    }
+    
+    prevRevealedCount.current = currentCount;
+  }, [revealedMessageCount, isPullToRevealMode, thread.messages]);
+  
+  // Handler for toggling expand state
+  const handleToggleExpand = useCallback(() => {
+    if (isPullToRevealMode && onRevealedCountChange) {
+      // Toggle between 0 (collapsed) and 1 (show latest message)
+      onRevealedCountChange(isExpanded ? 0 : 1);
+    } else {
+      setLocalIsExpanded(prev => !prev);
+    }
+  }, [isPullToRevealMode, onRevealedCountChange, isExpanded]);
+
+  // ===========================================
+  // SCROLL-TO-REVEAL/CLOSE WITHIN MESSAGE CONTAINER
+  // ===========================================
+  // Uses refs to avoid stale closure issues
+  const revealedCountRef = useRef(revealedMessageCount || 1);
+  const baseCountRef = useRef(baseRevealedCount);
+  const totalMessagesRef = useRef(thread.messages.length);
+  
+  useEffect(() => { revealedCountRef.current = revealedMessageCount || 1; }, [revealedMessageCount]);
+  useEffect(() => { baseCountRef.current = baseRevealedCount; }, [baseRevealedCount]);
+  useEffect(() => { totalMessagesRef.current = thread.messages.length; }, [thread.messages.length]);
+  
+  const hasRevealedThisGesture = useRef(false);
+  const gestureTimeout = useRef<NodeJS.Timeout | null>(null);
+  
+  useEffect(() => {
+    if (!isPullToRevealMode || !onScrollReveal) return;
+    const container = containerRef.current;
+    if (!container) return;
+    
+    let accumulatedDelta = 0;
+    const threshold = 60;
+    
+    const resetGesture = () => {
+      if (gestureTimeout.current) clearTimeout(gestureTimeout.current);
+      gestureTimeout.current = setTimeout(() => {
+        hasRevealedThisGesture.current = false;
+        accumulatedDelta = 0;
+      }, 40);
+    };
+    
+    const handleWheel = (e: WheelEvent) => {
+      const current = revealedCountRef.current;
+      const base = baseCountRef.current;
+      const total = totalMessagesRef.current;
+      const atTop = container.scrollTop <= 2;
+      const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 2;
+      
+      // Scroll DOWN (deltaY > 0) at BOTTOM = CLOSE ALL to base
+      // Only collapse when at bottom (can't scroll further down)
+      if (e.deltaY > 0 && atBottom && current > base) {
+        onScrollReveal(base);
+        e.stopPropagation();
+        return;
+      }
+      
+      // Scroll UP (deltaY < 0) at TOP = reveal ONE message
+      if (e.deltaY < 0 && atTop) {
+        accumulatedDelta += Math.abs(e.deltaY);
+        
+        if (!hasRevealedThisGesture.current && accumulatedDelta > threshold) {
+          if (current < total) {
+            onScrollReveal(current + 1);
+            hasRevealedThisGesture.current = true;
+          }
+        }
+        
+        e.preventDefault();
+        e.stopPropagation();
+        resetGesture();
+      }
+    };
+    
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    
+    return () => {
+      container.removeEventListener('wheel', handleWheel);
+      if (gestureTimeout.current) clearTimeout(gestureTimeout.current);
+    };
+  }, [isPullToRevealMode, onScrollReveal]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -339,7 +474,7 @@ export function ThreadPreview({ thread, folder = 'inbox', defaultExpanded = fals
         <div className="relative z-10 flex items-center gap-3 px-4 py-2.5">
         {/* Clickable subject area */}
         <button
-          onClick={() => setIsExpanded(!isExpanded)}
+          onClick={handleToggleExpand}
           className="flex items-center gap-3 flex-1 min-w-0 hover:opacity-80 transition-opacity text-left"
         >
           <div className="p-1.5 rounded-lg bg-blue-500/20">
@@ -417,17 +552,39 @@ export function ThreadPreview({ thread, folder = 'inbox', defaultExpanded = fals
                 style={{ maxHeight: `${messagesHeight}px` }}
                 className="overflow-y-auto px-4 pb-3"
               >
-                {thread.messages.map((message, index) => (
-                  <MessageItem
-                    key={message.id}
-                    message={message}
-                    isExpanded={expandedMessages.has(message.id)}
-                    isLast={index === thread.messages.length - 1}
-                    onToggle={() => toggleMessage(message.id)}
-                    formatDate={formatDate}
-                    getAvatarColor={getAvatarColor}
-                  />
-                ))}
+                <AnimatePresence mode="popLayout">
+                  {(() => {
+                    // In pull-to-reveal mode, only show the N most recent messages
+                    const messagesToShow = isPullToRevealMode
+                      ? thread.messages.slice(-(revealedMessageCount || 1))
+                      : thread.messages;
+                    
+                    return messagesToShow.map((message, index) => {
+                      const originalIndex = isPullToRevealMode
+                        ? thread.messages.length - messagesToShow.length + index
+                        : index;
+                      
+                      return (
+                        <motion.div
+                          key={message.id}
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }}
+                          transition={{ duration: 0.25, ease: 'easeOut' }}
+                        >
+                          <MessageItem
+                            message={message}
+                            isExpanded={expandedMessages.has(message.id)}
+                            isLast={originalIndex === thread.messages.length - 1}
+                            onToggle={() => toggleMessage(message.id)}
+                            formatDate={formatDate}
+                            getAvatarColor={getAvatarColor}
+                          />
+                        </motion.div>
+                      );
+                    });
+                  })()}
+                </AnimatePresence>
               </div>
             </motion.div>
           )}

@@ -161,6 +161,36 @@ export function ChatInterface({
   const pendingNavTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   // Track which thread the current messages belong to (to prevent race conditions)
   const messagesThreadIdRef = useRef<string | null>(null);
+  
+  // ===========================================
+  // PULL-TO-REVEAL STATE
+  // ===========================================
+  // 0 = thread collapsed, 1+ = thread expanded with N messages visible
+  const [revealedMessageCount, setRevealedMessageCount] = useState(1);
+  // Base count = what was set by manual action (header click). Scroll-close snaps back to this.
+  const [baseRevealedCount, setBaseRevealedCount] = useState(1);
+  
+  // Refs to always have latest values in event handlers (avoids stale closures)
+  const revealedCountRef = useRef(revealedMessageCount);
+  const baseCountRef = useRef(baseRevealedCount);
+  useEffect(() => { revealedCountRef.current = revealedMessageCount; }, [revealedMessageCount]);
+  useEffect(() => { baseCountRef.current = baseRevealedCount; }, [baseRevealedCount]);
+  
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const isPullingRef = useRef(false);
+  const pullStartY = useRef(0);
+  const lastScrollTop = useRef(0);
+  
+  // Callback for ThreadPreview MANUAL actions (header click) - sets BOTH base and current
+  const handleRevealedCountChange = useCallback((count: number) => {
+    setBaseRevealedCount(count);
+    setRevealedMessageCount(count);
+  }, []);
+  
+  // Callback for SCROLL actions - only sets current, not base
+  const handleScrollReveal = useCallback((count: number) => {
+    setRevealedMessageCount(count);
+  }, []);
 
   // Get available models based on provider
   const availableModels = provider === 'openai' ? OPENAI_MODELS : CLAUDE_MODELS;
@@ -304,6 +334,132 @@ export function ChatInterface({
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Reset revealed messages when thread changes
+  useEffect(() => {
+    setRevealedMessageCount(1);
+    setBaseRevealedCount(1);
+  }, [thread?.id]);
+
+  // ===========================================
+  // SCROLL-TO-REVEAL/CLOSE LOGIC
+  // ===========================================
+  // Behavior:
+  // - Scroll UP (deltaY < 0) at top → reveal ONE message at a time
+  // - Scroll DOWN (deltaY > 0) anywhere → close ALL to base immediately
+  // 
+  // Uses refs for state to avoid stale closure issues
+  const hasRevealedThisGesture = useRef(false);
+  const gestureEndTimeout = useRef<NodeJS.Timeout | null>(null);
+  const totalMessagesRef = useRef(0);
+  
+  useEffect(() => {
+    if (thread) {
+      totalMessagesRef.current = thread.messages.length;
+    }
+  }, [thread?.messages.length]);
+  
+  useEffect(() => {
+    const container = chatContainerRef.current;
+    if (!container) return;
+
+    let accumulatedDelta = 0;
+    const revealThreshold = 80;
+    
+    const resetGesture = () => {
+      if (gestureEndTimeout.current) clearTimeout(gestureEndTimeout.current);
+      gestureEndTimeout.current = setTimeout(() => {
+        hasRevealedThisGesture.current = false;
+        accumulatedDelta = 0;
+      }, 40);
+    };
+    
+    const handleTouchStart = (e: TouchEvent) => {
+      isPullingRef.current = true;
+      pullStartY.current = e.touches[0].clientY;
+      accumulatedDelta = 0;
+      hasRevealedThisGesture.current = false;
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!isPullingRef.current) return;
+      
+      const currentY = e.touches[0].clientY;
+      const deltaY = currentY - pullStartY.current;
+      pullStartY.current = currentY;
+      
+      const current = revealedCountRef.current;
+      const base = baseCountRef.current;
+      const total = totalMessagesRef.current;
+      
+      // Pull UP (negative delta) = CLOSE ALL to base immediately
+      if (deltaY < 0 && current > base) {
+        setRevealedMessageCount(base);
+        return;
+      }
+      
+      // Pull DOWN (positive delta) at top = reveal ONE message
+      if (deltaY > 0 && container.scrollTop <= 5) {
+        accumulatedDelta += deltaY;
+        
+        if (accumulatedDelta > revealThreshold && !hasRevealedThisGesture.current) {
+          if (current < total) {
+            setRevealedMessageCount(current + 1);
+            hasRevealedThisGesture.current = true;
+          }
+          e.preventDefault();
+        } else if (hasRevealedThisGesture.current) {
+          e.preventDefault();
+        }
+      }
+    };
+
+    const handleTouchEnd = () => {
+      isPullingRef.current = false;
+      accumulatedDelta = 0;
+      hasRevealedThisGesture.current = false;
+    };
+
+    const handleWheel = (e: WheelEvent) => {
+      const current = revealedCountRef.current;
+      const base = baseCountRef.current;
+      const total = totalMessagesRef.current;
+      
+      // Scroll DOWN (deltaY > 0) = CLOSE ALL to base immediately
+      if (e.deltaY > 0 && current > base) {
+        setRevealedMessageCount(base);
+        return; // Exit, allow normal scroll to continue
+      }
+      
+      // Scroll UP (deltaY < 0) at top = reveal ONE message
+      if (e.deltaY < 0 && container.scrollTop <= 5) {
+        accumulatedDelta += Math.abs(e.deltaY);
+        
+        if (!hasRevealedThisGesture.current && accumulatedDelta > revealThreshold) {
+          if (current < total) {
+            setRevealedMessageCount(current + 1);
+            hasRevealedThisGesture.current = true;
+          }
+        }
+        
+        e.preventDefault();
+        resetGesture();
+      }
+    };
+
+    container.addEventListener('touchstart', handleTouchStart, { passive: true });
+    container.addEventListener('touchmove', handleTouchMove, { passive: false });
+    container.addEventListener('touchend', handleTouchEnd);
+    container.addEventListener('wheel', handleWheel, { passive: false });
+
+    return () => {
+      container.removeEventListener('touchstart', handleTouchStart);
+      container.removeEventListener('touchmove', handleTouchMove);
+      container.removeEventListener('touchend', handleTouchEnd);
+      container.removeEventListener('wheel', handleWheel);
+      if (gestureEndTimeout.current) clearTimeout(gestureEndTimeout.current);
+    };
+  }, []); // Empty deps - uses refs for all state
 
   // Auto-resize textarea
   useEffect(() => {
@@ -788,6 +944,10 @@ export function ChatInterface({
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     
+    // Collapse email messages back to just showing the latest
+    setRevealedMessageCount(1);
+    setBaseRevealedCount(1);
+    
     await sendToAI(messageId, content.trim());
   }, [isLoading, sendToAI, thread?.id]);
 
@@ -1140,11 +1300,21 @@ export function ChatInterface({
   return (
     <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)' }}>
       {/* Email Thread Preview */}
-      {thread && <ThreadPreview thread={thread} folder={folder} defaultExpanded={false} />}
+      {thread && (
+        <ThreadPreview 
+          thread={thread} 
+          folder={folder} 
+          defaultExpanded={false}
+          revealedMessageCount={revealedMessageCount}
+          baseRevealedCount={baseRevealedCount}
+          onRevealedCountChange={handleRevealedCountChange}
+          onScrollReveal={handleScrollReveal}
+        />
+      )}
 
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && !isRecording && !isLoadingChat && (
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
             <div className="w-14 h-14 rounded-full bg-gradient-to-br from-blue-500/20 to-cyan-500/20 flex items-center justify-center mb-4">
