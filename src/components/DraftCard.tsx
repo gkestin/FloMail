@@ -113,13 +113,29 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
     }));
   }, []);
 
-  // Auto-resize textarea: set to 1px, measure scrollHeight, apply
+  // Auto-resize textarea without causing scroll jumps on mobile
   const autoResize = (textarea: HTMLTextAreaElement | null) => {
     if (!textarea) return;
-    const scrollPos = containerRef.current?.scrollTop || 0;
-    textarea.style.height = '1px';
-    textarea.style.height = textarea.scrollHeight + 'px';
-    if (containerRef.current) containerRef.current.scrollTop = scrollPos;
+    
+    // Save current scroll positions
+    const containerScrollTop = containerRef.current?.scrollTop || 0;
+    const windowScrollY = window.scrollY;
+    
+    // Use 'auto' instead of '1px' to avoid collapse that causes scroll jumps
+    // Only resize if content has grown beyond current height
+    const currentHeight = textarea.offsetHeight;
+    textarea.style.height = 'auto';
+    const newHeight = textarea.scrollHeight;
+    
+    // Apply new height
+    textarea.style.height = newHeight + 'px';
+    
+    // Restore scroll positions immediately
+    if (containerRef.current) {
+      containerRef.current.scrollTop = containerScrollTop;
+    }
+    // Also restore window scroll for iOS
+    window.scrollTo(window.scrollX, windowScrollY);
   };
 
   // Resize body textarea
@@ -377,7 +393,7 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
             onChange={(e) => setEditedDraft({ ...editedDraft, body: e.target.value })}
             placeholder={isStreaming ? "AI is drafting..." : "Write your message..."}
             disabled={isSending || isStreaming}
-            className={`w-full bg-transparent leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden ${isStreaming ? 'animate-pulse' : ''}`}
+            className={`w-full bg-transparent leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 ${isStreaming ? 'animate-pulse' : ''}`}
             style={{ 
               color: 'var(--text-primary)',
               // 16px minimum to prevent iOS auto-zoom on focus
@@ -402,7 +418,7 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
                     value={editedDraft.quotedContent}
                     onChange={(e) => setEditedDraft({ ...editedDraft, quotedContent: e.target.value })}
                     disabled={isSending}
-                    className="w-full bg-transparent text-slate-400 leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden"
+                    className="w-full bg-transparent text-slate-400 leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0"
                     style={{ fontSize: '16px' }}
                   />
                 </div>
