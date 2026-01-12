@@ -186,11 +186,25 @@ function extractEmailBody(payload: any): string {
   return '';
 }
 
-// Execute email search tool
+// Rough token estimation (4 chars ≈ 1 token)
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+// Execute email search tool with smart batching and context management
 async function executeEmailSearch(query: string, accessToken: string, maxResults: number = 5): Promise<string> {
+  // Token budget for email search results (leave room for system prompt, thread context, etc.)
+  const MAX_RESULT_TOKENS = 50000; // ~50K tokens for search results
+  const MAX_BODY_PER_MESSAGE = 1500; // Truncate individual message bodies
+  const BATCH_SIZE = 3; // Fetch threads in batches to avoid rate limits
+  const BATCH_DELAY_MS = 150; // Delay between batches
+  
   try {
+    // Cap maxResults to avoid overwhelming the API
+    const effectiveMaxResults = Math.min(maxResults, 10);
+    
     const params = new URLSearchParams({
-      maxResults: String(Math.min(maxResults, 10)),
+      maxResults: String(effectiveMaxResults),
       q: query,
     });
     
@@ -211,48 +225,161 @@ async function executeEmailSearch(query: string, accessToken: string, maxResults
       return `No emails found matching: "${query}"`;
     }
     
-    const threadDetails: string[] = [];
-    const threadsToFetch = threadsData.threads.slice(0, maxResults);
+    const totalFound = threadsData.resultSizeEstimate || threadsData.threads.length;
+    const threadsToFetch = threadsData.threads.slice(0, effectiveMaxResults);
     
-    for (const thread of threadsToFetch) {
-      try {
-        const detailResponse = await fetch(
-          `https://gmail.googleapis.com/gmail/v1/users/me/threads/${thread.id}?format=full`,
-          { headers: { Authorization: `Bearer ${accessToken}` } }
-        );
-        
-        if (detailResponse.ok) {
-          const detail = await detailResponse.json();
-          const messageContents: string[] = [];
-          
-          for (const message of detail.messages || []) {
-            const headers = message.payload?.headers || [];
-            const subject = headers.find((h: any) => h.name === 'Subject')?.value || '(no subject)';
-            const from = headers.find((h: any) => h.name === 'From')?.value || 'Unknown';
-            const date = headers.find((h: any) => h.name === 'Date')?.value || '';
-            const body = extractEmailBody(message.payload);
-            
-            const maxBodyLength = 2000;
-            const truncatedBody = body.length > maxBodyLength 
-              ? body.slice(0, maxBodyLength) + '... [truncated]'
-              : body;
-            
-            messageContents.push(
-              `--- Message ---\nFrom: ${from}\nDate: ${date}\nSubject: ${subject}\n\nContent:\n${truncatedBody}`
+    // Fetch threads in batches to avoid rate limits
+    const threadDetails: Array<{
+      subject: string;
+      participants: string[];
+      messageCount: number;
+      dateRange: { oldest: string; newest: string };
+      messages: Array<{ from: string; date: string; subject: string; snippet: string; body: string }>;
+    }> = [];
+    
+    let totalTokensUsed = 0;
+    let stoppedEarly = false;
+    
+    for (let batchStart = 0; batchStart < threadsToFetch.length; batchStart += BATCH_SIZE) {
+      // Check if we've used too many tokens
+      if (totalTokensUsed > MAX_RESULT_TOKENS) {
+        stoppedEarly = true;
+        console.log(`[EmailSearch] Stopping early - token budget exhausted (${totalTokensUsed} tokens)`);
+        break;
+      }
+      
+      const batch = threadsToFetch.slice(batchStart, batchStart + BATCH_SIZE);
+      
+      // Fetch batch in parallel
+      const batchResults = await Promise.all(
+        batch.map(async (thread: { id: string }) => {
+          try {
+            const detailResponse = await fetch(
+              `https://gmail.googleapis.com/gmail/v1/users/me/threads/${thread.id}?format=full`,
+              { headers: { Authorization: `Bearer ${accessToken}` } }
             );
+            
+            if (!detailResponse.ok) {
+              console.error(`[EmailSearch] Failed to fetch thread ${thread.id}: ${detailResponse.status}`);
+              return null;
+            }
+            
+            return await detailResponse.json();
+          } catch (e) {
+            console.error('[EmailSearch] Error fetching thread:', e);
+            return null;
+          }
+        })
+      );
+      
+      // Process batch results
+      for (const detail of batchResults) {
+        if (!detail || !detail.messages) continue;
+        
+        const messages: Array<{ from: string; date: string; subject: string; snippet: string; body: string }> = [];
+        const participants = new Set<string>();
+        let oldestDate = '';
+        let newestDate = '';
+        let threadSubject = '';
+        
+        for (const message of detail.messages) {
+          const headers = message.payload?.headers || [];
+          const subject = headers.find((h: any) => h.name === 'Subject')?.value || '(no subject)';
+          const from = headers.find((h: any) => h.name === 'From')?.value || 'Unknown';
+          const date = headers.find((h: any) => h.name === 'Date')?.value || '';
+          const snippet = message.snippet || '';
+          
+          // Extract and truncate body
+          let body = extractEmailBody(message.payload);
+          if (body.length > MAX_BODY_PER_MESSAGE) {
+            body = body.slice(0, MAX_BODY_PER_MESSAGE) + '... [truncated]';
           }
           
-          threadDetails.push(messageContents.join('\n\n'));
+          if (!threadSubject) threadSubject = subject;
+          participants.add(from);
+          
+          // Track date range
+          if (!oldestDate || date < oldestDate) oldestDate = date;
+          if (!newestDate || date > newestDate) newestDate = date;
+          
+          messages.push({ from, date, subject, snippet, body });
         }
-      } catch (e) {
-        console.error('[EmailSearch] Error fetching thread details:', e);
+        
+        const threadData = {
+          subject: threadSubject,
+          participants: Array.from(participants),
+          messageCount: messages.length,
+          dateRange: { oldest: oldestDate, newest: newestDate },
+          messages,
+        };
+        
+        // Estimate tokens for this thread
+        const threadText = JSON.stringify(threadData);
+        const threadTokens = estimateTokens(threadText);
+        
+        // Check if adding this thread would exceed budget
+        if (totalTokensUsed + threadTokens > MAX_RESULT_TOKENS && threadDetails.length > 0) {
+          stoppedEarly = true;
+          console.log(`[EmailSearch] Stopping - adding thread would exceed token budget`);
+          break;
+        }
+        
+        totalTokensUsed += threadTokens;
+        threadDetails.push(threadData);
+      }
+      
+      if (stoppedEarly) break;
+      
+      // Delay between batches to avoid rate limits
+      if (batchStart + BATCH_SIZE < threadsToFetch.length) {
+        await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
       }
     }
     
-    const totalFound = threadsData.resultSizeEstimate || threadsData.threads.length;
-    let resultText = `Email search results for "${query}" (showing ${threadDetails.length} of ${totalFound} threads with full content):\n\n`;
-    resultText += threadDetails.join('\n\n========== NEXT THREAD ==========\n\n');
+    // Format results for the AI
+    let resultText = `📧 EMAIL SEARCH RESULTS\n`;
+    resultText += `Query: "${query}"\n`;
+    resultText += `Found: ${totalFound} total threads, showing ${threadDetails.length} with full content\n`;
     
+    if (stoppedEarly) {
+      resultText += `Note: Stopped early to stay within context limits.\n`;
+    }
+    
+    resultText += `\n`;
+    
+    // Summary section
+    if (threadDetails.length > 0) {
+      const allDates = threadDetails.flatMap(t => [t.dateRange.oldest, t.dateRange.newest]).filter(Boolean);
+      const totalMessages = threadDetails.reduce((sum, t) => sum + t.messageCount, 0);
+      const allParticipants = new Set(threadDetails.flatMap(t => t.participants));
+      
+      resultText += `--- SUMMARY ---\n`;
+      resultText += `• ${threadDetails.length} threads with ${totalMessages} total messages\n`;
+      resultText += `• Participants: ${Array.from(allParticipants).slice(0, 5).join(', ')}${allParticipants.size > 5 ? ` (+${allParticipants.size - 5} more)` : ''}\n`;
+      if (allDates.length > 0) {
+        resultText += `• Date range: ${allDates[0]} to ${allDates[allDates.length - 1]}\n`;
+      }
+      resultText += `\n`;
+    }
+    
+    // Full content for each thread
+    for (let i = 0; i < threadDetails.length; i++) {
+      const thread = threadDetails[i];
+      resultText += `========== THREAD ${i + 1}/${threadDetails.length} ==========\n`;
+      resultText += `Subject: ${thread.subject}\n`;
+      resultText += `Messages: ${thread.messageCount}\n`;
+      resultText += `Participants: ${thread.participants.join(', ')}\n\n`;
+      
+      for (const msg of thread.messages) {
+        resultText += `--- Message ---\n`;
+        resultText += `From: ${msg.from}\n`;
+        resultText += `Date: ${msg.date}\n`;
+        resultText += `Subject: ${msg.subject}\n\n`;
+        resultText += `${msg.body}\n\n`;
+      }
+    }
+    
+    console.log(`[EmailSearch] Returning ${threadDetails.length} threads, ~${totalTokensUsed} tokens`);
     return resultText;
   } catch (error) {
     console.error('[EmailSearch Execute] Error:', error);
