@@ -460,19 +460,23 @@ export async function POST(request: NextRequest) {
       try {
         let currentMessages = [...validMessages];
         
-        // If there's a current draft, add context about it so AI knows to modify instead of create
+        // If there's a current draft, add context about it
         if (currentDraft && currentDraft.body) {
-          const draftContext = `IMPORTANT: The user has an existing draft for this email thread that you should MODIFY instead of creating a new one.
+          const draftContext = `Context: The user has an existing draft for this email thread.
 
-<current_draft>
+<previous_draft>
 Type: ${currentDraft.type}
 To: ${currentDraft.to.join(', ')}
 Subject: ${currentDraft.subject}
 Body:
 ${currentDraft.body}
-</current_draft>
+</previous_draft>
 
-When the user asks to change, edit, or update the draft, use the prepare_draft tool with the modified content. Keep the same type (${currentDraft.type}) unless they specifically ask to change it.`;
+IMPORTANT INSTRUCTIONS:
+- If the user asks to EDIT, TWEAK, or make SMALL CHANGES, modify the existing draft.
+- If the user asks to REWRITE, START OVER, DRAFT AGAIN, or create a NEW version, write a completely fresh draft from scratch (ignore the previous draft content, just use thread context).
+- When creating a new draft via prepare_draft, the old draft will be automatically cancelled.
+- Keep the same type (${currentDraft.type}) unless the user specifically asks to change it.`;
           
           // Insert as the first message to give it priority
           currentMessages.unshift({
@@ -481,7 +485,7 @@ When the user asks to change, edit, or update the draft, use the prepare_draft t
           });
           currentMessages.unshift({
             role: 'assistant' as const,
-            content: 'I see you have an existing draft. I\'ll help you modify it. What would you like to change?',
+            content: 'I see you have a draft. I can modify it or create a completely new one - what would you like?',
           });
         }
         

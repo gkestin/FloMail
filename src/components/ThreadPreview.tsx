@@ -275,6 +275,8 @@ export function ThreadPreview({
     if (previousThreadId.current !== thread.id) {
       setExpandedMessages(new Set([thread.messages[thread.messages.length - 1]?.id]));
       previousThreadId.current = thread.id;
+      // Also reset prevRevealedCount to avoid stale comparisons
+      prevRevealedCount.current = 0;
     }
   }, [thread.id, thread.messages]);
 

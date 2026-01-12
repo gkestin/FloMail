@@ -43,6 +43,11 @@ function getFileIcon(mimeType: string, filename?: string): React.ElementType {
 export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSending, isSaving, isDeleting, isStreaming }: DraftCardProps) {
   const [editedDraft, setEditedDraft] = useState<EmailDraft>(draft);
   
+  // Track if user has made local edits (to prevent overwriting with stale draft prop)
+  const hasUserEditsRef = useRef(false);
+  // Track the last draft ID we synced from
+  const lastSyncedDraftIdRef = useRef(draft.id);
+  
   // Count original attachments (from forward)
   const originalAttachments = editedDraft.attachments?.filter(a => a.isFromOriginal) || [];
   const userAttachments = editedDraft.attachments?.filter(a => !a.isFromOriginal) || [];
@@ -114,11 +119,26 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
     return () => observer.disconnect();
   }, [onSaveDraft]); // Re-run when save button visibility changes
 
-  // Update editedDraft when draft prop changes
+  // Update editedDraft when draft prop changes - BUT preserve user edits
   useEffect(() => {
-    setEditedDraft(draft);
-    setShowCcBcc((draft.cc && draft.cc.length > 0) || (draft.bcc && draft.bcc.length > 0));
-  }, [draft]);
+    // Case 1: Different draft entirely - reset everything
+    if (draft.id !== lastSyncedDraftIdRef.current) {
+      setEditedDraft(draft);
+      setShowCcBcc((draft.cc && draft.cc.length > 0) || (draft.bcc && draft.bcc.length > 0));
+      lastSyncedDraftIdRef.current = draft.id;
+      hasUserEditsRef.current = false;
+      return;
+    }
+    
+    // Case 2: Same draft, still streaming - sync body content from AI
+    if (isStreaming && !hasUserEditsRef.current) {
+      setEditedDraft(draft);
+      return;
+    }
+    
+    // Case 3: Same draft, user has made edits OR streaming is done - DON'T overwrite
+    // The user's local edits in editedDraft take precedence
+  }, [draft, isStreaming]);
 
   // Handle file selection
   const handleFileSelect = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
@@ -357,10 +377,13 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
           <input
             type="text"
             value={editedDraft.to.join(', ')}
-            onChange={(e) => setEditedDraft({
-              ...editedDraft,
-              to: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
-            })}
+            onChange={(e) => {
+              hasUserEditsRef.current = true;
+              setEditedDraft({
+                ...editedDraft,
+                to: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
+              });
+            }}
             placeholder="recipient@email.com"
             disabled={isSending}
             className={inputBaseClass}
@@ -376,10 +399,13 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
               <input
                 type="text"
                 value={editedDraft.cc?.join(', ') || ''}
-                onChange={(e) => setEditedDraft({
-                  ...editedDraft,
-                  cc: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
-                })}
+                onChange={(e) => {
+                  hasUserEditsRef.current = true;
+                  setEditedDraft({
+                    ...editedDraft,
+                    cc: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
+                  });
+                }}
                 placeholder="cc@email.com"
                 disabled={isSending}
                 className={inputBaseClass}
@@ -391,10 +417,13 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
               <input
                 type="text"
                 value={editedDraft.bcc?.join(', ') || ''}
-                onChange={(e) => setEditedDraft({
-                  ...editedDraft,
-                  bcc: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
-                })}
+                onChange={(e) => {
+                  hasUserEditsRef.current = true;
+                  setEditedDraft({
+                    ...editedDraft,
+                    bcc: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
+                  });
+                }}
                 placeholder="bcc@email.com"
                 disabled={isSending}
                 className={inputBaseClass}
@@ -419,7 +448,10 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
           <input
             type="text"
             value={editedDraft.subject}
-            onChange={(e) => setEditedDraft({ ...editedDraft, subject: e.target.value })}
+            onChange={(e) => {
+              hasUserEditsRef.current = true;
+              setEditedDraft({ ...editedDraft, subject: e.target.value });
+            }}
             placeholder="Email subject"
             disabled={isSending}
             className={inputBaseClass}
@@ -448,7 +480,10 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
           <textarea
             ref={bodyRef}
             value={editedDraft.body}
-            onChange={(e) => setEditedDraft({ ...editedDraft, body: e.target.value })}
+            onChange={(e) => {
+              hasUserEditsRef.current = true;
+              setEditedDraft({ ...editedDraft, body: e.target.value });
+            }}
             placeholder={isStreaming ? "AI is drafting..." : "Write your message..."}
             disabled={isSending || isStreaming}
             className={`w-full bg-transparent leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 ${isStreaming ? 'animate-pulse' : ''}`}
@@ -474,7 +509,10 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
                   <textarea
                     ref={quotedRef}
                     value={editedDraft.quotedContent}
-                    onChange={(e) => setEditedDraft({ ...editedDraft, quotedContent: e.target.value })}
+                    onChange={(e) => {
+                      hasUserEditsRef.current = true;
+                      setEditedDraft({ ...editedDraft, quotedContent: e.target.value });
+                    }}
                     disabled={isSending}
                     className="w-full bg-transparent text-slate-400 leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0"
                     style={{ fontSize: '16px' }}
@@ -492,7 +530,10 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
                 <textarea
                   ref={quotedRef}
                   value={editedDraft.quotedContent}
-                  onChange={(e) => setEditedDraft({ ...editedDraft, quotedContent: e.target.value })}
+                  onChange={(e) => {
+                    hasUserEditsRef.current = true;
+                    setEditedDraft({ ...editedDraft, quotedContent: e.target.value });
+                  }}
                   disabled={isSending}
                   className="w-full bg-transparent text-slate-400 text-sm leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden"
                 />

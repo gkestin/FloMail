@@ -596,6 +596,14 @@ export function ChatInterface({
     for (const toolCall of toolCalls) {
       switch (toolCall.name) {
         case 'prepare_draft':
+          // Auto-cancel any existing draft in messages before creating new one
+          // This ensures old drafts are marked as cancelled and kept in history
+          setMessages(prev => prev.map(m => 
+            m.draft && !m.draftCancelled 
+              ? { ...m, draftCancelled: true } // Keep draft in message for history, but mark cancelled
+              : m
+          ));
+          
           const newDraft = buildDraftFromToolCall(toolCall.arguments, thread);
           // Preserve gmailDraftId if we're modifying an existing draft
           const draft = existingDraft?.gmailDraftId 
@@ -1302,6 +1310,7 @@ export function ChatInterface({
       {/* Email Thread Preview */}
       {thread && (
         <ThreadPreview 
+          key={thread.id} // Force remount when thread changes to reset all internal state
           thread={thread} 
           folder={folder} 
           defaultExpanded={false}
