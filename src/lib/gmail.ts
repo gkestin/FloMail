@@ -225,69 +225,6 @@ function decodeBase64Url(str: string): string {
   }
 }
 
-// Helper to unwrap format=flowed and quoted-printable wrapped text
-// Emails often wrap at 76-78 characters - we need to rejoin these artificial breaks
-function unwrapFlowedText(text: string): string {
-  if (!text) return text;
-  
-  const lines = text.split('\n');
-  const result: string[] = [];
-  let currentLine = '';
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const nextLine = lines[i + 1];
-    const trimmedLine = line.trimEnd();
-    const lineLen = trimmedLine.length;
-    
-    // Determine if this line was artificially wrapped (soft break)
-    // A line is likely wrapped if:
-    // 1. It's close to 76-78 chars AND
-    // 2. It doesn't end with sentence-ending punctuation AND
-    // 3. The next line exists and doesn't start with special chars
-    
-    const isNearWrapLength = lineLen >= 70 && lineLen <= 80;
-    const endsWithSentenceEnd = /[.!?:]\s*$/.test(trimmedLine);
-    const endsWithSpace = line.endsWith(' ');
-    const isBlankLine = trimmedLine === '';
-    const isQuotedLine = trimmedLine.startsWith('>');
-    const nextLineExists = nextLine !== undefined;
-    const nextLineIsSpecial = nextLine && (
-      nextLine.trim() === '' || 
-      nextLine.startsWith('>') ||
-      nextLine.startsWith('--') ||
-      /^(On |From:|To:|Cc:|Subject:|Date:)/i.test(nextLine.trim())
-    );
-    
-    // Soft wrap conditions:
-    // - Line ends with space (format=flowed indicator), OR
-    // - Line is near wrap length and doesn't end with sentence punctuation
-    //   and next line is not special
-    const isSoftWrap = !isBlankLine && !isQuotedLine && nextLineExists && !nextLineIsSpecial && (
-      endsWithSpace ||
-      (isNearWrapLength && !endsWithSentenceEnd)
-    );
-    
-    if (isSoftWrap) {
-      // Soft wrap - append to current line
-      // Add a space if line doesn't already end with one
-      currentLine += endsWithSpace ? line : (trimmedLine + ' ');
-    } else {
-      // Hard break - finish current line and start new one
-      currentLine += trimmedLine;
-      result.push(currentLine);
-      currentLine = '';
-    }
-  }
-  
-  // Don't forget any remaining content
-  if (currentLine) {
-    result.push(currentLine);
-  }
-  
-  return result.join('\n');
-}
-
 // Helper to extract body from message parts
 function extractBody(payload: any): { text: string; html: string } {
   let text = '';
@@ -298,16 +235,14 @@ function extractBody(payload: any): { text: string; html: string } {
     if (payload.mimeType === 'text/html') {
       html = decoded;
     } else {
-      // Unwrap flowed text to remove artificial line breaks
-      text = unwrapFlowedText(decoded);
+      text = decoded;
     }
   }
 
   if (payload.parts) {
     for (const part of payload.parts) {
       if (part.mimeType === 'text/plain' && part.body?.data) {
-        // Unwrap flowed text to remove artificial line breaks
-        text = unwrapFlowedText(decodeBase64Url(part.body.data));
+        text = decodeBase64Url(part.body.data);
       } else if (part.mimeType === 'text/html' && part.body?.data) {
         html = decodeBase64Url(part.body.data);
       } else if (part.parts) {

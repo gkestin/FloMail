@@ -761,7 +761,8 @@ function MessageItem({
                 </div>
               ) : (
                 <EmailBodyWithQuotes 
-                  content={message.body || (message.bodyHtml ? stripBasicHtml(message.bodyHtml) : '')}
+                  // Prefer deriving text from HTML to avoid artificial line breaks from plain text encoding
+                  content={message.bodyHtml ? stripBasicHtml(message.bodyHtml) : (message.body || '')}
                   isDraft={isDraft}
                 />
               )}

@@ -67,14 +67,44 @@ export function EmailHtmlViewer({
     return DOMPurify.sanitize(htmlWithoutCidImages, config);
   }, [html]);
 
+  // Check if the email has explicit background colors that require white background
+  const needsWhiteBackground = useMemo(() => {
+    if (!html) return false;
+    
+    // Check for explicit background colors in the email
+    const hasBgColor = /bgcolor\s*=\s*["']?(?!white|#fff|transparent)/i.test(html);
+    const hasInlineBg = /background(-color)?\s*:\s*(?!transparent|inherit|none|white|#fff)/i.test(html);
+    const hasImages = /https?:\/\/[^"'\s]+\.(jpg|jpeg|png|gif|webp)/i.test(html);
+    const hasDataImages = /data:image\//i.test(html);
+    
+    // If email has explicit backgrounds or images, use white background
+    return hasBgColor || hasInlineBg || hasImages || hasDataImages;
+  }, [html]);
+
   // Build the full HTML document for the iframe
-  // Use WHITE background like Gmail - display email as intended
+  // Use dark background for simple formatted emails, white for rich emails with colors/images
   const iframeContent = useMemo(() => {
     if (!sanitizedHtml) {
       return null;
     }
 
-    // Minimal styles - white background, let email's own styles take over
+    const bgColor = needsWhiteBackground ? '#ffffff' : '#1e1e1e';
+    const textColor = needsWhiteBackground ? '#222222' : '#e0e0e0';
+    const linkColor = needsWhiteBackground ? '#1a73e8' : '#60a5fa';
+
+    // For dark theme, we need to override inline dark text colors
+    const darkThemeOverrides = needsWhiteBackground ? '' : `
+    /* Override dark text colors for dark background */
+    body, body * {
+      color: ${textColor} !important;
+    }
+    a, a * {
+      color: ${linkColor} !important;
+    }
+    /* Preserve some semantic colors */
+    b, strong { font-weight: bold; }
+    `;
+
     return `<!DOCTYPE html>
 <html>
 <head>
@@ -86,23 +116,24 @@ export function EmailHtmlViewer({
     html, body {
       margin: 0;
       padding: 8px;
-      background: #ffffff;
+      background: ${bgColor} !important;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
       font-size: 14px;
       line-height: 1.5;
-      color: #222222;
+      color: ${textColor};
       word-wrap: break-word;
     }
     img { max-width: 100%; height: auto; }
     table { border-collapse: collapse; max-width: 100%; }
-    a { color: #1a73e8; }
+    a { color: ${linkColor}; }
     /* Hide tracking pixels */
     img[width="1"], img[height="1"] { display: none !important; }
+    ${darkThemeOverrides}
   </style>
 </head>
 <body>${sanitizedHtml}</body>
 </html>`;
-  }, [sanitizedHtml]);
+  }, [sanitizedHtml, needsWhiteBackground]);
 
   // Measure height from parent by accessing iframe document
   const measureHeight = useCallback(() => {
@@ -388,9 +419,24 @@ export function isRichHtmlContent(content: string): boolean {
     return true;
   }
   
+  // === CHECK 5: Semantic formatting that can't be rendered as plain text ===
+  // Lists, bold, italic, headings - these need HTML rendering to look right
+  const hasLists = /<(ul|ol)\b/i.test(cleaned) && /<li\b/i.test(cleaned);
+  if (hasLists) {
+    console.log('[isRichHtml] Triggered by list formatting (ul/ol + li)');
+    return true;
+  }
+  
+  // Headings indicate structured content
+  const hasHeadings = /<h[1-6]\b/i.test(cleaned);
+  if (hasHeadings) {
+    console.log('[isRichHtml] Triggered by headings');
+    return true;
+  }
+  
   // === Everything else: render as dark theme plain text ===
   // This includes: divs, spans, p tags, br tags, font tags with just black text,
-  // Outlook layout tables (border=0), and any other basic HTML formatting
+  // Outlook layout tables (border=0), basic bold/italic (can work in dark theme)
   return false;
 }
 
