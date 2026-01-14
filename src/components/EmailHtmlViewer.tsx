@@ -8,6 +8,10 @@ interface EmailHtmlViewerProps {
   plainText?: string;
   className?: string;
   maxHeight?: number;
+  /** Navigate to next thread (swipe left) */
+  onNextEmail?: () => void;
+  /** Navigate to previous thread (swipe right) */
+  onPreviousEmail?: () => void;
 }
 
 /**
@@ -54,12 +58,21 @@ export function EmailHtmlViewer({
   plainText,
   className = '',
   maxHeight = 600,
+  onNextEmail,
+  onPreviousEmail,
 }: EmailHtmlViewerProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
   const [iframeHeight, setIframeHeight] = useState(150);
   const [isLoading, setIsLoading] = useState(true);
   const heightCheckRef = useRef<NodeJS.Timeout | null>(null);
   const fitScaleRef = useRef(1);
+  
+  // Refs for swipe navigation
+  const onNextEmailRef = useRef(onNextEmail);
+  const onPreviousEmailRef = useRef(onPreviousEmail);
+  useEffect(() => { onNextEmailRef.current = onNextEmail; }, [onNextEmail]);
+  useEffect(() => { onPreviousEmailRef.current = onPreviousEmail; }, [onPreviousEmail]);
 
   // Sanitize HTML with DOMPurify - DO NOT modify colors
   const sanitizedHtml = useMemo(() => {
@@ -273,6 +286,153 @@ export function EmailHtmlViewer({
     return () => window.removeEventListener('resize', onResize);
   }, [measureHeight]);
 
+  // Swipe gesture handling for navigation over iframe
+  // This overlay captures touch/wheel events and either:
+  // 1. Navigates on horizontal swipe
+  // 2. Forwards clicks/taps to the element below
+  // 3. Lets vertical scrolls pass through
+  useEffect(() => {
+    const overlay = overlayRef.current;
+    const iframe = iframeRef.current;
+    if (!overlay || !iframe) return;
+    
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let touchCurrentX = 0;
+    let touchCurrentY = 0;
+    let hasNavigated = false;
+    let isTouching = false;
+    let horizontalAccumulated = 0;
+    let gestureTimeout: NodeJS.Timeout | null = null;
+    
+    const handleTouchStart = (e: TouchEvent) => {
+      touchStartX = e.touches[0].clientX;
+      touchStartY = e.touches[0].clientY;
+      touchCurrentX = touchStartX;
+      touchCurrentY = touchStartY;
+      isTouching = true;
+      hasNavigated = false;
+    };
+    
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!isTouching) return;
+      
+      touchCurrentX = e.touches[0].clientX;
+      touchCurrentY = e.touches[0].clientY;
+      
+      const totalDeltaX = touchCurrentX - touchStartX;
+      const totalDeltaY = touchCurrentY - touchStartY;
+      
+      // If predominantly horizontal swipe
+      if (Math.abs(totalDeltaX) > Math.abs(totalDeltaY) * 1.5 && Math.abs(totalDeltaX) > 30) {
+        const horizontalThreshold = 80;
+        
+        if (!hasNavigated) {
+          if (totalDeltaX < -horizontalThreshold) {
+            // Swipe LEFT → NEXT
+            onNextEmailRef.current?.();
+            hasNavigated = true;
+            e.preventDefault();
+          } else if (totalDeltaX > horizontalThreshold) {
+            // Swipe RIGHT → PREVIOUS
+            onPreviousEmailRef.current?.();
+            hasNavigated = true;
+            e.preventDefault();
+          }
+        }
+      }
+      // Vertical scrolls pass through naturally (overlay has pointer-events: none for scroll)
+    };
+    
+    const handleTouchEnd = (e: TouchEvent) => {
+      // If minimal movement, treat as a tap and forward to element below
+      const totalDeltaX = touchCurrentX - touchStartX;
+      const totalDeltaY = touchCurrentY - touchStartY;
+      const totalMovement = Math.sqrt(totalDeltaX * totalDeltaX + totalDeltaY * totalDeltaY);
+      
+      if (totalMovement < 10 && !hasNavigated) {
+        // It's a tap - find element below and click it
+        overlay.style.pointerEvents = 'none';
+        const elementBelow = document.elementFromPoint(touchStartX, touchStartY);
+        overlay.style.pointerEvents = 'auto';
+        
+        if (elementBelow && elementBelow !== overlay) {
+          // Try to find a clickable element (link, button, etc.)
+          const clickable = elementBelow.closest('a, button, [onclick], input, select, textarea');
+          if (clickable) {
+            (clickable as HTMLElement).click();
+          }
+        }
+      }
+      
+      isTouching = false;
+      hasNavigated = false;
+    };
+    
+    const handleWheel = (e: WheelEvent) => {
+      // Only intercept predominantly horizontal scrolls
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.5) {
+        horizontalAccumulated += e.deltaX;
+        const horizontalThreshold = 100;
+        
+        if (!hasNavigated) {
+          if (horizontalAccumulated > horizontalThreshold) {
+            // Swipe LEFT → NEXT
+            onNextEmailRef.current?.();
+            hasNavigated = true;
+            horizontalAccumulated = 0;
+          } else if (horizontalAccumulated < -horizontalThreshold) {
+            // Swipe RIGHT → PREVIOUS
+            onPreviousEmailRef.current?.();
+            hasNavigated = true;
+            horizontalAccumulated = 0;
+          }
+        }
+        
+        // Reset after delay
+        if (gestureTimeout) clearTimeout(gestureTimeout);
+        gestureTimeout = setTimeout(() => {
+          hasNavigated = false;
+          horizontalAccumulated = 0;
+        }, 150);
+        
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      // Vertical scrolls pass through (don't prevent default)
+    };
+    
+    const handleClick = (e: MouseEvent) => {
+      // Forward clicks to the element below the overlay
+      overlay.style.pointerEvents = 'none';
+      const elementBelow = document.elementFromPoint(e.clientX, e.clientY);
+      overlay.style.pointerEvents = 'auto';
+      
+      if (elementBelow && elementBelow !== overlay) {
+        const clickable = elementBelow.closest('a, button, [onclick], input, select, textarea');
+        if (clickable) {
+          e.preventDefault();
+          (clickable as HTMLElement).click();
+        }
+      }
+    };
+    
+    overlay.addEventListener('touchstart', handleTouchStart, { passive: true });
+    overlay.addEventListener('touchmove', handleTouchMove, { passive: false });
+    overlay.addEventListener('touchend', handleTouchEnd, { passive: true });
+    overlay.addEventListener('wheel', handleWheel, { passive: false });
+    overlay.addEventListener('click', handleClick);
+    
+    return () => {
+      overlay.removeEventListener('touchstart', handleTouchStart);
+      overlay.removeEventListener('touchmove', handleTouchMove);
+      overlay.removeEventListener('touchend', handleTouchEnd);
+      overlay.removeEventListener('wheel', handleWheel);
+      overlay.removeEventListener('click', handleClick);
+      if (gestureTimeout) clearTimeout(gestureTimeout);
+    };
+  }, []);
+
   // Fallback to plain text
   if (!sanitizedHtml) {
     if (plainText) {
@@ -313,6 +473,19 @@ export function EmailHtmlViewer({
           transition: 'opacity 0.15s ease-in-out',
         }}
       />
+      {/* Transparent overlay to capture horizontal swipes while forwarding clicks */}
+      {(onNextEmail || onPreviousEmail) && (
+        <div
+          ref={overlayRef}
+          className="absolute inset-0"
+          style={{
+            background: 'transparent',
+            cursor: 'default',
+            // Allow scroll events to pass through for vertical scrolling
+            touchAction: 'pan-y',
+          }}
+        />
+      )}
     </div>
   );
 }

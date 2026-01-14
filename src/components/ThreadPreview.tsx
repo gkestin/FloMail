@@ -1053,6 +1053,8 @@ export function ThreadPreview({
                             onToggle={() => toggleMessage(message.id)}
                             formatDate={formatDate}
                             getAvatarColor={getAvatarColor}
+                            onNextEmail={onNextEmail}
+                            onPreviousEmail={onPreviousEmail}
                           />
                         </motion.div>
                       );
@@ -1139,6 +1141,8 @@ function MessageItem({
   onToggle,
   formatDate,
   getAvatarColor,
+  onNextEmail,
+  onPreviousEmail,
 }: {
   message: EmailMessage;
   isExpanded: boolean;
@@ -1146,6 +1150,8 @@ function MessageItem({
   onToggle: () => void;
   formatDate: (date: string) => string;
   getAvatarColor: (email: string) => string;
+  onNextEmail?: () => void;
+  onPreviousEmail?: () => void;
 }) {
   const senderName = message.from.name || message.from.email.split('@')[0];
   const senderInitial = senderName.charAt(0).toUpperCase();
@@ -1256,6 +1262,8 @@ function MessageItem({
                     html={message.bodyHtml}
                     plainText={message.body}
                     maxHeight={600}
+                    onNextEmail={onNextEmail}
+                    onPreviousEmail={onPreviousEmail}
                   />
                   {isDraft && (
                     <div className="mt-2 text-xs text-red-400/70 not-italic">
