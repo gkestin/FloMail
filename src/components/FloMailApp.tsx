@@ -66,6 +66,8 @@ export function FloMailApp() {
   const [showProfile, setShowProfile] = useState(false);
   const [allThreads, setAllThreads] = useState<EmailThread[]>([]);
   const [folderThreads, setFolderThreads] = useState<EmailThread[]>([]); // Threads in current folder for navigation
+  // Keep ref in sync with state for use in callbacks
+  useEffect(() => { folderThreadsRef.current = folderThreads; }, [folderThreads]);
   const [currentMailFolder, setCurrentMailFolder] = useState<MailFolder>('inbox');
   const [searchQuery, setSearchQuery] = useState(''); // Search query for inbox
   const [snoozePickerOpen, setSnoozePickerOpen] = useState(false);
@@ -77,6 +79,7 @@ export function FloMailApp() {
   const isUpdatingFromUrl = useRef(false); // Prevent URL update loops
   const loadMoreRef = useRef<(() => Promise<void>) | null>(null);
   const hasMoreRef = useRef<(() => boolean) | null>(null);
+  const folderThreadsRef = useRef<EmailThread[]>([]); // Ref for latest folderThreads
 
   // NOTE: Threads are loaded by InboxList, not here, to avoid duplicate API calls
   // allThreads is updated via handleSelectThread callback from InboxList
@@ -90,6 +93,19 @@ export function FloMailApp() {
     loadMoreRef.current = loadMore;
     hasMoreRef.current = hasMore;
   }, []);
+
+  // Handler for InboxList to notify when threads are updated (e.g., after loadMore)
+  const handleThreadsUpdate = useCallback((threads: EmailThread[], folder: MailFolder) => {
+    if (folder === currentMailFolder) {
+      setFolderThreads(threads);
+      // Also update allThreads with any new threads
+      setAllThreads(prev => {
+        const existingIds = new Set(prev.map(t => t.id));
+        const newThreads = threads.filter(t => !existingIds.has(t.id));
+        return [...prev, ...newThreads];
+      });
+    }
+  }, [currentMailFolder]);
 
   // === URL STATE SYNC ===
   // Parse URL params helper
@@ -636,11 +652,11 @@ export function FloMailApp() {
       if (hasMore && loadMoreRef.current) {
         // Load more threads, then navigate to the first new one
         await loadMoreRef.current();
-        // After loading, folderThreads will update via state, 
-        // so we wait a tick and then navigate
+        // After loading, folderThreadsRef will have the updated threads via onThreadsUpdate
+        // Use a small delay to ensure state has propagated
         setTimeout(() => {
-          // Re-check the threads (they should have updated)
-          const updatedThreads = folderThreads.length > 0 ? folderThreads : allThreads;
+          // Use ref to get the latest threads (state may have updated)
+          const updatedThreads = folderThreadsRef.current.length > 0 ? folderThreadsRef.current : allThreads;
           if (nextIndex < updatedThreads.length) {
             const newThread = updatedThreads[nextIndex];
             if (newThread) {
@@ -1022,6 +1038,7 @@ export function FloMailApp() {
                 onClearSearch={() => setSearchQuery('')}
                 onFolderChange={setCurrentMailFolder}
                 onRegisterLoadMore={handleRegisterLoadMore}
+                onThreadsUpdate={handleThreadsUpdate}
               />
             </motion.div>
           )}

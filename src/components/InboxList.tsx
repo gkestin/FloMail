@@ -60,9 +60,10 @@ interface InboxListProps {
   onClearSearch?: () => void; // Callback to clear search
   onFolderChange?: (folder: MailFolder) => void; // Notify parent when folder changes
   onRegisterLoadMore?: (loadMore: () => Promise<void>, hasMore: () => boolean) => void; // Expose loadMore to parent
+  onThreadsUpdate?: (threads: EmailThread[], folder: MailFolder) => void; // Notify parent when threads change
 }
 
-export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'inbox', searchQuery = '', onClearSearch, onFolderChange, onRegisterLoadMore }: InboxListProps) {
+export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'inbox', searchQuery = '', onClearSearch, onFolderChange, onRegisterLoadMore, onThreadsUpdate }: InboxListProps) {
   const { getAccessToken, user } = useAuth();
   const [threads, setThreads] = useState<EmailThread[]>([]);
   const [drafts, setDrafts] = useState<GmailDraftInfo[]>([]);
@@ -283,25 +284,28 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
       });
       
       // Append to existing threads
-      setThreads(prev => [...prev, ...moreThreads]);
+      const allThreads = [...threads, ...moreThreads];
+      setThreads(allThreads);
       setNextPageToken(newPageToken);
       
       // Cache the individual threads
       emailCache.setThreads(moreThreads);
       
       // Update folder cache with all threads (including new pageToken)
-      const allThreads = [...threads, ...moreThreads];
       emailCache.setFolderData(currentFolder, {
         threads: allThreads,
         threadsWithDrafts,
         nextPageToken: newPageToken,
       });
+      
+      // Notify parent that threads have been updated
+      onThreadsUpdate?.(allThreads, currentFolder);
     } catch (err) {
       console.error('Failed to load more:', err);
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, nextPageToken, currentFolder, getAccessToken, threads, threadsWithDrafts]);
+  }, [loadingMore, nextPageToken, currentFolder, getAccessToken, threads, threadsWithDrafts, onThreadsUpdate]);
 
   // Register loadMore with parent so it can trigger loading more threads
   useEffect(() => {
