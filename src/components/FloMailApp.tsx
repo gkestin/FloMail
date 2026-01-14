@@ -75,12 +75,20 @@ export function FloMailApp() {
   const currentThreadIndexRef = useRef(0);
   const archiveHandlerRef = useRef<(() => void) | null>(null);
   const isUpdatingFromUrl = useRef(false); // Prevent URL update loops
+  const loadMoreRef = useRef<(() => Promise<void>) | null>(null);
+  const hasMoreRef = useRef<(() => boolean) | null>(null);
 
   // NOTE: Threads are loaded by InboxList, not here, to avoid duplicate API calls
   // allThreads is updated via handleSelectThread callback from InboxList
   // Use refreshKey to trigger InboxList to reload when needed
   const triggerRefresh = useCallback(() => {
     setRefreshKey(k => k + 1);
+  }, []);
+
+  // Handler for InboxList to register its loadMore function
+  const handleRegisterLoadMore = useCallback((loadMore: () => Promise<void>, hasMore: () => boolean) => {
+    loadMoreRef.current = loadMore;
+    hasMoreRef.current = hasMore;
   }, []);
 
   // === URL STATE SYNC ===
@@ -622,12 +630,51 @@ export function FloMailApp() {
     const currentIndex = currentThreadIndexRef.current;
     const nextIndex = currentIndex + 1;
     
-    // If we're past the end, stay at last
-    const nextThread = navThreads[nextIndex] || navThreads[navThreads.length - 1];
+    // If we're at the last loaded thread and there are more to load
+    if (nextIndex >= navThreads.length) {
+      const hasMore = hasMoreRef.current?.() ?? false;
+      if (hasMore && loadMoreRef.current) {
+        // Load more threads, then navigate to the first new one
+        await loadMoreRef.current();
+        // After loading, folderThreads will update via state, 
+        // so we wait a tick and then navigate
+        setTimeout(() => {
+          // Re-check the threads (they should have updated)
+          const updatedThreads = folderThreads.length > 0 ? folderThreads : allThreads;
+          if (nextIndex < updatedThreads.length) {
+            const newThread = updatedThreads[nextIndex];
+            if (newThread) {
+              setCurrentDraft(null);
+              currentThreadIndexRef.current = nextIndex;
+              setCurrentView('chat');
+              getAccessToken().then(async (token) => {
+                if (token) {
+                  try {
+                    const fullThread = await fetchThread(token, newThread.id);
+                    if (fullThread) {
+                      setSelectedThread(fullThread);
+                      return;
+                    }
+                  } catch (e) {
+                    console.error('Failed to fetch full thread:', e);
+                  }
+                }
+                setSelectedThread(newThread);
+              });
+            }
+          }
+        }, 100);
+        return;
+      }
+      // No more to load, stay at last
+      return;
+    }
+    
+    const nextThread = navThreads[nextIndex];
     
     if (nextThread && nextThread.id !== selectedThread?.id) {
       setCurrentDraft(null);
-      currentThreadIndexRef.current = nextIndex < navThreads.length ? nextIndex : navThreads.length - 1;
+      currentThreadIndexRef.current = nextIndex;
       setCurrentView('chat');
       
       // Fetch full thread data (navThreads might only have metadata)
@@ -645,8 +692,6 @@ export function FloMailApp() {
       }
       // Fallback to cached thread if fetch fails
       setSelectedThread(nextThread);
-    } else if (navThreads.length > 0 && nextIndex >= navThreads.length) {
-      // Already at the last email in this folder
     }
   }, [folderThreads, allThreads, selectedThread, getAccessToken]);
 
@@ -976,6 +1021,7 @@ export function FloMailApp() {
                 searchQuery={searchQuery}
                 onClearSearch={() => setSearchQuery('')}
                 onFolderChange={setCurrentMailFolder}
+                onRegisterLoadMore={handleRegisterLoadMore}
               />
             </motion.div>
           )}
@@ -1000,6 +1046,7 @@ export function FloMailApp() {
                 onStar={handleStar}
                 onUnstar={handleUnstar}
                 onNextEmail={handleNextEmail}
+                onPreviousEmail={handlePreviousEmail}
                 onGoToInbox={handleGoToInbox}
                 onRegisterArchiveHandler={(handler) => { archiveHandlerRef.current = handler; }}
               />

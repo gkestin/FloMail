@@ -59,9 +59,10 @@ interface InboxListProps {
   searchQuery?: string; // Search query from parent
   onClearSearch?: () => void; // Callback to clear search
   onFolderChange?: (folder: MailFolder) => void; // Notify parent when folder changes
+  onRegisterLoadMore?: (loadMore: () => Promise<void>, hasMore: () => boolean) => void; // Expose loadMore to parent
 }
 
-export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'inbox', searchQuery = '', onClearSearch, onFolderChange }: InboxListProps) {
+export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'inbox', searchQuery = '', onClearSearch, onFolderChange, onRegisterLoadMore }: InboxListProps) {
   const { getAccessToken, user } = useAuth();
   const [threads, setThreads] = useState<EmailThread[]>([]);
   const [drafts, setDrafts] = useState<GmailDraftInfo[]>([]);
@@ -301,6 +302,14 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
       setLoadingMore(false);
     }
   }, [loadingMore, nextPageToken, currentFolder, getAccessToken, threads, threadsWithDrafts]);
+
+  // Register loadMore with parent so it can trigger loading more threads
+  useEffect(() => {
+    if (onRegisterLoadMore) {
+      const hasMore = () => Boolean(nextPageToken && !FOLDER_CONFIG[currentFolder].isDrafts);
+      onRegisterLoadMore(loadMore, hasMore);
+    }
+  }, [onRegisterLoadMore, loadMore, nextPageToken, currentFolder]);
 
   // Intersection Observer for infinite scroll
   useEffect(() => {

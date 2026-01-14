@@ -113,6 +113,7 @@ interface ChatInterfaceProps {
   onStar?: () => void;
   onUnstar?: () => void;
   onNextEmail?: () => void;
+  onPreviousEmail?: () => void;
   onGoToInbox?: () => void;
   // Callback to register archive handler that includes notification
   onRegisterArchiveHandler?: (handler: () => void) => void;
@@ -160,6 +161,7 @@ export function ChatInterface({
   onStar,
   onUnstar,
   onNextEmail,
+  onPreviousEmail,
   onGoToInbox,
   onRegisterArchiveHandler,
 }: ChatInterfaceProps) {
@@ -403,11 +405,13 @@ export function ChatInterface({
   }, [thread?.id, getLoadPreference]);
 
   // ===========================================
-  // SCROLL-TO-REVEAL/CLOSE LOGIC
+  // SCROLL-TO-REVEAL/CLOSE LOGIC + HORIZONTAL NAV
   // ===========================================
   // Behavior:
   // - Scroll UP (deltaY < 0) at top → reveal ONE message at a time
   // - Scroll DOWN (deltaY > 0) anywhere → close ALL to base immediately
+  // - Swipe LEFT (deltaX > 0) → go to NEXT thread
+  // - Swipe RIGHT (deltaX < 0) → go to PREVIOUS thread
   // 
   // Uses refs for state to avoid stale closure issues
   const hasActedThisGesture = useRef(false);
@@ -415,6 +419,16 @@ export function ChatInterface({
   const totalMessagesRef = useRef(0);
   const messageNeedsExpandRef = useRef(false);
   const [expandRequestId, setExpandRequestId] = useState(0);
+  
+  // Refs for navigation callbacks (to avoid stale closures)
+  const onNextEmailRef = useRef(onNextEmail);
+  const onPreviousEmailRef = useRef(onPreviousEmail);
+  useEffect(() => { onNextEmailRef.current = onNextEmail; }, [onNextEmail]);
+  useEffect(() => { onPreviousEmailRef.current = onPreviousEmail; }, [onPreviousEmail]);
+  
+  // Horizontal swipe state
+  const horizontalAccumulatedDelta = useRef(0);
+  const hasNavigatedThisGesture = useRef(false);
   
   useEffect(() => {
     if (thread) {
@@ -441,23 +455,66 @@ export function ChatInterface({
       }, 40);
     };
     
+    // Track touch start position for both vertical and horizontal
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let touchCurrentX = 0;
+    
     const handleTouchStart = (e: TouchEvent) => {
       isPullingRef.current = true;
       pullStartY.current = e.touches[0].clientY;
+      touchStartX = e.touches[0].clientX;
+      touchStartY = e.touches[0].clientY;
+      touchCurrentX = touchStartX;
       accumulatedDelta = 0;
       hasActedThisGesture.current = false;
+      hasNavigatedThisGesture.current = false;
+      horizontalAccumulatedDelta.current = 0;
     };
 
     const handleTouchMove = (e: TouchEvent) => {
       if (!isPullingRef.current) return;
       
+      const currentX = e.touches[0].clientX;
       const currentY = e.touches[0].clientY;
+      const deltaX = currentX - touchCurrentX;
       const deltaY = currentY - pullStartY.current;
+      touchCurrentX = currentX;
       pullStartY.current = currentY;
+      
+      // Calculate total distance from touch start
+      const totalDeltaX = currentX - touchStartX;
+      const totalDeltaY = currentY - touchStartY;
       
       const current = revealedCountRef.current;
       const total = totalMessagesRef.current;
       
+      // ===========================================
+      // HORIZONTAL SWIPE → Navigate between threads
+      // ===========================================
+      const horizontalThreshold = 80;
+      
+      // If predominantly horizontal swipe
+      if (Math.abs(totalDeltaX) > Math.abs(totalDeltaY) * 1.5 && Math.abs(totalDeltaX) > 30) {
+        if (!hasNavigatedThisGesture.current) {
+          if (totalDeltaX < -horizontalThreshold) {
+            // Swipe LEFT (finger moving left, negative delta) → NEXT
+            onNextEmailRef.current?.();
+            hasNavigatedThisGesture.current = true;
+            e.preventDefault();
+          } else if (totalDeltaX > horizontalThreshold) {
+            // Swipe RIGHT (finger moving right, positive delta) → PREVIOUS
+            onPreviousEmailRef.current?.();
+            hasNavigatedThisGesture.current = true;
+            e.preventDefault();
+          }
+        }
+        return; // Don't process vertical when doing horizontal swipe
+      }
+      
+      // ===========================================
+      // VERTICAL SWIPE → Reveal/collapse messages
+      // ===========================================
       // Pull UP (negative delta) = CLOSE ALL to 0 immediately
       if (deltaY < 0 && current > 0) {
         handleScrollReveal(0);
@@ -497,12 +554,52 @@ export function ChatInterface({
       isPullingRef.current = false;
       accumulatedDelta = 0;
       hasActedThisGesture.current = false;
+      hasNavigatedThisGesture.current = false;
+      horizontalAccumulatedDelta.current = 0;
     };
 
     const handleWheel = (e: WheelEvent) => {
       const current = revealedCountRef.current;
       const total = totalMessagesRef.current;
       
+      // ===========================================
+      // HORIZONTAL SCROLL → Navigate between threads
+      // ===========================================
+      // Swipe LEFT (deltaX > 0) → NEXT thread
+      // Swipe RIGHT (deltaX < 0) → PREVIOUS thread
+      const horizontalThreshold = 100;
+      
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.5) {
+        // Predominantly horizontal scroll
+        horizontalAccumulatedDelta.current += e.deltaX;
+        
+        if (!hasNavigatedThisGesture.current) {
+          if (horizontalAccumulatedDelta.current > horizontalThreshold) {
+            // Swipe LEFT → NEXT
+            onNextEmailRef.current?.();
+            hasNavigatedThisGesture.current = true;
+            horizontalAccumulatedDelta.current = 0;
+          } else if (horizontalAccumulatedDelta.current < -horizontalThreshold) {
+            // Swipe RIGHT → PREVIOUS
+            onPreviousEmailRef.current?.();
+            hasNavigatedThisGesture.current = true;
+            horizontalAccumulatedDelta.current = 0;
+          }
+        }
+        
+        // Reset navigation gesture after short delay
+        if (gestureEndTimeout.current) clearTimeout(gestureEndTimeout.current);
+        gestureEndTimeout.current = setTimeout(() => {
+          hasNavigatedThisGesture.current = false;
+          horizontalAccumulatedDelta.current = 0;
+        }, 150);
+        
+        return; // Don't process vertical scroll when horizontal
+      }
+      
+      // ===========================================
+      // VERTICAL SCROLL → Reveal/collapse messages
+      // ===========================================
       // Scroll DOWN (deltaY > 0) = CLOSE ALL to 0 immediately
       // Always allow collapsing to 0, regardless of load preference
       if (e.deltaY > 0 && current > 0) {
