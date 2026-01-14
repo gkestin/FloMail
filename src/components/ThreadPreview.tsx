@@ -9,7 +9,7 @@ import { UnsubscribeButton } from './UnsubscribeButton';
 import Linkify from 'linkify-react';
 
 // Folder type and display config
-type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'drafts' | 'snoozed';
+type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'drafts' | 'snoozed' | 'spam';
 
 const FOLDER_DISPLAY: Record<MailFolder, { label: string; icon: React.ElementType; color: string }> = {
   inbox: { label: 'Inbox', icon: Inbox, color: 'text-blue-400 bg-blue-500/20' },
@@ -18,6 +18,7 @@ const FOLDER_DISPLAY: Record<MailFolder, { label: string; icon: React.ElementTyp
   all: { label: 'All Mail', icon: FolderOpen, color: 'text-slate-400 bg-slate-500/20' },
   drafts: { label: 'Drafts', icon: Mail, color: 'text-red-400 bg-red-500/20' },
   snoozed: { label: 'Snoozed', icon: Clock, color: 'text-amber-400 bg-amber-500/20' },
+  spam: { label: 'Spam', icon: Shield, color: 'text-orange-400 bg-orange-500/20' },
 };
 
 /**
@@ -207,6 +208,16 @@ interface ThreadPreviewProps {
   onRevealedCountChange?: (count: number) => void;
   /** Callback for SCROLL actions - only sets current, not base */
   onScrollReveal?: (count: number) => void;
+  /**
+   * Parent-triggered request to expand the message region to fit current content.
+   * Increment this number to trigger another expand attempt.
+   */
+  expandRequestId?: number;
+  /**
+   * Reports whether the *next* pull-to-reveal gesture should EXPAND (vs reveal next message).
+   * This is intentionally conservative: currently only true for the "most recent message" case.
+   */
+  onNeedsExpandChange?: (needsExpand: boolean) => void;
 }
 
 // Storage keys for persisting state
@@ -221,6 +232,8 @@ export function ThreadPreview({
   baseRevealedCount = 1,
   onRevealedCountChange,
   onScrollReveal,
+  expandRequestId,
+  onNeedsExpandChange,
 }: ThreadPreviewProps) {
   // If revealedMessageCount is provided (parent-controlled mode):
   // - 0 means collapsed
@@ -251,13 +264,15 @@ export function ThreadPreview({
     const saved = localStorage.getItem(STORAGE_KEY_HEIGHT);
     return saved !== null ? parseInt(saved, 10) : 250;
   });
+  // The user's baseline (manually resized) height. Auto-expands should NOT overwrite this.
+  const manualHeightRef = useRef(messagesHeight);
   
   const isDragging = useRef(false);
   const startY = useRef(0);
   const startHeight = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const previousThreadId = useRef<string | null>(null);
-
+  
   // Persist expanded state when it changes (only in local mode)
   useEffect(() => {
     if (!isPullToRevealMode) {
@@ -275,7 +290,6 @@ export function ThreadPreview({
     if (previousThreadId.current !== thread.id) {
       setExpandedMessages(new Set([thread.messages[thread.messages.length - 1]?.id]));
       previousThreadId.current = thread.id;
-      // Also reset prevRevealedCount to avoid stale comparisons
       prevRevealedCount.current = 0;
     }
   }, [thread.id, thread.messages]);
@@ -289,12 +303,8 @@ export function ThreadPreview({
     
     const currentCount = revealedMessageCount || 0;
     
-    // If revealing more messages than before, add them to the expanded set
     if (currentCount > prevRevealedCount.current && currentCount > 0) {
-      // Get the messages being revealed
       const revealedMessages = thread.messages.slice(-currentCount);
-      
-      // Add all newly revealed messages to expanded set
       setExpandedMessages(prev => {
         const newSet = new Set(prev);
         revealedMessages.forEach(msg => newSet.add(msg.id));
@@ -305,10 +315,133 @@ export function ThreadPreview({
     prevRevealedCount.current = currentCount;
   }, [revealedMessageCount, isPullToRevealMode, thread.messages]);
   
+  // ===========================================
+  // SIMPLE SCROLL INDICATOR - shows when there's more to scroll
+  // ===========================================
+  const [hasMoreBelow, setHasMoreBelow] = useState(false);
+  
+  // Simple function to check if there's more content below
+  const checkHasMoreBelow = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return false;
+    
+    const remaining = container.scrollHeight - container.scrollTop - container.clientHeight;
+    return remaining > 10;
+  }, []);
+  
+  // Set up scroll listener
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !isExpanded) {
+      setHasMoreBelow(false);
+      if (needsExpandRef.current) {
+        needsExpandRef.current = false;
+        onNeedsExpandChangeRef.current?.(false);
+      }
+      return;
+    }
+    
+    // Check function - updates state only if value changes
+    const updateIndicator = () => {
+      const shouldShow = checkHasMoreBelow();
+      setHasMoreBelow(prev => prev !== shouldShow ? shouldShow : prev);
+
+      // ===== needsExpand computation =====
+      // Only applies to the "most recent message not fully visible" case:
+      // - pull-to-reveal mode
+      // - exactly 1 message revealed
+      // - user is at TOP of message container
+      // - there is more content below (would show gradient)
+      // - we still have room to grow the message region height
+      const count = revealedCountRef.current;
+      const atTop = container.scrollTop <= 5;
+      const maxAllowedHeight = window.innerHeight * 0.7;
+      const canExpand = messagesHeightRef.current < maxAllowedHeight - 1;
+      const needsExpand = Boolean(isPullToRevealMode && count === 1 && atTop && shouldShow && canExpand);
+
+      if (needsExpand !== needsExpandRef.current) {
+        needsExpandRef.current = needsExpand;
+        console.log('[ThreadPreview] needsExpand →', needsExpand, {
+          count,
+          atTop,
+          hasMoreBelow: shouldShow,
+          canExpand,
+          height: Math.round(messagesHeightRef.current),
+          maxAllowedHeight: Math.round(maxAllowedHeight),
+        });
+        onNeedsExpandChangeRef.current?.(needsExpand);
+      }
+    };
+    
+    // Multiple checks at different delays to catch iframe/image loading
+    const timers = [
+      setTimeout(updateIndicator, 50),
+      setTimeout(updateIndicator, 200),
+      setTimeout(updateIndicator, 500),
+      setTimeout(updateIndicator, 1000),
+      setTimeout(updateIndicator, 2000), // For slow-loading images
+    ];
+    
+    // Listen to scroll events
+    container.addEventListener('scroll', updateIndicator, { passive: true });
+    
+    // Poll every 300ms (more frequent than before)
+    const pollInterval = setInterval(updateIndicator, 300);
+    
+    return () => {
+      timers.forEach(clearTimeout);
+      clearInterval(pollInterval);
+      container.removeEventListener('scroll', updateIndicator);
+    };
+  }, [isExpanded, checkHasMoreBelow, isPullToRevealMode]);
+  
+  // Also check when content changes (like expanding/collapsing messages)
+  useEffect(() => {
+    if (!isExpanded) return;
+    
+    const updateIndicator = () => {
+      const container = containerRef.current;
+      if (!container) return;
+      
+      const shouldShow = checkHasMoreBelow();
+      setHasMoreBelow(shouldShow);
+
+      // Keep needsExpand in sync for delayed iframe/image resizes too
+      const count = revealedCountRef.current;
+      const atTop = container.scrollTop <= 5;
+      const maxAllowedHeight = window.innerHeight * 0.7;
+      const canExpand = messagesHeightRef.current < maxAllowedHeight - 1;
+      const needsExpand = Boolean(isPullToRevealMode && count === 1 && atTop && shouldShow && canExpand);
+      
+      if (needsExpand !== needsExpandRef.current) {
+        needsExpandRef.current = needsExpand;
+        console.log('[ThreadPreview] needsExpand →', needsExpand, {
+          count,
+          atTop,
+          hasMoreBelow: shouldShow,
+          canExpand,
+          height: Math.round(messagesHeightRef.current),
+          maxAllowedHeight: Math.round(maxAllowedHeight),
+        });
+        onNeedsExpandChangeRef.current?.(needsExpand);
+      }
+    };
+    
+    // Check at multiple delays to catch animations and iframe resizes
+    const t1 = setTimeout(updateIndicator, 100);
+    const t2 = setTimeout(updateIndicator, 400);
+    const t3 = setTimeout(updateIndicator, 800);
+    
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+    };
+  }, [isExpanded, expandedMessages.size, thread.messages.length, messagesHeight, checkHasMoreBelow]);
+  
   // Handler for toggling expand state
   const handleToggleExpand = useCallback(() => {
     if (isPullToRevealMode && onRevealedCountChange) {
-      // Toggle between 0 (collapsed) and 1 (show latest message)
       onRevealedCountChange(isExpanded ? 0 : 1);
     } else {
       setLocalIsExpanded(prev => !prev);
@@ -318,63 +451,160 @@ export function ThreadPreview({
   // ===========================================
   // SCROLL-TO-REVEAL/CLOSE WITHIN MESSAGE CONTAINER
   // ===========================================
+  // Behavior:
+  // - At TOP of scroll + scroll UP (deltaY < 0) → reveal ONE older message
+  // - At BOTTOM of scroll + scroll DOWN (deltaY > 0) → collapse ALL to base
+  //
   // Uses refs to avoid stale closure issues
-  const revealedCountRef = useRef(revealedMessageCount || 1);
+  const revealedCountRef = useRef<number>(revealedMessageCount ?? 0);
   const baseCountRef = useRef(baseRevealedCount);
   const totalMessagesRef = useRef(thread.messages.length);
-  
-  useEffect(() => { revealedCountRef.current = revealedMessageCount || 1; }, [revealedMessageCount]);
-  useEffect(() => { baseCountRef.current = baseRevealedCount; }, [baseRevealedCount]);
-  useEffect(() => { totalMessagesRef.current = thread.messages.length; }, [thread.messages.length]);
-  
   const hasRevealedThisGesture = useRef(false);
   const gestureTimeout = useRef<NodeJS.Timeout | null>(null);
-  // Store callback in ref to avoid stale closures
   const onScrollRevealRef = useRef(onScrollReveal);
-  useEffect(() => { onScrollRevealRef.current = onScrollReveal; }, [onScrollReveal]);
+  const onNeedsExpandChangeRef = useRef(onNeedsExpandChange);
+  const needsExpandRef = useRef(false);
+  const lastExpandRequestIdRef = useRef<number | undefined>(expandRequestId);
   
+  // Keep refs in sync
+  useEffect(() => { revealedCountRef.current = revealedMessageCount ?? 0; }, [revealedMessageCount]);
+  useEffect(() => { baseCountRef.current = baseRevealedCount; }, [baseRevealedCount]);
+  useEffect(() => { totalMessagesRef.current = thread.messages.length; }, [thread.messages.length]);
+  useEffect(() => { onScrollRevealRef.current = onScrollReveal; }, [onScrollReveal]);
+  useEffect(() => { onNeedsExpandChangeRef.current = onNeedsExpandChange; }, [onNeedsExpandChange]);
+  
+  // Ref for height to use in scroll handler
+  const messagesHeightRef = useRef(messagesHeight);
+  useEffect(() => { messagesHeightRef.current = messagesHeight; }, [messagesHeight]);
+
+  // When the message region is re-opened (collapsed → expanded), reset to the user's baseline height.
+  // This keeps the "first open = half-ish" behavior consistent even after a temporary auto-expand.
+  const wasExpandedRef = useRef(isExpanded);
   useEffect(() => {
+    const wasExpanded = wasExpandedRef.current;
+    if (!wasExpanded && isExpanded) {
+      const baseline = manualHeightRef.current;
+      if (Math.abs(messagesHeightRef.current - baseline) > 1) {
+        console.log('[ThreadPreview] OPEN → reset height to baseline', Math.round(baseline));
+        setMessagesHeight(baseline);
+        messagesHeightRef.current = baseline;
+        currentHeightRef.current = baseline;
+      }
+    }
+    wasExpandedRef.current = isExpanded;
+  }, [isExpanded]);
+  
+  
+  // Parent-triggered expand request (e.g., pull gesture in chat region)
+  useEffect(() => {
+    if (expandRequestId === undefined) return;
+    if (expandRequestId === lastExpandRequestIdRef.current) return;
+    lastExpandRequestIdRef.current = expandRequestId;
+    
     const container = containerRef.current;
-    if (!container) return;
+    if (!container || !isExpanded) return;
+    
+    const maxAllowedHeight = window.innerHeight * 0.7;
+    const contentHeight = container.scrollHeight + 20;
+    const newHeight = Math.min(contentHeight, maxAllowedHeight);
+    
+    if (newHeight > messagesHeightRef.current + 1) {
+      console.log('[ThreadPreview] EXPAND request → height', Math.round(messagesHeightRef.current), '→', Math.round(newHeight));
+      setMessagesHeight(newHeight);
+      messagesHeightRef.current = newHeight;
+      currentHeightRef.current = newHeight;
+      // NOTE: do not persist auto-expands; only manual resizes persist.
+    } else {
+      console.log('[ThreadPreview] EXPAND request ignored (already at max/fit)', {
+        currentHeight: Math.round(messagesHeightRef.current),
+        newHeight: Math.round(newHeight),
+        maxAllowedHeight: Math.round(maxAllowedHeight),
+      });
+    }
+  }, [expandRequestId, isExpanded, saveHeight]);
+  
+  // Set up wheel handler for reveal/collapse/expand
+  useEffect(() => {
+    // Only attach handlers when expanded (container exists)
+    if (!isExpanded) return;
+    
+    const container = containerRef.current;
+    if (!container) {
+      console.log('[ThreadPreview] Wheel setup: container not ready yet');
+      return;
+    }
+    
+    console.log('[ThreadPreview] Wheel handlers attached to message container');
     
     let accumulatedDelta = 0;
     const threshold = 60;
+    let isTouching = false;
+    let lastTouchY = 0;
     
     const resetGesture = () => {
       if (gestureTimeout.current) clearTimeout(gestureTimeout.current);
       gestureTimeout.current = setTimeout(() => {
         hasRevealedThisGesture.current = false;
         accumulatedDelta = 0;
-      }, 40);
+      }, 40); // 40ms between actions
     };
     
     const handleWheel = (e: WheelEvent) => {
-      // Check if scroll handling is enabled
+      // Skip if no scroll handler or if we're resizing
       const scrollHandler = onScrollRevealRef.current;
-      if (!scrollHandler) return;
+      if (!scrollHandler || isDragging.current) return;
       
-      const current = revealedCountRef.current;
-      const base = baseCountRef.current;
+      const current = Math.max(revealedCountRef.current, 1);
       const total = totalMessagesRef.current;
-      const atTop = container.scrollTop <= 2;
-      const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 2;
       
-      // Scroll DOWN (deltaY > 0) at BOTTOM = CLOSE ALL to base
-      // Only collapse when at bottom (can't scroll further down)
-      if (e.deltaY > 0 && atBottom && current > base) {
-        scrollHandler(base);
+      // Check scroll position with small threshold
+      const atTop = container.scrollTop <= 5;
+      const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 5;
+      
+      // SCROLL DOWN (deltaY > 0) at BOTTOM → COLLAPSE ALL to 0
+      if (e.deltaY > 0 && atBottom && current > 0) {
+        console.log('[ThreadPreview Wheel] ACTION: COLLAPSE to 0');
+        scrollHandler(0);
+        e.preventDefault();
         e.stopPropagation();
         return;
       }
       
-      // Scroll UP (deltaY < 0) at TOP = reveal ONE message
+      // Pull gesture at TOP (deltaY < 0) → EXPAND (if needed) else REVEAL next
       if (e.deltaY < 0 && atTop) {
         accumulatedDelta += Math.abs(e.deltaY);
         
         if (!hasRevealedThisGesture.current && accumulatedDelta > threshold) {
-          if (current < total) {
-            scrollHandler(current + 1);
+          // First priority: expand the message region if the most recent message isn't fully visible
+          if (needsExpandRef.current) {
+            const maxAllowedHeight = window.innerHeight * 0.7;
+            const contentHeight = container.scrollHeight + 20;
+            const newHeight = Math.min(contentHeight, maxAllowedHeight);
+            
+            if (newHeight > messagesHeightRef.current + 1) {
+              console.log('[ThreadPreview Wheel] ACTION: EXPAND', {
+                from: Math.round(messagesHeightRef.current),
+                to: Math.round(newHeight),
+              });
+              setMessagesHeight(newHeight);
+              messagesHeightRef.current = newHeight;
+              currentHeightRef.current = newHeight;
+              // NOTE: do not persist auto-expands; only manual resizes persist.
+            } else {
+              console.log('[ThreadPreview Wheel] EXPAND no-op (already fits/max)', {
+                currentHeight: Math.round(messagesHeightRef.current),
+                newHeight: Math.round(newHeight),
+              });
+            }
+            
             hasRevealedThisGesture.current = true;
+          } else {
+            // Otherwise reveal the next older message
+            if (current < total) {
+              console.log('[ThreadPreview Wheel] ACTION: REVEAL', current + 1, 'of', total);
+              scrollHandler(current + 1);
+              hasRevealedThisGesture.current = true;
+            }
           }
         }
         
@@ -383,50 +613,189 @@ export function ThreadPreview({
         resetGesture();
       }
     };
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (isDragging.current) return;
+      isTouching = true;
+      lastTouchY = e.touches[0]?.clientY ?? 0;
+      accumulatedDelta = 0;
+      hasRevealedThisGesture.current = false;
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      const scrollHandler = onScrollRevealRef.current;
+      if (!scrollHandler || isDragging.current) return;
+      if (!isTouching) return;
+
+      const y = e.touches[0]?.clientY ?? lastTouchY;
+      const deltaY = y - lastTouchY;
+      lastTouchY = y;
+
+      const current = Math.max(revealedCountRef.current, 1);
+      const total = totalMessagesRef.current;
+      const atTop = container.scrollTop <= 5;
+      const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 5;
+
+      // OVERSCROLL at BOTTOM (finger up, deltaY < 0) → COLLAPSE to 0
+      if (deltaY < 0 && atBottom && current > 0) {
+        console.log('[ThreadPreview Touch] ACTION: COLLAPSE to 0');
+        scrollHandler(0);
+        e.preventDefault();
+        e.stopPropagation();
+        accumulatedDelta = 0;
+        hasRevealedThisGesture.current = true;
+        resetGesture();
+        return;
+      }
+
+      // PULL DOWN at TOP (finger down, deltaY > 0) → EXPAND (if needed) else REVEAL next
+      if (deltaY > 0 && atTop) {
+        accumulatedDelta += deltaY;
+
+        if (!hasRevealedThisGesture.current && accumulatedDelta > threshold) {
+          if (needsExpandRef.current) {
+            const maxAllowedHeight = window.innerHeight * 0.7;
+            const contentHeight = container.scrollHeight + 20;
+            const newHeight = Math.min(contentHeight, maxAllowedHeight);
+
+            if (newHeight > messagesHeightRef.current + 1) {
+              console.log('[ThreadPreview Touch] ACTION: EXPAND', {
+                from: Math.round(messagesHeightRef.current),
+                to: Math.round(newHeight),
+              });
+              setMessagesHeight(newHeight);
+              messagesHeightRef.current = newHeight;
+              currentHeightRef.current = newHeight;
+              // NOTE: do not persist auto-expands; only manual resizes persist.
+            } else {
+              console.log('[ThreadPreview Touch] EXPAND no-op (already fits/max)', {
+                currentHeight: Math.round(messagesHeightRef.current),
+                newHeight: Math.round(newHeight),
+              });
+            }
+            hasRevealedThisGesture.current = true;
+          } else if (current < total) {
+            console.log('[ThreadPreview Touch] ACTION: REVEAL', current + 1, 'of', total);
+            scrollHandler(current + 1);
+            hasRevealedThisGesture.current = true;
+          }
+        }
+
+        e.preventDefault();
+        e.stopPropagation();
+        resetGesture();
+      }
+    };
+
+    const handleTouchEnd = () => {
+      isTouching = false;
+      accumulatedDelta = 0;
+      hasRevealedThisGesture.current = false;
+    };
     
     container.addEventListener('wheel', handleWheel, { passive: false });
+    container.addEventListener('touchstart', handleTouchStart, { passive: true });
+    container.addEventListener('touchmove', handleTouchMove, { passive: false });
+    container.addEventListener('touchend', handleTouchEnd);
     
     return () => {
       container.removeEventListener('wheel', handleWheel);
+      container.removeEventListener('touchstart', handleTouchStart);
+      container.removeEventListener('touchmove', handleTouchMove);
+      container.removeEventListener('touchend', handleTouchEnd);
       if (gestureTimeout.current) clearTimeout(gestureTimeout.current);
     };
-  }, []); // Empty deps - uses refs for all state, always attached
+  }, [isExpanded]); // Re-run when expanded state changes so we can attach to the container
+  
+  // ===========================================
+  // ROBUST RESIZE HANDLE
+  // Uses direct DOM manipulation during drag to avoid React re-render issues
+  // ===========================================
+  const currentHeightRef = useRef(messagesHeight);
+  const [isResizing, setIsResizing] = useState(false); // For rendering overlay
+  
+  // Sync ref with state (but not during drag)
+  useEffect(() => { 
+    if (!isDragging.current) {
+      currentHeightRef.current = messagesHeight; 
+    }
+  }, [messagesHeight]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     isDragging.current = true;
+    setIsResizing(true); // Show overlay
     startY.current = e.clientY;
-    startHeight.current = messagesHeight;
+    startHeight.current = currentHeightRef.current;
     document.body.style.cursor = 'ns-resize';
     document.body.style.userSelect = 'none';
-  }, [messagesHeight]);
+    document.body.classList.add('resizing-messages');
+  }, []);
 
+  // Resize event handlers - use direct DOM manipulation during drag
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isDragging.current) return;
-      const deltaY = e.clientY - startY.current;
-      const newHeight = Math.max(80, Math.min(window.innerHeight * 0.7, startHeight.current + deltaY));
-      setMessagesHeight(newHeight);
-    };
-
-    const handleMouseUp = () => {
+    const finishDrag = () => {
       if (isDragging.current) {
         isDragging.current = false;
+        setIsResizing(false); // Hide overlay
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
-        // Save height when drag ends
-        saveHeight(messagesHeight);
+        document.body.classList.remove('resizing-messages');
+        // Only update React state when drag ends
+        const finalHeight = currentHeightRef.current;
+        setMessagesHeight(finalHeight);
+        saveHeight(finalHeight);
+        manualHeightRef.current = finalHeight;
+      }
+    };
+    
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging.current) return;
+      e.preventDefault();
+      
+      const deltaY = e.clientY - startY.current;
+      const newHeight = Math.max(80, Math.min(window.innerHeight * 0.7, startHeight.current + deltaY));
+      
+      // Update ref immediately
+      currentHeightRef.current = newHeight;
+      
+      // Directly update DOM to avoid React re-render during drag
+      const container = containerRef.current;
+      if (container) {
+        container.style.maxHeight = `${newHeight}px`;
+      }
+    };
+
+    const handleMouseUp = () => finishDrag();
+    const handleWindowBlur = () => finishDrag();
+    // Also handle if mouse leaves the window
+    const handleMouseLeave = (e: MouseEvent) => {
+      // Only finish if mouse actually left the window (not just an element)
+      if (e.relatedTarget === null && isDragging.current) {
+        finishDrag();
       }
     };
 
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
+    window.addEventListener('blur', handleWindowBlur);
+    document.addEventListener('mouseleave', handleMouseLeave);
     
     return () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('blur', handleWindowBlur);
+      document.removeEventListener('mouseleave', handleMouseLeave);
+      // Cleanup any stuck state on unmount
+      if (isDragging.current) {
+        isDragging.current = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        document.body.classList.remove('resizing-messages');
+      }
     };
-  }, [messagesHeight, saveHeight]);
+  }, [saveHeight]);
 
   const toggleMessage = (messageId: string) => {
     setExpandedMessages((prev) => {
@@ -554,7 +923,17 @@ export function ThreadPreview({
               transition={{ duration: 0.2 }}
               className="relative z-10 overflow-hidden"
             >
-              {/* Messages */}
+              {/* Messages container wrapper with scroll indicator overlay */}
+              <div className="relative">
+              
+              {/* Invisible overlay during resize to block iframe events */}
+              {isResizing && (
+                <div 
+                  className="absolute inset-0 z-50"
+                  style={{ cursor: 'ns-resize' }}
+                />
+              )}
+              
               <div 
                 ref={containerRef}
                 style={{ maxHeight: `${messagesHeight}px` }}
@@ -593,7 +972,43 @@ export function ThreadPreview({
                     });
                   })()}
                 </AnimatePresence>
+                
               </div>
+                
+                {/* Scroll indicator - positioned absolutely at bottom of wrapper, full width */}
+                <AnimatePresence>
+                  {hasMoreBelow && (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.15 }}
+                      className="absolute bottom-0 left-0 right-0 pointer-events-none"
+                    >
+                      {/* Gradient fade - full width, taller for better coverage */}
+                      <div 
+                        style={{ 
+                          height: '3.5rem',
+                          background: 'linear-gradient(to top, var(--bg-elevated) 50%, transparent)',
+                        }}
+                      />
+                      {/* Chevron indicator - clickable, centered */}
+                      <button
+                        onClick={() => {
+                          containerRef.current?.scrollBy({ top: 100, behavior: 'smooth' });
+                        }}
+                        className="absolute bottom-3 left-1/2 -translate-x-1/2 p-1.5 rounded-full pointer-events-auto transition-all hover:scale-110 shadow-lg"
+                        style={{ 
+                          background: 'var(--bg-interactive)',
+                          border: '1px solid var(--border-default)',
+                        }}
+                      >
+                        <ChevronDown className="w-4 h-4" style={{ color: 'var(--text-secondary)' }} />
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>{/* End wrapper */}
             </motion.div>
           )}
         </AnimatePresence>
@@ -603,7 +1018,7 @@ export function ThreadPreview({
       {isExpanded && (
         <div
           onMouseDown={handleMouseDown}
-          className="group relative cursor-ns-resize"
+          className="group relative cursor-ns-resize resize-handle"
         >
           {/* Subtle separator line */}
           <div className="h-px" style={{ background: 'var(--border-default)' }}></div>

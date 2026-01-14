@@ -47,6 +47,8 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
   const hasUserEditsRef = useRef(false);
   // Track the last draft ID we synced from
   const lastSyncedDraftIdRef = useRef(draft.id);
+  // Track previous streaming state to detect when streaming ends
+  const wasStreamingRef = useRef(isStreaming);
   
   // Count original attachments (from forward)
   const originalAttachments = editedDraft.attachments?.filter(a => a.isFromOriginal) || [];
@@ -127,17 +129,28 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
       setShowCcBcc((draft.cc && draft.cc.length > 0) || (draft.bcc && draft.bcc.length > 0));
       lastSyncedDraftIdRef.current = draft.id;
       hasUserEditsRef.current = false;
+      wasStreamingRef.current = isStreaming;
       return;
     }
     
     // Case 2: Same draft, still streaming - sync body content from AI
     if (isStreaming && !hasUserEditsRef.current) {
       setEditedDraft(draft);
+      wasStreamingRef.current = true;
       return;
     }
     
-    // Case 3: Same draft, user has made edits OR streaming is done - DON'T overwrite
+    // Case 3: Streaming JUST finished - sync the FINAL draft content (unless user edited)
+    // This is crucial: when streaming ends, we get the final complete draft
+    if (wasStreamingRef.current && !isStreaming && !hasUserEditsRef.current) {
+      setEditedDraft(draft);
+      wasStreamingRef.current = false;
+      return;
+    }
+    
+    // Case 4: Same draft, user has made edits, streaming done - DON'T overwrite
     // The user's local edits in editedDraft take precedence
+    wasStreamingRef.current = isStreaming;
   }, [draft, isStreaming]);
 
   // Handle file selection
@@ -484,9 +497,9 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
               hasUserEditsRef.current = true;
               setEditedDraft({ ...editedDraft, body: e.target.value });
             }}
-            placeholder={isStreaming ? "AI is drafting..." : "Write your message..."}
+            placeholder="Write your message..."
             disabled={isSending || isStreaming}
-            className={`w-full bg-transparent leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 ${isStreaming ? 'animate-pulse' : ''}`}
+            className="w-full bg-transparent leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0"
             style={{ 
               color: 'var(--text-primary)',
               // 16px minimum to prevent iOS auto-zoom on focus

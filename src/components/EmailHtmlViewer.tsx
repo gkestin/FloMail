@@ -136,6 +136,7 @@ export function EmailHtmlViewer({
   }, [sanitizedHtml, needsWhiteBackground]);
 
   // Measure height from parent by accessing iframe document
+  // NOTE: We do NOT clamp to maxHeight - the outer container handles scrolling
   const measureHeight = useCallback(() => {
     if (!iframeRef.current) return;
     
@@ -150,8 +151,8 @@ export function EmailHtmlViewer({
         );
         
         if (height > 0) {
-          const clampedHeight = Math.min(height + 16, maxHeight);
-          setIframeHeight(clampedHeight);
+          // Don't clamp - let the iframe be full height, outer container handles scroll
+          setIframeHeight(height + 16);
           setIsLoading(false);
         }
       }
@@ -159,7 +160,7 @@ export function EmailHtmlViewer({
       setIframeHeight(300);
       setIsLoading(false);
     }
-  }, [maxHeight]);
+  }, []);
 
   // Write content to iframe and measure height
   useEffect(() => {

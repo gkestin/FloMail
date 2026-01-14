@@ -19,7 +19,8 @@ import {
   Search,
   X,
   Clock,
-  Bell
+  Bell,
+  ShieldAlert
 } from 'lucide-react';
 import { EmailThread } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
@@ -29,7 +30,7 @@ import { SnoozePicker } from './SnoozePicker';
 import { emailCache } from '@/lib/email-cache';
 
 // Available mail folders/views
-export type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'drafts' | 'snoozed';
+export type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'drafts' | 'snoozed' | 'spam';
 
 // Gmail API label configuration
 // Note: Gmail uses LABELS not folders. "Archive" in Gmail simply means
@@ -47,6 +48,7 @@ const FOLDER_CONFIG: Record<MailFolder, {
   drafts: { label: 'Drafts', labelIds: ['DRAFT'], icon: FileEdit, isDrafts: true },
   snoozed: { label: 'Snoozed', icon: Clock, isSnoozed: true },
   starred: { label: 'Starred', labelIds: ['STARRED'], icon: Star },
+  spam: { label: 'Spam', labelIds: ['SPAM'], icon: ShieldAlert },
   all: { label: 'All Mail', icon: Mail }, // No filter = all mail
 };
 
@@ -596,8 +598,8 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
 
   const FolderIcon = FOLDER_CONFIG[currentFolder].icon;
   
-  // Define tab order explicitly: Inbox → Sent → Drafts → Snoozed → Starred → All Mail
-  const FOLDER_ORDER: MailFolder[] = ['inbox', 'sent', 'drafts', 'snoozed', 'starred', 'all'];
+  // Define tab order explicitly: Inbox → Sent → Drafts → Snoozed → Starred → Spam → All Mail
+  const FOLDER_ORDER: MailFolder[] = ['inbox', 'sent', 'drafts', 'snoozed', 'starred', 'spam', 'all'];
 
   return (
     <div className="flex flex-col h-full" style={{ background: 'var(--bg-sidebar)' }}>

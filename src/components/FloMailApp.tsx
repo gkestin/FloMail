@@ -53,6 +53,7 @@ const FOLDER_LABELS: Record<MailFolder, string> = {
   drafts: 'Drafts',
   snoozed: 'Snoozed',
   starred: 'Starred',
+  spam: 'Spam',
   all: 'All Mail',
 };
 
@@ -148,6 +149,7 @@ export function FloMailApp() {
             drafts: ['DRAFT'],
             snoozed: undefined, // Special handling
             starred: ['STARRED'],
+            spam: ['SPAM'],
             all: undefined, // No filter = all mail
           };
           
@@ -529,10 +531,22 @@ export function FloMailApp() {
       } else {
         // Go to the thread that's now at the same index (which was the next one)
         const nextThread = remainingThreads[currentIndex] || remainingThreads[currentIndex - 1] || remainingThreads[0];
-        setSelectedThread(nextThread);
         setCurrentDraft(null);
         currentThreadIndexRef.current = remainingThreads.findIndex(t => t.id === nextThread.id);
         setCurrentView('chat');
+        
+        // Fetch full thread data (remainingThreads might only have metadata)
+        try {
+          const fullThread = await fetchThread(token, nextThread.id);
+          if (fullThread) {
+            setSelectedThread(fullThread);
+          } else {
+            setSelectedThread(nextThread); // Fallback to cached
+          }
+        } catch (e) {
+          console.error('Failed to fetch full thread after archive:', e);
+          setSelectedThread(nextThread); // Fallback to cached
+        }
       }
     } catch (err) {
       console.error('Failed to archive:', err);

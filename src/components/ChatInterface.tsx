@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Loader2, Settings, Sparkles, ChevronDown, ChevronRight, X, Edit2, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp, EyeOff, Search, Globe, ExternalLink, CheckCircle, XCircle } from 'lucide-react';
+import { Send, Loader2, Settings, Sparkles, ChevronDown, ChevronRight, X, Edit2, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp, EyeOff, Search, Globe, ExternalLink, CheckCircle, XCircle, Save, Ghost } from 'lucide-react';
 import { DraftCard } from './DraftCard';
 import { ThreadPreview } from './ThreadPreview';
 import { WaveformVisualizer } from './WaveformVisualizer';
@@ -20,19 +20,59 @@ import {
 } from '@/lib/chat-persistence';
 import { getDraftForThread, FullGmailDraft } from '@/lib/gmail';
 
-// Collapsed view for cancelled drafts
-function CancelledDraftPreview({ draft }: { draft: EmailDraft }) {
+// Collapsed view for completed drafts (cancelled, saved, or sent)
+function CompletedDraftPreview({ 
+  draft, 
+  status 
+}: { 
+  draft: EmailDraft; 
+  status: 'cancelled' | 'saved' | 'sent';
+}) {
   const [expanded, setExpanded] = useState(false);
   
+  // Different styling for each status
+  const statusConfig = {
+    cancelled: {
+      icon: X,
+      label: 'Cancelled draft',
+      borderColor: 'border-slate-700/30',
+      bgColor: 'bg-slate-800/40',
+      iconColor: 'text-slate-500',
+      labelColor: 'text-slate-400',
+      opacity: 'opacity-50',
+    },
+    saved: {
+      icon: Save,
+      label: 'Saved draft',
+      borderColor: 'border-blue-500/30',
+      bgColor: 'bg-blue-900/20',
+      iconColor: 'text-blue-400',
+      labelColor: 'text-blue-300',
+      opacity: 'opacity-70',
+    },
+    sent: {
+      icon: Send,
+      label: 'Sent',
+      borderColor: 'border-green-500/30',
+      bgColor: 'bg-green-900/20',
+      iconColor: 'text-green-400',
+      labelColor: 'text-green-300',
+      opacity: 'opacity-70',
+    },
+  };
+  
+  const config = statusConfig[status];
+  const Icon = config.icon;
+  
   return (
-    <div className="bg-slate-800/40 rounded-xl border border-slate-700/30 overflow-hidden opacity-60">
+    <div className={`${config.bgColor} rounded-xl border ${config.borderColor} overflow-hidden ${config.opacity}`}>
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-slate-700/30 transition-colors"
+        className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-white/5 transition-colors"
       >
         <div className="flex items-center gap-2">
-          <X className="w-4 h-4 text-slate-500" />
-          <span className="text-sm text-slate-400">Cancelled draft</span>
+          <Icon className={`w-4 h-4 ${config.iconColor}`} />
+          <span className={`text-sm ${config.labelColor}`}>{config.label}</span>
           <span className="text-xs text-slate-500">• {draft.to.join(', ').slice(0, 20)}{draft.to.join(', ').length > 20 ? '...' : ''}</span>
         </div>
         <ChevronDown className={`w-4 h-4 text-slate-500 transition-transform ${expanded ? 'rotate-180' : ''}`} />
@@ -93,6 +133,8 @@ interface UIMessage extends ChatMessage {
   isCancelled?: boolean;
   isStreaming?: boolean; // Content is still being streamed
   draftCancelled?: boolean; // Draft was cancelled but kept for history
+  draftSaved?: boolean; // Draft was saved to Gmail
+  draftSent?: boolean; // Draft was sent
   isSystemMessage?: boolean; // For action confirmations (archive, navigate, etc.)
   systemType?: 'archived' | 'sent' | 'navigated' | 'context' | 'search'; // Type of system message
   // Stored data for system messages (so we don't rely on current thread state)
@@ -165,10 +207,20 @@ export function ChatInterface({
   // ===========================================
   // PULL-TO-REVEAL STATE
   // ===========================================
+  // Storage key for persisting the load preference
+  const LOAD_PREF_KEY = 'threadPreview_loadExpanded';
+  
+  // Get initial load preference from localStorage (true = start with 1 message, false = start collapsed)
+  const getLoadPreference = useCallback((): number => {
+    if (typeof window === 'undefined') return 1;
+    const saved = localStorage.getItem(LOAD_PREF_KEY);
+    return saved === 'false' ? 0 : 1; // Default to expanded (1)
+  }, []);
+  
   // 0 = thread collapsed, 1+ = thread expanded with N messages visible
-  const [revealedMessageCount, setRevealedMessageCount] = useState(1);
-  // Base count = what was set by manual action (header click). Scroll-close snaps back to this.
-  const [baseRevealedCount, setBaseRevealedCount] = useState(1);
+  const [revealedMessageCount, setRevealedMessageCount] = useState(() => getLoadPreference());
+  // Base count = what was set by manual action (header click). Used for reference only.
+  const [baseRevealedCount, setBaseRevealedCount] = useState(() => getLoadPreference());
   
   // Refs to always have latest values in event handlers (avoids stale closures)
   const revealedCountRef = useRef(revealedMessageCount);
@@ -182,14 +234,22 @@ export function ChatInterface({
   const lastScrollTop = useRef(0);
   
   // Callback for ThreadPreview MANUAL actions (header click) - sets BOTH base and current
+  // Also saves the preference for future loads
   const handleRevealedCountChange = useCallback((count: number) => {
     setBaseRevealedCount(count);
     setRevealedMessageCount(count);
+    // Save preference: if collapsed (0), remember that; if expanded (1+), remember expanded
+    localStorage.setItem(LOAD_PREF_KEY, count > 0 ? 'true' : 'false');
   }, []);
   
   // Callback for SCROLL actions - only sets current, not base
+  // Also saves preference when collapsing to 0
   const handleScrollReveal = useCallback((count: number) => {
     setRevealedMessageCount(count);
+    // If scroll-collapsed to 0, save that preference
+    if (count === 0) {
+      localStorage.setItem(LOAD_PREF_KEY, 'false');
+    }
   }, []);
 
   // Get available models based on provider
@@ -335,11 +395,12 @@ export function ChatInterface({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Reset revealed messages when thread changes
+  // Reset revealed messages when thread changes - use stored preference
   useEffect(() => {
-    setRevealedMessageCount(1);
-    setBaseRevealedCount(1);
-  }, [thread?.id]);
+    const pref = getLoadPreference();
+    setRevealedMessageCount(pref);
+    setBaseRevealedCount(pref);
+  }, [thread?.id, getLoadPreference]);
 
   // ===========================================
   // SCROLL-TO-REVEAL/CLOSE LOGIC
@@ -349,15 +410,21 @@ export function ChatInterface({
   // - Scroll DOWN (deltaY > 0) anywhere → close ALL to base immediately
   // 
   // Uses refs for state to avoid stale closure issues
-  const hasRevealedThisGesture = useRef(false);
+  const hasActedThisGesture = useRef(false);
   const gestureEndTimeout = useRef<NodeJS.Timeout | null>(null);
   const totalMessagesRef = useRef(0);
+  const messageNeedsExpandRef = useRef(false);
+  const [expandRequestId, setExpandRequestId] = useState(0);
   
   useEffect(() => {
     if (thread) {
       totalMessagesRef.current = thread.messages.length;
     }
   }, [thread?.messages.length]);
+  
+  const handleNeedsExpandChange = useCallback((needsExpand: boolean) => {
+    messageNeedsExpandRef.current = needsExpand;
+  }, []);
   
   useEffect(() => {
     const container = chatContainerRef.current;
@@ -369,7 +436,7 @@ export function ChatInterface({
     const resetGesture = () => {
       if (gestureEndTimeout.current) clearTimeout(gestureEndTimeout.current);
       gestureEndTimeout.current = setTimeout(() => {
-        hasRevealedThisGesture.current = false;
+        hasActedThisGesture.current = false;
         accumulatedDelta = 0;
       }, 40);
     };
@@ -378,7 +445,7 @@ export function ChatInterface({
       isPullingRef.current = true;
       pullStartY.current = e.touches[0].clientY;
       accumulatedDelta = 0;
-      hasRevealedThisGesture.current = false;
+      hasActedThisGesture.current = false;
     };
 
     const handleTouchMove = (e: TouchEvent) => {
@@ -389,26 +456,41 @@ export function ChatInterface({
       pullStartY.current = currentY;
       
       const current = revealedCountRef.current;
-      const base = baseCountRef.current;
       const total = totalMessagesRef.current;
       
-      // Pull UP (negative delta) = CLOSE ALL to base immediately
-      if (deltaY < 0 && current > base) {
-        setRevealedMessageCount(base);
+      // Pull UP (negative delta) = CLOSE ALL to 0 immediately
+      if (deltaY < 0 && current > 0) {
+        handleScrollReveal(0);
         return;
       }
       
       // Pull DOWN (positive delta) at top = reveal ONE message
-      if (deltaY > 0 && container.scrollTop <= 5) {
+      // Only require atTop - atBottom check was causing issues when ThreadPreview expands
+      const atTop = container.scrollTop <= 5;
+      
+      if (deltaY > 0 && atTop) {
         accumulatedDelta += deltaY;
         
-        if (accumulatedDelta > revealThreshold && !hasRevealedThisGesture.current) {
-          if (current < total) {
-            setRevealedMessageCount(current + 1);
-            hasRevealedThisGesture.current = true;
+        if (!hasActedThisGesture.current && accumulatedDelta > revealThreshold) {
+          // Priority order:
+          // 1) If collapsed → open (reveal 1)
+          // 2) If the most recent message isn't fully visible → request EXPAND
+          // 3) Otherwise → reveal next message
+          if (current === 0) {
+            console.log('[Chat Scroll] ACTION: REVEAL (touch) → 1');
+            handleScrollReveal(1);
+            hasActedThisGesture.current = true;
+          } else if (current === 1 && messageNeedsExpandRef.current) {
+            console.log('[Chat Scroll] ACTION: EXPAND (touch)');
+            setExpandRequestId((v) => v + 1);
+            hasActedThisGesture.current = true;
+          } else if (current < total) {
+            console.log('[Chat Scroll] ACTION: REVEAL (touch) →', current + 1);
+            handleScrollReveal(current + 1);
+            hasActedThisGesture.current = true;
           }
           e.preventDefault();
-        } else if (hasRevealedThisGesture.current) {
+        } else if (hasActedThisGesture.current) {
           e.preventDefault();
         }
       }
@@ -417,28 +499,45 @@ export function ChatInterface({
     const handleTouchEnd = () => {
       isPullingRef.current = false;
       accumulatedDelta = 0;
-      hasRevealedThisGesture.current = false;
+      hasActedThisGesture.current = false;
     };
 
     const handleWheel = (e: WheelEvent) => {
       const current = revealedCountRef.current;
-      const base = baseCountRef.current;
       const total = totalMessagesRef.current;
       
-      // Scroll DOWN (deltaY > 0) = CLOSE ALL to base immediately
-      if (e.deltaY > 0 && current > base) {
-        setRevealedMessageCount(base);
+      // Scroll DOWN (deltaY > 0) = CLOSE ALL to 0 immediately
+      // Always allow collapsing to 0, regardless of load preference
+      if (e.deltaY > 0 && current > 0) {
+        handleScrollReveal(0);
         return; // Exit, allow normal scroll to continue
       }
       
+      // Check scroll position
+      const atTop = container.scrollTop <= 5;
+      
       // Scroll UP (deltaY < 0) at top = reveal ONE message
-      if (e.deltaY < 0 && container.scrollTop <= 5) {
+      // Only require atTop - atBottom check was causing issues when ThreadPreview expands
+      if (e.deltaY < 0 && atTop) {
         accumulatedDelta += Math.abs(e.deltaY);
         
-        if (!hasRevealedThisGesture.current && accumulatedDelta > revealThreshold) {
-          if (current < total) {
-            setRevealedMessageCount(current + 1);
-            hasRevealedThisGesture.current = true;
+        if (!hasActedThisGesture.current && accumulatedDelta > revealThreshold) {
+          // Priority order:
+          // 1) If collapsed → open (reveal 1)
+          // 2) If the most recent message isn't fully visible → request EXPAND
+          // 3) Otherwise → reveal next message
+          if (current === 0) {
+            console.log('[Chat Scroll] ACTION: REVEAL → 1');
+            handleScrollReveal(1);
+            hasActedThisGesture.current = true;
+          } else if (current === 1 && messageNeedsExpandRef.current) {
+            console.log('[Chat Scroll] ACTION: EXPAND');
+            setExpandRequestId((v) => v + 1);
+            hasActedThisGesture.current = true;
+          } else if (current < total) {
+            console.log('[Chat Scroll] ACTION: REVEAL →', current + 1);
+            handleScrollReveal(current + 1);
+            hasActedThisGesture.current = true;
           }
         }
         
@@ -596,14 +695,8 @@ export function ChatInterface({
     for (const toolCall of toolCalls) {
       switch (toolCall.name) {
         case 'prepare_draft':
-          // Auto-cancel any existing draft in messages before creating new one
-          // This ensures old drafts are marked as cancelled and kept in history
-          setMessages(prev => prev.map(m => 
-            m.draft && !m.draftCancelled 
-              ? { ...m, draftCancelled: true } // Keep draft in message for history, but mark cancelled
-              : m
-          ));
-          
+          // NOTE: Auto-cancel of old drafts happens in sendMessage, NOT here
+          // This allows the draft to be created without immediately cancelling itself
           const newDraft = buildDraftFromToolCall(toolCall.arguments, thread);
           // Preserve gmailDraftId if we're modifying an existing draft
           const draft = existingDraft?.gmailDraftId 
@@ -941,6 +1034,21 @@ export function ChatInterface({
       messagesThreadIdRef.current = thread.id;
     }
 
+    // Auto-cancel any existing drafts that haven't been saved or sent
+    // This happens when user continues the conversation without saving/sending
+    setMessages(prev => prev.map(m => {
+      // Only cancel if: has draft, not already cancelled, not saved, not sent
+      if (m.draft && !m.draftCancelled && !m.draftSaved && !m.draftSent) {
+        return { ...m, draftCancelled: true };
+      }
+      return m;
+    }));
+    
+    // Clear currentDraft if it exists and hasn't been saved
+    if (currentDraft && !currentDraft.gmailDraftId) {
+      setCurrentDraft(null);
+    }
+
     const messageId = Date.now().toString();
     const userMessage: UIMessage = {
       id: messageId,
@@ -957,7 +1065,7 @@ export function ChatInterface({
     setBaseRevealedCount(1);
     
     await sendToAI(messageId, content.trim());
-  }, [isLoading, sendToAI, thread?.id]);
+  }, [isLoading, sendToAI, thread?.id, currentDraft]);
 
   // Start voice recording
   const startRecording = useCallback(async () => {
@@ -1165,6 +1273,14 @@ export function ChatInterface({
     try {
       await onSendEmail(updatedDraft);
       setCurrentDraft(null);
+      
+      // Mark the draft message as sent (so it shows differently in UI)
+      setMessages(prev => prev.map(m => 
+        m.draft && !m.draftCancelled && !m.draftSent
+          ? { ...m, draftSent: true }
+          : m
+      ));
+      
       const recipient = updatedDraft.to[0] || 'recipient';
       const confirmMessageId = Date.now().toString();
       const confirmMessage: UIMessage = {
@@ -1202,10 +1318,10 @@ export function ChatInterface({
       setCurrentDraft(null);
       
       // Update any messages with drafts to have the latest values including gmailDraftId
-      // This ensures when chat is reloaded, the saved draft values are used
+      // Also mark as saved so it won't be auto-cancelled
       setMessages(prev => prev.map(m => 
         m.draft && !m.draftCancelled 
-          ? { ...m, draft: savedDraft }
+          ? { ...m, draft: savedDraft, draftSaved: true }
           : m
       ));
       
@@ -1318,17 +1434,57 @@ export function ChatInterface({
           baseRevealedCount={baseRevealedCount}
           onRevealedCountChange={handleRevealedCountChange}
           onScrollReveal={handleScrollReveal}
+          expandRequestId={expandRequestId}
+          onNeedsExpandChange={handleNeedsExpandChange}
         />
       )}
 
 
-      {/* Messages */}
-      <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4">
+      {/* Messages - with purple tint when in incognito mode */}
+      <div 
+        ref={chatContainerRef} 
+        className="flex-1 overflow-y-auto transition-colors duration-300"
+        style={isIncognito ? { 
+          background: 'linear-gradient(180deg, rgba(139, 92, 246, 0.12) 0%, rgba(139, 92, 246, 0.05) 100%)',
+          marginTop: '-1px', // Pull up to cover separator line
+        } : {}}
+      >
+        {/* Inner padding wrapper */}
+        <div className="p-4 space-y-4 min-h-full" style={isIncognito ? { paddingTop: '1rem' } : {}}>
         {messages.length === 0 && !isRecording && !isLoadingChat && (
-          <div className="flex flex-col items-center justify-center h-full text-center px-4">
-            <div className="w-14 h-14 rounded-full bg-gradient-to-br from-blue-500/20 to-cyan-500/20 flex items-center justify-center mb-4">
-              <Sparkles className="w-7 h-7 text-blue-400" />
+          <div className="relative flex flex-col items-center justify-center h-full text-center px-4">
+            {/* Incognito toggle in top-right corner of welcome area */}
+            <button
+              onClick={() => setIsIncognito(!isIncognito)}
+              className="absolute top-0 right-0 p-2 rounded-lg transition-all group"
+              style={isIncognito ? {
+                background: 'rgba(139, 92, 246, 0.2)',
+                border: '1px solid rgba(139, 92, 246, 0.4)',
+              } : {
+                background: 'transparent',
+                border: '1px solid transparent',
+              }}
+              title={isIncognito ? 'Incognito mode ON' : 'Enable incognito mode'}
+            >
+              {/* Ghost icon for incognito */}
+              <Ghost className={`w-5 h-5 ${isIncognito ? 'text-purple-400' : 'text-slate-500 group-hover:text-slate-400'}`} />
+              {/* Tooltip */}
+              <span className="absolute top-full right-0 mt-1 px-2 py-1 text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10"
+                style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}>
+                {isIncognito ? 'Incognito ON' : 'Go incognito'}
+              </span>
+            </button>
+            
+            {/* Central icon - blue sparkles normally, ghost when incognito */}
+            <div className={`w-14 h-14 rounded-full flex items-center justify-center mb-4 ${isIncognito ? 'bg-gradient-to-br from-purple-500/30 to-violet-500/20' : 'bg-gradient-to-br from-blue-500/20 to-cyan-500/20'}`}>
+              {isIncognito ? (
+                <Ghost className="w-7 h-7 text-purple-400" />
+              ) : (
+                <Sparkles className="w-7 h-7 text-blue-400" />
+              )}
             </div>
+            
+            {/* Title and description */}
             <h3 className="text-lg font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
               {thread ? 'Ready to Help' : 'FloMail Agent'}
             </h3>
@@ -1337,6 +1493,24 @@ export function ChatInterface({
                 ? 'Tap the mic or type. Say "summarize", "draft reply", or anything!'
                 : 'Select an email from your inbox to get started.'}
             </p>
+            
+            {/* Subtle incognito indicator - just a small text line */}
+            {isIncognito && (
+              <div className="flex items-center gap-2 mb-3 px-3 py-1.5 rounded-full"
+                style={{ background: 'rgba(139, 92, 246, 0.15)', border: '1px solid rgba(139, 92, 246, 0.25)' }}>
+                <Ghost className="w-3.5 h-3.5 text-purple-400" />
+                <span className="text-xs text-purple-300">Incognito mode</span>
+                <button
+                  onClick={() => setIsIncognito(false)}
+                  className="p-0.5 rounded hover:bg-purple-500/30 transition-colors"
+                  title="Exit incognito"
+                >
+                  <X className="w-3 h-3 text-purple-400" />
+                </button>
+              </div>
+            )}
+            
+            {/* Action buttons - always visible regardless of incognito */}
             {thread && (
               <div className="flex flex-wrap gap-2 justify-center">
                 {/* AI-powered actions */}
@@ -1396,15 +1570,28 @@ export function ChatInterface({
           </motion.div>
         )}
         
-        {/* Incognito mode indicator */}
-        {isIncognito && messages.length === 0 && !isLoadingChat && (
+        {/* Incognito banner - shows at top when chat has started */}
+        {isIncognito && messages.length > 0 && (
           <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="flex items-center justify-center gap-2 py-4"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="flex items-center justify-center gap-2 py-1.5 px-3 rounded-full mx-auto -mt-2 mb-2"
+            style={{ 
+              background: 'rgba(139, 92, 246, 0.15)', 
+              border: '1px solid rgba(139, 92, 246, 0.3)',
+              maxWidth: 'fit-content',
+            }}
           >
-            <EyeOff className="w-4 h-4 text-red-400" />
-            <span className="text-sm text-red-400/70">Incognito mode - chat won&apos;t be saved</span>
+            <Ghost className="w-3.5 h-3.5 text-purple-400" />
+            <span className="text-xs text-purple-300">Incognito</span>
+            <button
+              onClick={() => setIsIncognito(false)}
+              className="ml-1 p-0.5 rounded hover:bg-purple-500/30 transition-colors"
+              title="Exit incognito mode"
+            >
+              <X className="w-3 h-3 text-purple-400" />
+            </button>
           </motion.div>
         )}
 
@@ -1686,11 +1873,15 @@ export function ChatInterface({
               </div>
             )}
 
-            {/* Draft card - active or cancelled */}
+            {/* Draft card - active, cancelled, saved, or sent */}
             {message.draft && message.role === 'assistant' && (
               <div className="w-full max-w-[85%] mt-3">
-                {message.draftCancelled ? (
-                  <CancelledDraftPreview draft={message.draft} />
+                {message.draftSent ? (
+                  <CompletedDraftPreview draft={message.draft} status="sent" />
+                ) : message.draftSaved ? (
+                  <CompletedDraftPreview draft={message.draft} status="saved" />
+                ) : message.draftCancelled ? (
+                  <CompletedDraftPreview draft={message.draft} status="cancelled" />
                 ) : (
                   <DraftCard
                     draft={message.draft}
@@ -1766,6 +1957,7 @@ export function ChatInterface({
         )}
 
         <div ref={messagesEndRef} />
+        </div>{/* End inner padding wrapper */}
       </div>
 
       {/* Input Area */}
@@ -1869,27 +2061,6 @@ export function ChatInterface({
             <ArrowUp className="w-5 h-5" />
           </motion.button>
 
-          {/* Incognito toggle */}
-          <button
-            type="button"
-            onClick={() => setIsIncognito(!isIncognito)}
-            className="p-3 rounded-xl transition-colors relative group"
-            style={isIncognito ? {
-              background: 'rgba(239, 68, 68, 0.2)',
-              color: 'rgb(252, 165, 165)'
-            } : {
-              background: 'var(--bg-interactive)',
-              color: 'var(--text-muted)'
-            }}
-            title={isIncognito ? 'Incognito mode ON - chat not saved' : 'Click for incognito mode'}
-          >
-            <EyeOff className="w-5 h-5" />
-            {/* Tooltip */}
-            <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 text-xs rounded bg-slate-800 text-slate-200 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-              {isIncognito ? 'Incognito ON (not saving)' : 'Enable incognito'}
-            </span>
-          </button>
-          
           {/* Settings button with popover */}
           <div className="relative">
             <button
