@@ -219,6 +219,10 @@ interface ThreadPreviewProps {
    * This is intentionally conservative: currently only true for the "most recent message" case.
    */
   onNeedsExpandChange?: (needsExpand: boolean) => void;
+  /** Navigate to next thread (swipe left) */
+  onNextEmail?: () => void;
+  /** Navigate to previous thread (swipe right) */
+  onPreviousEmail?: () => void;
 }
 
 // Storage keys for persisting state
@@ -235,6 +239,8 @@ export function ThreadPreview({
   onScrollReveal,
   expandRequestId,
   onNeedsExpandChange,
+  onNextEmail,
+  onPreviousEmail,
 }: ThreadPreviewProps) {
   // If revealedMessageCount is provided (parent-controlled mode):
   // - 0 means collapsed
@@ -458,6 +464,16 @@ export function ThreadPreview({
   useEffect(() => { onScrollRevealRef.current = onScrollReveal; }, [onScrollReveal]);
   useEffect(() => { onNeedsExpandChangeRef.current = onNeedsExpandChange; }, [onNeedsExpandChange]);
   
+  // Refs for navigation callbacks (to avoid stale closures)
+  const onNextEmailRef = useRef(onNextEmail);
+  const onPreviousEmailRef = useRef(onPreviousEmail);
+  useEffect(() => { onNextEmailRef.current = onNextEmail; }, [onNextEmail]);
+  useEffect(() => { onPreviousEmailRef.current = onPreviousEmail; }, [onPreviousEmail]);
+  
+  // Horizontal swipe state
+  const horizontalAccumulatedDelta = useRef(0);
+  const hasNavigatedThisGesture = useRef(false);
+  
   // Ref for height to use in scroll handler
   const messagesHeightRef = useRef(messagesHeight);
   useEffect(() => { messagesHeightRef.current = messagesHeight; }, [messagesHeight]);
@@ -522,9 +538,50 @@ export function ThreadPreview({
     };
     
     const handleWheel = (e: WheelEvent) => {
-      // Skip if no scroll handler or if we're resizing
+      // Skip if we're resizing
+      if (isDragging.current) return;
+      
+      // ===========================================
+      // HORIZONTAL SCROLL → Navigate between threads
+      // ===========================================
+      // Swipe LEFT (deltaX > 0) → NEXT thread
+      // Swipe RIGHT (deltaX < 0) → PREVIOUS thread
+      const horizontalThreshold = 100;
+      
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.5) {
+        // Predominantly horizontal scroll
+        horizontalAccumulatedDelta.current += e.deltaX;
+        
+        if (!hasNavigatedThisGesture.current) {
+          if (horizontalAccumulatedDelta.current > horizontalThreshold) {
+            // Swipe LEFT → NEXT
+            onNextEmailRef.current?.();
+            hasNavigatedThisGesture.current = true;
+            horizontalAccumulatedDelta.current = 0;
+          } else if (horizontalAccumulatedDelta.current < -horizontalThreshold) {
+            // Swipe RIGHT → PREVIOUS
+            onPreviousEmailRef.current?.();
+            hasNavigatedThisGesture.current = true;
+            horizontalAccumulatedDelta.current = 0;
+          }
+        }
+        
+        // Reset navigation gesture after short delay
+        if (gestureTimeout.current) clearTimeout(gestureTimeout.current);
+        gestureTimeout.current = setTimeout(() => {
+          hasNavigatedThisGesture.current = false;
+          horizontalAccumulatedDelta.current = 0;
+        }, 150);
+        
+        return; // Don't process vertical scroll when horizontal
+      }
+      
+      // ===========================================
+      // VERTICAL SCROLL → Reveal/collapse messages
+      // ===========================================
+      // Skip if no scroll handler
       const scrollHandler = onScrollRevealRef.current;
-      if (!scrollHandler || isDragging.current) return;
+      if (!scrollHandler) return;
       
       const current = Math.max(revealedCountRef.current, 1);
       const total = totalMessagesRef.current;
@@ -591,22 +648,66 @@ export function ThreadPreview({
       }
     };
 
+    // Track touch start position for both vertical and horizontal
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let touchCurrentX = 0;
+    
     const handleTouchStart = (e: TouchEvent) => {
       if (isDragging.current) return;
       isTouching = true;
       lastTouchY = e.touches[0]?.clientY ?? 0;
+      touchStartX = e.touches[0]?.clientX ?? 0;
+      touchStartY = e.touches[0]?.clientY ?? 0;
+      touchCurrentX = touchStartX;
       accumulatedDelta = 0;
       hasRevealedThisGesture.current = false;
+      hasNavigatedThisGesture.current = false;
+      horizontalAccumulatedDelta.current = 0;
     };
 
     const handleTouchMove = (e: TouchEvent) => {
-      const scrollHandler = onScrollRevealRef.current;
-      if (!scrollHandler || isDragging.current) return;
+      if (isDragging.current) return;
       if (!isTouching) return;
 
+      const x = e.touches[0]?.clientX ?? touchCurrentX;
       const y = e.touches[0]?.clientY ?? lastTouchY;
       const deltaY = y - lastTouchY;
+      touchCurrentX = x;
       lastTouchY = y;
+      
+      // Calculate total distance from touch start
+      const totalDeltaX = x - touchStartX;
+      const totalDeltaY = y - touchStartY;
+      
+      // ===========================================
+      // HORIZONTAL SWIPE → Navigate between threads
+      // ===========================================
+      const horizontalThreshold = 80;
+      
+      // If predominantly horizontal swipe
+      if (Math.abs(totalDeltaX) > Math.abs(totalDeltaY) * 1.5 && Math.abs(totalDeltaX) > 30) {
+        if (!hasNavigatedThisGesture.current) {
+          if (totalDeltaX < -horizontalThreshold) {
+            // Swipe LEFT (finger moving left, negative delta) → NEXT
+            onNextEmailRef.current?.();
+            hasNavigatedThisGesture.current = true;
+            e.preventDefault();
+          } else if (totalDeltaX > horizontalThreshold) {
+            // Swipe RIGHT (finger moving right, positive delta) → PREVIOUS
+            onPreviousEmailRef.current?.();
+            hasNavigatedThisGesture.current = true;
+            e.preventDefault();
+          }
+        }
+        return; // Don't process vertical when doing horizontal swipe
+      }
+      
+      // ===========================================
+      // VERTICAL SWIPE → Reveal/collapse messages
+      // ===========================================
+      const scrollHandler = onScrollRevealRef.current;
+      if (!scrollHandler) return;
 
       const current = Math.max(revealedCountRef.current, 1);
       const total = totalMessagesRef.current;
@@ -675,6 +776,8 @@ export function ThreadPreview({
       isTouching = false;
       accumulatedDelta = 0;
       hasRevealedThisGesture.current = false;
+      hasNavigatedThisGesture.current = false;
+      horizontalAccumulatedDelta.current = 0;
     };
     
     container.addEventListener('wheel', handleWheel, { passive: false });

@@ -1522,6 +1522,8 @@ export function ChatInterface({
           onScrollReveal={handleScrollReveal}
           expandRequestId={expandRequestId}
           onNeedsExpandChange={handleNeedsExpandChange}
+          onNextEmail={onNextEmail}
+          onPreviousEmail={onPreviousEmail}
         />
       )}
 
