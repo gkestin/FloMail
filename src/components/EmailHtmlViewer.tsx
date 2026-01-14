@@ -62,7 +62,6 @@ export function EmailHtmlViewer({
   onPreviousEmail,
 }: EmailHtmlViewerProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const overlayRef = useRef<HTMLDivElement>(null);
   const [iframeHeight, setIframeHeight] = useState(150);
   const [isLoading, setIsLoading] = useState(true);
   const heightCheckRef = useRef<NodeJS.Timeout | null>(null);
@@ -147,6 +146,54 @@ export function EmailHtmlViewer({
     b, strong { font-weight: bold; }
     `;
 
+    // Script to forward scroll/swipe events to parent
+    // Iframe has overflow:hidden so it doesn't scroll - we forward events to parent
+    const swipeScript = `
+    <script>
+      (function() {
+        var touchStartX = 0, touchStartY = 0, hasActed = false;
+        var wheelAccumX = 0, wheelTimeout = null;
+        
+        document.addEventListener('touchstart', function(e) {
+          touchStartX = e.touches[0].clientX;
+          touchStartY = e.touches[0].clientY;
+          hasActed = false;
+        }, { passive: true });
+        
+        document.addEventListener('touchmove', function(e) {
+          if (hasActed) return;
+          var dx = e.touches[0].clientX - touchStartX;
+          var dy = e.touches[0].clientY - touchStartY;
+          
+          // Horizontal swipe (prev/next thread)
+          if (Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 80) {
+            hasActed = true;
+            parent.postMessage({ type: dx < 0 ? 'flomail-swipe-left' : 'flomail-swipe-right' }, '*');
+          }
+          // Forward vertical touch to parent for expand/collapse
+          else if (Math.abs(dy) > 30) {
+            parent.postMessage({ type: 'flomail-vertical-scroll', deltaY: -dy }, '*');
+          }
+        }, { passive: true });
+        
+        document.addEventListener('wheel', function(e) {
+          // Horizontal scroll (prev/next thread)
+          if (Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.5) {
+            wheelAccumX += e.deltaX;
+            if (Math.abs(wheelAccumX) > 100) {
+              parent.postMessage({ type: wheelAccumX > 0 ? 'flomail-swipe-left' : 'flomail-swipe-right' }, '*');
+              wheelAccumX = 0;
+            }
+            clearTimeout(wheelTimeout);
+            wheelTimeout = setTimeout(function() { wheelAccumX = 0; }, 150);
+          } else {
+            // Forward vertical scroll to parent for expand/collapse
+            parent.postMessage({ type: 'flomail-vertical-scroll', deltaY: e.deltaY }, '*');
+          }
+        }, { passive: true });
+      })();
+    </script>`;
+
     return `<!DOCTYPE html>
 <html>
 <head>
@@ -165,7 +212,7 @@ export function EmailHtmlViewer({
       color: ${textColor};
       word-wrap: break-word;
     }
-    html, body { overflow-x: hidden; }
+    html, body { overflow: hidden; } /* No internal scrolling - parent container handles scroll */
     img { max-width: 100%; height: auto; }
     table { border-collapse: collapse; max-width: 100%; }
     a { color: ${linkColor}; }
@@ -180,7 +227,7 @@ export function EmailHtmlViewer({
     ${darkThemeOverrides}
   </style>
 </head>
-<body><div id="flomail-email-root">${sanitizedHtml}</div></body>
+<body><div id="flomail-email-root">${sanitizedHtml}</div>${swipeScript}</body>
 </html>`;
   }, [sanitizedHtml, needsWhiteBackground]);
 
@@ -286,151 +333,32 @@ export function EmailHtmlViewer({
     return () => window.removeEventListener('resize', onResize);
   }, [measureHeight]);
 
-  // Swipe gesture handling for navigation over iframe
-  // This overlay captures touch/wheel events and either:
-  // 1. Navigates on horizontal swipe
-  // 2. Forwards clicks/taps to the element below
-  // 3. Lets vertical scrolls pass through
+  // Listen for scroll/swipe messages from iframe
   useEffect(() => {
-    const overlay = overlayRef.current;
-    const iframe = iframeRef.current;
-    if (!overlay || !iframe) return;
-    
-    let touchStartX = 0;
-    let touchStartY = 0;
-    let touchCurrentX = 0;
-    let touchCurrentY = 0;
-    let hasNavigated = false;
-    let isTouching = false;
-    let horizontalAccumulated = 0;
-    let gestureTimeout: NodeJS.Timeout | null = null;
-    
-    const handleTouchStart = (e: TouchEvent) => {
-      touchStartX = e.touches[0].clientX;
-      touchStartY = e.touches[0].clientY;
-      touchCurrentX = touchStartX;
-      touchCurrentY = touchStartY;
-      isTouching = true;
-      hasNavigated = false;
-    };
-    
-    const handleTouchMove = (e: TouchEvent) => {
-      if (!isTouching) return;
-      
-      touchCurrentX = e.touches[0].clientX;
-      touchCurrentY = e.touches[0].clientY;
-      
-      const totalDeltaX = touchCurrentX - touchStartX;
-      const totalDeltaY = touchCurrentY - touchStartY;
-      
-      // If predominantly horizontal swipe
-      if (Math.abs(totalDeltaX) > Math.abs(totalDeltaY) * 1.5 && Math.abs(totalDeltaX) > 30) {
-        const horizontalThreshold = 80;
-        
-        if (!hasNavigated) {
-          if (totalDeltaX < -horizontalThreshold) {
-            // Swipe LEFT → NEXT
-            onNextEmailRef.current?.();
-            hasNavigated = true;
-            e.preventDefault();
-          } else if (totalDeltaX > horizontalThreshold) {
-            // Swipe RIGHT → PREVIOUS
-            onPreviousEmailRef.current?.();
-            hasNavigated = true;
-            e.preventDefault();
-          }
-        }
-      }
-      // Vertical scrolls pass through naturally (overlay has pointer-events: none for scroll)
-    };
-    
-    const handleTouchEnd = (e: TouchEvent) => {
-      // If minimal movement, treat as a tap and forward to element below
-      const totalDeltaX = touchCurrentX - touchStartX;
-      const totalDeltaY = touchCurrentY - touchStartY;
-      const totalMovement = Math.sqrt(totalDeltaX * totalDeltaX + totalDeltaY * totalDeltaY);
-      
-      if (totalMovement < 10 && !hasNavigated) {
-        // It's a tap - find element below and click it
-        overlay.style.pointerEvents = 'none';
-        const elementBelow = document.elementFromPoint(touchStartX, touchStartY);
-        overlay.style.pointerEvents = 'auto';
-        
-        if (elementBelow && elementBelow !== overlay) {
-          // Try to find a clickable element (link, button, etc.)
-          const clickable = elementBelow.closest('a, button, [onclick], input, select, textarea');
-          if (clickable) {
-            (clickable as HTMLElement).click();
-          }
-        }
-      }
-      
-      isTouching = false;
-      hasNavigated = false;
-    };
-    
-    const handleWheel = (e: WheelEvent) => {
-      // Only intercept predominantly horizontal scrolls
-      if (Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.5) {
-        horizontalAccumulated += e.deltaX;
-        const horizontalThreshold = 100;
-        
-        if (!hasNavigated) {
-          if (horizontalAccumulated > horizontalThreshold) {
-            // Swipe LEFT → NEXT
-            onNextEmailRef.current?.();
-            hasNavigated = true;
-            horizontalAccumulated = 0;
-          } else if (horizontalAccumulated < -horizontalThreshold) {
-            // Swipe RIGHT → PREVIOUS
-            onPreviousEmailRef.current?.();
-            hasNavigated = true;
-            horizontalAccumulated = 0;
-          }
-        }
-        
-        // Reset after delay
-        if (gestureTimeout) clearTimeout(gestureTimeout);
-        gestureTimeout = setTimeout(() => {
-          hasNavigated = false;
-          horizontalAccumulated = 0;
-        }, 150);
-        
-        e.preventDefault();
-        e.stopPropagation();
-      }
-      // Vertical scrolls pass through (don't prevent default)
-    };
-    
-    const handleClick = (e: MouseEvent) => {
-      // Forward clicks to the element below the overlay
-      overlay.style.pointerEvents = 'none';
-      const elementBelow = document.elementFromPoint(e.clientX, e.clientY);
-      overlay.style.pointerEvents = 'auto';
-      
-      if (elementBelow && elementBelow !== overlay) {
-        const clickable = elementBelow.closest('a, button, [onclick], input, select, textarea');
-        if (clickable) {
-          e.preventDefault();
-          (clickable as HTMLElement).click();
+    const handleMessage = (e: MessageEvent) => {
+      const type = e.data?.type;
+      if (type === 'flomail-swipe-left') {
+        onNextEmailRef.current?.();
+      } else if (type === 'flomail-swipe-right') {
+        onPreviousEmailRef.current?.();
+      } else if (type === 'flomail-vertical-scroll') {
+        // Forward vertical scroll to parent container by dispatching a synthetic wheel event
+        // This allows ThreadPreview's wheel handler to process it for expand/collapse
+        const deltaY = e.data.deltaY || 0;
+        if (iframeRef.current) {
+          const syntheticEvent = new WheelEvent('wheel', {
+            deltaY: deltaY,
+            deltaX: 0,
+            bubbles: true,
+            cancelable: true,
+          });
+          iframeRef.current.dispatchEvent(syntheticEvent);
         }
       }
     };
     
-    overlay.addEventListener('touchstart', handleTouchStart, { passive: true });
-    overlay.addEventListener('touchmove', handleTouchMove, { passive: false });
-    overlay.addEventListener('touchend', handleTouchEnd, { passive: true });
-    overlay.addEventListener('wheel', handleWheel, { passive: false });
-    overlay.addEventListener('click', handleClick);
-    
-    return () => {
-      overlay.removeEventListener('touchstart', handleTouchStart);
-      overlay.removeEventListener('touchmove', handleTouchMove);
-      overlay.removeEventListener('touchend', handleTouchEnd);
-      overlay.removeEventListener('wheel', handleWheel);
-      overlay.removeEventListener('click', handleClick);
-      if (gestureTimeout) clearTimeout(gestureTimeout);
-    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
   }, []);
 
   // Fallback to plain text
@@ -462,7 +390,7 @@ export function EmailHtmlViewer({
       <iframe
         ref={iframeRef}
         title="Email Content"
-        sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+        sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-scripts"
         style={{
           width: '100%',
           height: `${iframeHeight}px`,
@@ -473,19 +401,6 @@ export function EmailHtmlViewer({
           transition: 'opacity 0.15s ease-in-out',
         }}
       />
-      {/* Transparent overlay to capture horizontal swipes while forwarding clicks */}
-      {(onNextEmail || onPreviousEmail) && (
-        <div
-          ref={overlayRef}
-          className="absolute inset-0"
-          style={{
-            background: 'transparent',
-            cursor: 'default',
-            // Allow scroll events to pass through for vertical scrolling
-            touchAction: 'pan-y',
-          }}
-        />
-      )}
     </div>
   );
 }
