@@ -529,6 +529,21 @@ export function ThreadPreview({
     let isTouching = false;
     let lastTouchY = 0;
     
+    // Collapse gesture gating:
+    // Prevent accidental collapse when you *reach* bottom while still scrolling.
+    // Only allow collapse if the scroll gesture STARTED while already at bottom / in collapse zone.
+    let wheelLastEventAt = 0;
+    let wheelGestureStartedInCollapseArea = false;
+    let wheelCollapseAccumulated = 0;
+    const wheelGestureGapMs = 30; // Very short pause to distinguish "new gesture at bottom" from "continuous scroll reaching bottom"
+    const wheelCollapseThreshold = 60; // Hard scroll requirement
+    const wheelMinDeltaToCount = 6; // Ignore tiny inertial deltas
+
+    // Touch: similarly, only allow collapse if the touch gesture started at bottom / in collapse zone
+    let touchCollapseEligible = false;
+    let touchCollapseAccumulated = 0;
+    const touchCollapseThreshold = 60;
+    
     const resetGesture = () => {
       if (gestureTimeout.current) clearTimeout(gestureTimeout.current);
       gestureTimeout.current = setTimeout(() => {
@@ -595,19 +610,33 @@ export function ThreadPreview({
       const mouseY = e.clientY;
       const distanceFromBottom = containerRect.bottom - mouseY;
       const inCollapseZone = distanceFromBottom >= 0 && distanceFromBottom <= 60;
-      
-      // HAND MOTION UP (deltaY > 0) in COLLAPSE ZONE → COLLAPSE ALL to 0
-      // This is a quick-collapse gesture for the bottom area
-      if (e.deltaY > 0 && inCollapseZone && current > 0) {
-        scrollHandler(0);
-        e.preventDefault();
-        e.stopPropagation();
-        return;
+
+      // Track wheel gesture boundaries so "reaching bottom" in a continuous scroll doesn't immediately collapse.
+      const now = performance.now();
+      const isNewWheelGesture = now - wheelLastEventAt > wheelGestureGapMs;
+      if (isNewWheelGesture) {
+        wheelGestureStartedInCollapseArea = atBottom || inCollapseZone;
+        wheelCollapseAccumulated = 0;
       }
+      wheelLastEventAt = now;
       
-      // SCROLL DOWN (deltaY > 0) at BOTTOM → COLLAPSE ALL to 0
-      if (e.deltaY > 0 && atBottom && current > 0) {
-        scrollHandler(0);
+      // Collapse gestures (wheel):
+      // - in collapse zone OR at bottom
+      // - only if gesture started in collapse area (prevents continuous scroll-to-bottom from collapsing)
+      if (e.deltaY > 0 && current > 0 && (inCollapseZone || atBottom)) {
+        if (wheelGestureStartedInCollapseArea) {
+          const dy = Math.abs(e.deltaY);
+          if (dy >= wheelMinDeltaToCount) {
+            wheelCollapseAccumulated += dy;
+          }
+          if (wheelCollapseAccumulated >= wheelCollapseThreshold) {
+            scrollHandler(0);
+            // Require a fresh gesture for another collapse
+            wheelCollapseAccumulated = 0;
+            wheelGestureStartedInCollapseArea = false;
+          }
+        }
+        // Always swallow in collapse area to avoid scroll chaining / bounce.
         e.preventDefault();
         e.stopPropagation();
         return;
@@ -664,6 +693,15 @@ export function ThreadPreview({
       hasRevealedThisGesture.current = false;
       hasNavigatedThisGesture.current = false;
       horizontalAccumulatedDelta.current = 0;
+
+      // Arm collapse only if the touch gesture STARTS at bottom or inside the collapse zone.
+      const rect = container.getBoundingClientRect();
+      const distanceFromBottomStart = rect.bottom - touchStartY;
+      const startedInCollapseZone = distanceFromBottomStart >= 0 && distanceFromBottomStart <= 60;
+      const startedAtBottom =
+        container.scrollTop + container.clientHeight >= container.scrollHeight - 5;
+      touchCollapseEligible = startedInCollapseZone || startedAtBottom;
+      touchCollapseAccumulated = 0;
     };
 
     const handleTouchMove = (e: TouchEvent) => {
@@ -719,26 +757,21 @@ export function ThreadPreview({
       const distanceFromBottom = containerRect.bottom - y;
       const inCollapseZone = distanceFromBottom >= 0 && distanceFromBottom <= 60;
       
-      // SWIPE UP (finger moving up, deltaY < 0) in COLLAPSE ZONE → COLLAPSE to 0
-      // Note: for touch, finger moving up = Y position decreasing = negative deltaY
-      if (deltaY < 0 && inCollapseZone && current > 0) {
-        scrollHandler(0);
+      // Collapse gestures (touch):
+      // - in collapse zone OR at bottom
+      // - only if gesture started in collapse area (prevents continuous scroll-to-bottom from collapsing)
+      if (deltaY < 0 && current > 0 && (inCollapseZone || atBottom)) {
+        if (touchCollapseEligible) {
+          touchCollapseAccumulated += Math.abs(deltaY);
+          if (touchCollapseAccumulated >= touchCollapseThreshold) {
+            scrollHandler(0);
+            touchCollapseEligible = false;
+            touchCollapseAccumulated = 0;
+          }
+        }
+        // Always swallow in collapse area to avoid rubber-band / accidental chaining.
         e.preventDefault();
         e.stopPropagation();
-        accumulatedDelta = 0;
-        hasRevealedThisGesture.current = true;
-        resetGesture();
-        return;
-      }
-
-      // OVERSCROLL at BOTTOM (finger up, deltaY < 0) → COLLAPSE to 0
-      if (deltaY < 0 && atBottom && current > 0) {
-        scrollHandler(0);
-        e.preventDefault();
-        e.stopPropagation();
-        accumulatedDelta = 0;
-        hasRevealedThisGesture.current = true;
-        resetGesture();
         return;
       }
 
@@ -946,10 +979,29 @@ export function ThreadPreview({
           </div>
           
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+            {/* Row 1: Sender + Subject (clear visual distinction) */}
+            <div className="flex items-center gap-1.5">
+              {/* Sender (slightly larger, less badge-like) */}
+              <span
+                className="flex-shrink-0 text-sm font-semibold"
+                style={{ color: 'rgb(147, 197, 253)', maxWidth: '45%' }}
+              >
+                <span className="truncate block">
+                  {thread.messages[thread.messages.length - 1]?.from.name || 
+                   thread.messages[thread.messages.length - 1]?.from.email.split('@')[0] || 
+                   'Unknown'}
+                </span>
+              </span>
+              {/* Divider (clear separation, not a dot) */}
+              <span
+                className="mx-1.5 h-4 w-px flex-shrink-0"
+                style={{ background: 'rgba(255,255,255,0.16)' }}
+              />
+              {/* Subject */}
+              <span className="font-medium truncate flex-1 text-sm" style={{ color: 'var(--text-primary)' }}>
                 {thread.subject || '(No Subject)'}
               </span>
+              {/* Message count */}
               <span className="flex-shrink-0 text-xs text-blue-300/70 bg-blue-500/10 px-1.5 py-0.5 rounded">
                 {thread.messages.length}
               </span>
@@ -964,9 +1016,6 @@ export function ThreadPreview({
                 </span>
               )}
             </div>
-            <p className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>
-              {thread.participants.map((p) => p.name || p.email.split('@')[0]).join(', ')}
-            </p>
           </div>
 
           <motion.div

@@ -2,14 +2,12 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Loader2, Settings, Sparkles, ChevronDown, ChevronRight, X, Edit2, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp, EyeOff, Search, Globe, ExternalLink, CheckCircle, XCircle, Save, Ghost } from 'lucide-react';
+import { Send, Loader2, Sparkles, ChevronDown, ChevronRight, X, Edit2, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp, EyeOff, Search, Globe, ExternalLink, CheckCircle, XCircle, Save, Ghost } from 'lucide-react';
 import { DraftCard } from './DraftCard';
 import { ThreadPreview } from './ThreadPreview';
 import { WaveformVisualizer } from './WaveformVisualizer';
 import { ChatMessage, EmailThread, EmailDraft, AIProvider } from '@/types';
 import { ToolCall, buildDraftFromToolCall } from '@/lib/agent-tools';
-import { OPENAI_MODELS } from '@/lib/openai';
-import { CLAUDE_MODELS } from '@/lib/anthropic';
 import { useAuth } from '@/contexts/AuthContext';
 import { 
   loadThreadChat, 
@@ -104,6 +102,9 @@ interface ChatInterfaceProps {
   thread?: EmailThread;
   folder?: MailFolder;
   threadLabels?: string[]; // Current Gmail labels on the thread
+  // AI settings (managed by parent)
+  provider?: AIProvider;
+  model?: string;
   onDraftCreated?: (draft: EmailDraft) => void;
   onSendEmail?: (draft: EmailDraft) => Promise<void>;
   onSaveDraft?: (draft: EmailDraft) => Promise<EmailDraft>;
@@ -152,6 +153,8 @@ export function ChatInterface({
   thread,
   folder = 'inbox',
   threadLabels = [],
+  provider = 'anthropic',
+  model = 'claude-sonnet-4-20250514',
   onDraftCreated,
   onSendEmail,
   onSaveDraft,
@@ -176,9 +179,6 @@ export function ChatInterface({
   const [isDeleting, setIsDeleting] = useState(false);
   const [currentDraft, setCurrentDraft] = useState<EmailDraft | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
-  const [provider, setProvider] = useState<AIProvider>('anthropic');
-  const [model, setModel] = useState<string>('claude-sonnet-4-20250514');
-  const [showSettings, setShowSettings] = useState(false);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState('');
   
@@ -253,9 +253,6 @@ export function ChatInterface({
       localStorage.setItem(LOAD_PREF_KEY, 'false');
     }
   }, []);
-
-  // Get available models based on provider
-  const availableModels = provider === 'openai' ? OPENAI_MODELS : CLAUDE_MODELS;
 
   // Load chat history when thread changes
   useEffect(() => {
@@ -660,10 +657,6 @@ export function ChatInterface({
   }, [input]);
 
   // Update model when provider changes
-  useEffect(() => {
-    const defaultModel = provider === 'openai' ? 'gpt-4.1' : 'claude-sonnet-4-20250514';
-    setModel(defaultModel);
-  }, [provider]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -1300,6 +1293,24 @@ export function ChatInterface({
     }
   }, [isRecording]);
 
+  // Keyboard shortcuts for recording: Enter to send, Escape to cancel
+  useEffect(() => {
+    if (!isRecording) return;
+    
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        stopRecording();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        cancelRecording();
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isRecording, stopRecording, cancelRecording]);
+
   // Cancel pending message
   const cancelMessage = useCallback((messageId: string) => {
     setMessages(prev => prev.filter(m => m.id !== messageId));
@@ -1574,12 +1585,12 @@ export function ChatInterface({
             
             {/* Title and description */}
             <h3 className="text-lg font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
-              {thread ? 'Ready to Help' : 'FloMail Agent'}
+              {thread ? 'Ready to Help' : 'New Message'}
             </h3>
             <p className="text-sm max-w-xs mb-4" style={{ color: 'var(--text-secondary)' }}>
               {thread
                 ? 'Tap the mic or type. Say "summarize", "draft reply", or anything!'
-                : 'Select an email from your inbox to get started.'}
+                : 'Use voice or type to compose. Say "write to John about..." or "draft new message to..."'}
             </p>
             
             {/* Subtle incognito indicator - just a small text line */}
@@ -1599,7 +1610,7 @@ export function ChatInterface({
             )}
             
             {/* Action buttons - always visible regardless of incognito */}
-            {thread && (
+            {thread ? (
               <div className="flex flex-wrap gap-2 justify-center">
                 {/* AI-powered actions */}
                 {['Summarize', 'Draft reply'].map((suggestion) => (
@@ -1639,6 +1650,24 @@ export function ChatInterface({
                 >
                   Next
                 </button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-2 justify-center">
+                {/* Compose mode - quick actions for new message */}
+                {['Write a quick email to...', 'Draft meeting invite...'].map((suggestion) => (
+                  <button
+                    key={suggestion}
+                    onClick={() => sendMessage(suggestion)}
+                    className="px-4 py-2.5 rounded-full text-sm font-medium transition-colors"
+                    style={{ 
+                      background: 'var(--bg-interactive)', 
+                      color: 'var(--text-secondary)',
+                      border: '1px solid var(--border-subtle)'
+                    }}
+                  >
+                    {suggestion}
+                  </button>
+                ))}
               </div>
             )}
           </div>
@@ -2149,112 +2178,6 @@ export function ChatInterface({
             <ArrowUp className="w-5 h-5" />
           </motion.button>
 
-          {/* Settings button with popover */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setShowSettings(!showSettings)}
-              className="p-3 rounded-xl transition-colors"
-              style={showSettings ? {
-                background: 'rgba(168, 85, 247, 0.2)',
-                color: 'rgb(216, 180, 254)'
-              } : {
-                background: 'var(--bg-interactive)',
-                color: 'var(--text-muted)'
-              }}
-            >
-              <Settings className="w-5 h-5" />
-            </button>
-
-            {/* Settings Popover */}
-            <AnimatePresence>
-              {showSettings && (
-                <>
-                  {/* Backdrop to close */}
-                  <div 
-                    className="fixed inset-0 z-40" 
-                    onClick={() => setShowSettings(false)}
-                  />
-                  
-                  <motion.div
-                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                    transition={{ duration: 0.15 }}
-                    className="absolute bottom-full right-0 mb-2 w-64 p-4 rounded-2xl shadow-xl z-50"
-                    style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)' }}
-                  >
-                    {/* Arrow */}
-                    <div 
-                      className="absolute -bottom-2 right-4 w-4 h-4 rotate-45"
-                      style={{ background: 'var(--bg-elevated)', borderRight: '1px solid var(--border-default)', borderBottom: '1px solid var(--border-default)' }}
-                    />
-                    
-                    <div className="space-y-4 relative">
-                      <div>
-                        <label className="block text-xs mb-2 uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>Provider</label>
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setProvider('anthropic')}
-                            className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all"
-                            style={provider === 'anthropic' ? {
-                              background: 'rgba(168, 85, 247, 0.2)',
-                              color: 'rgb(216, 180, 254)',
-                              border: '1px solid rgba(168, 85, 247, 0.5)'
-                            } : {
-                              background: 'var(--bg-interactive)',
-                              color: 'var(--text-secondary)',
-                              border: '1px solid transparent'
-                            }}
-                          >
-                            Claude
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setProvider('openai')}
-                            className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all"
-                            style={provider === 'openai' ? {
-                              background: 'rgba(6, 182, 212, 0.2)',
-                              color: 'rgb(103, 232, 249)',
-                              border: '1px solid rgba(6, 182, 212, 0.5)'
-                            } : {
-                              background: 'var(--bg-interactive)',
-                              color: 'var(--text-secondary)',
-                              border: '1px solid transparent'
-                            }}
-                          >
-                            GPT
-                          </button>
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-xs mb-2 uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>Model</label>
-                        <div className="relative">
-                          <select
-                            value={model}
-                            onChange={(e) => setModel(e.target.value)}
-                            className="w-full px-3 py-2 rounded-lg text-sm appearance-none cursor-pointer focus:outline-none"
-                            style={{ 
-                              background: 'var(--bg-interactive)', 
-                              border: '1px solid var(--border-subtle)',
-                              color: 'var(--text-primary)'
-                            }}
-                          >
-                            {Object.entries(availableModels).map(([id, name]) => (
-                              <option key={id} value={id}>{name}</option>
-                            ))}
-                          </select>
-                          <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none" style={{ color: 'var(--text-muted)' }} />
-                        </div>
-                      </div>
-                    </div>
-                  </motion.div>
-                </>
-              )}
-            </AnimatePresence>
-          </div>
         </form>
       </div>
     </div>

@@ -559,32 +559,12 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
     }
   };
 
+  // Gmail-ish: the left side primarily reads as "who sent the most recent message".
+  // (Thread headers can still show participants elsewhere if desired.)
   const getSenderNames = (thread: EmailThread) => {
-    if (thread.messages.length === 1) {
-      const msg = thread.messages[0];
-      return msg.from.name || msg.from.email.split('@')[0] || 'Unknown';
-    }
-    
-    // For multiple messages, show unique senders (like Gmail: "John, Me, Sarah")
-    const seen = new Set<string>();
-    const names: string[] = [];
-    
-    for (const msg of thread.messages) {
-      const name = msg.from.name || msg.from.email.split('@')[0] || 'Unknown';
-      // Check if this is "me" (could check against user email if we had it)
-      const shortName = name.length > 12 ? name.substring(0, 12) + '…' : name;
-      
-      if (!seen.has(msg.from.email)) {
-        seen.add(msg.from.email);
-        names.push(shortName);
-      }
-    }
-    
-    // Limit to 3 names max
-    if (names.length > 3) {
-      return names.slice(0, 2).join(', ') + ' +' + (names.length - 2);
-    }
-    return names.join(', ');
+    const last = thread.messages[thread.messages.length - 1];
+    if (!last) return 'Unknown';
+    return last.from.name || last.from.email.split('@')[0] || 'Unknown';
   };
 
   if (loading) {
@@ -1160,30 +1140,42 @@ function SwipeableEmailRow({
 
           {/* Content */}
           <div className="flex-1 min-w-0">
+            {/* Row 1: Sender + Subject (clear visual distinction) with metadata on right */}
             <div className="flex items-center justify-between gap-2 mb-1">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span 
-                  className={`truncate ${!thread.isRead ? 'font-semibold' : 'font-medium'}`}
+              <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                {/* Sender (slightly larger, less badge-like) */}
+                <span
+                  className={`flex-shrink-0 text-sm ${!thread.isRead ? 'font-semibold' : 'font-medium'}`}
+                  style={{ color: 'rgb(147, 197, 253)', maxWidth: '45%' }}
+                >
+                  <span className="truncate block">{getSenderNames(thread)}</span>
+                </span>
+                {/* Divider (clear separation, not a dot) */}
+                <span
+                  className="mx-1.5 h-4 w-px flex-shrink-0"
+                  style={{ background: 'rgba(255,255,255,0.16)' }}
+                />
+                {/* Subject */}
+                <span
+                  className={`truncate flex-1 text-sm ${!thread.isRead ? 'font-medium' : ''}`}
                   style={{ color: 'var(--text-primary)' }}
                 >
-                  {getSenderNames(thread)}
+                  {thread.subject || '(No Subject)'}
                 </span>
-                {/* Message count - Gmail style */}
+              </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                {/* Message count */}
                 {thread.messages.length > 1 && (
-                  <span className="flex-shrink-0 text-xs font-medium" style={{ color: 'var(--text-muted)' }}>
+                  <span className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>
                     ({thread.messages.length})
                   </span>
                 )}
-                {/* Draft indicator - next to message count */}
+                {/* Draft indicator */}
                 {hasDraft && (
-                  <span className="flex-shrink-0 text-xs font-semibold text-red-400 bg-red-500/15 px-1.5 py-0.5 rounded">
+                  <span className="text-xs font-semibold text-red-400 bg-red-500/15 px-1.5 py-0.5 rounded">
                     Draft
                   </span>
                 )}
-                {/* Label badge for search results */}
-                {labelBadge}
-              </div>
-              <div className="flex items-center gap-1.5 flex-shrink-0">
                 {/* Attachment indicator */}
                 {thread.messages.some(m => m.hasAttachments) && (
                   <Paperclip className="w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} />
@@ -1191,14 +1183,10 @@ function SwipeableEmailRow({
                 <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
                   {formatDate(thread.lastMessageDate)}
                 </span>
+                {/* Label badge for search results */}
+                {labelBadge}
               </div>
             </div>
-            <p 
-              className={`text-sm truncate mb-1 ${!thread.isRead ? 'font-medium' : ''}`}
-              style={{ color: 'var(--text-primary)' }}
-            >
-              {thread.subject || '(No Subject)'}
-            </p>
             <p className="text-xs truncate" style={{ color: 'var(--text-secondary)' }}>
               {thread.snippet}
             </p>

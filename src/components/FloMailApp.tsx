@@ -7,8 +7,10 @@ import { useAuth } from '@/contexts/AuthContext';
 import { LoginScreen } from './LoginScreen';
 import { InboxList, MailFolder } from './InboxList';
 import { ChatInterface } from './ChatInterface';
-import { EmailThread, EmailDraft } from '@/types';
-import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock } from 'lucide-react';
+import { EmailThread, EmailDraft, AIProvider } from '@/types';
+import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock, ChevronDown, Settings, Plus } from 'lucide-react';
+import { OPENAI_MODELS } from '@/lib/openai';
+import { CLAUDE_MODELS } from '@/lib/anthropic';
 import { sendEmail, archiveThread, getAttachment, createGmailDraft, updateGmailDraft, hasSnoozedLabel, fetchThread, fetchInbox } from '@/lib/gmail';
 import { emailCache } from '@/lib/email-cache';
 import { DraftAttachment } from '@/types';
@@ -74,6 +76,17 @@ export function FloMailApp() {
   const [snoozeLoading, setSnoozeLoading] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0); // Increment to trigger InboxList refresh
   const [urlInitialized, setUrlInitialized] = useState(false);
+  
+  // AI Provider settings (moved here from ChatInterface so they persist globally)
+  const [aiProvider, setAiProvider] = useState<AIProvider>('anthropic');
+  const [aiModel, setAiModel] = useState<string>('claude-sonnet-4-20250514');
+  const availableModels = aiProvider === 'openai' ? OPENAI_MODELS : CLAUDE_MODELS;
+  
+  // Update model when provider changes
+  useEffect(() => {
+    const defaultModel = aiProvider === 'openai' ? 'gpt-4.1' : 'claude-sonnet-4-20250514';
+    setAiModel(defaultModel);
+  }, [aiProvider]);
   const currentThreadIndexRef = useRef(0);
   const archiveHandlerRef = useRef<(() => void) | null>(null);
   const isUpdatingFromUrl = useRef(false); // Prevent URL update loops
@@ -864,6 +877,67 @@ export function FloMailApp() {
                   </div>
                 </div>
               </div>
+              {/* AI Model Settings */}
+              <div className="p-4 space-y-4" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                <div className="flex items-center gap-2 mb-3">
+                  <Settings className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+                  <span className="text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>AI Model</span>
+                </div>
+                
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAiProvider('anthropic')}
+                    className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all"
+                    style={aiProvider === 'anthropic' ? {
+                      background: 'rgba(168, 85, 247, 0.2)',
+                      color: 'rgb(216, 180, 254)',
+                      border: '1px solid rgba(168, 85, 247, 0.5)'
+                    } : {
+                      background: 'var(--bg-interactive)',
+                      color: 'var(--text-secondary)',
+                      border: '1px solid transparent'
+                    }}
+                  >
+                    Claude
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAiProvider('openai')}
+                    className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all"
+                    style={aiProvider === 'openai' ? {
+                      background: 'rgba(6, 182, 212, 0.2)',
+                      color: 'rgb(103, 232, 249)',
+                      border: '1px solid rgba(6, 182, 212, 0.5)'
+                    } : {
+                      background: 'var(--bg-interactive)',
+                      color: 'var(--text-secondary)',
+                      border: '1px solid transparent'
+                    }}
+                  >
+                    GPT
+                  </button>
+                </div>
+
+                <div className="relative">
+                  <select
+                    value={aiModel}
+                    onChange={(e) => setAiModel(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg text-sm appearance-none cursor-pointer focus:outline-none"
+                    style={{ 
+                      background: 'var(--bg-interactive)', 
+                      border: '1px solid var(--border-subtle)',
+                      color: 'var(--text-primary)'
+                    }}
+                  >
+                    {Object.entries(availableModels).map(([id, name]) => (
+                      <option key={id} value={id}>{name}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none" style={{ color: 'var(--text-muted)' }} />
+                </div>
+              </div>
+              
               <button
                 onClick={signOut}
                 className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors hover:opacity-80"
@@ -1008,6 +1082,25 @@ export function FloMailApp() {
         )}
 
         <div className="flex items-center gap-2 flex-shrink-0">
+          {/* Compose button - visible in inbox view */}
+          {currentView === 'inbox' && (
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => {
+                setSelectedThread(null);
+                setCurrentDraft(null);
+                setCurrentView('chat');
+              }}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-white font-medium transition-all"
+              style={{ background: 'linear-gradient(to right, rgb(168, 85, 247), rgb(6, 182, 212))' }}
+              title="Compose new message"
+            >
+              <Plus className="w-4 h-4" />
+              <span className="text-sm">Compose</span>
+            </motion.button>
+          )}
+          
           {/* Profile */}
           <button
             onClick={() => setShowProfile(!showProfile)}
@@ -1054,6 +1147,8 @@ export function FloMailApp() {
               <ChatInterface
                 thread={selectedThread || undefined}
                 folder={currentMailFolder}
+                provider={aiProvider}
+                model={aiModel}
                 onDraftCreated={handleDraftCreated}
                 onSendEmail={handleSendEmail}
                 onSaveDraft={handleSaveDraft}
