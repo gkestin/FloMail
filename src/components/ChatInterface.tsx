@@ -1060,9 +1060,7 @@ export function ChatInterface({
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     
-    // Collapse email messages back to just showing the latest
-    setRevealedMessageCount(1);
-    setBaseRevealedCount(1);
+    // Note: Don't change message region state - chat and messages are independent
     
     await sendToAI(messageId, content.trim());
   }, [isLoading, sendToAI, thread?.id, currentDraft]);
