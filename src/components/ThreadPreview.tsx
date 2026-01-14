@@ -561,6 +561,22 @@ export function ThreadPreview({
       const atTop = container.scrollTop <= 5;
       const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 5;
       
+      // Check if mouse is in the "collapse zone" (bottom ~60px of the container)
+      const containerRect = container.getBoundingClientRect();
+      const mouseY = e.clientY;
+      const distanceFromBottom = containerRect.bottom - mouseY;
+      const inCollapseZone = distanceFromBottom >= 0 && distanceFromBottom <= 60;
+      
+      // HAND MOTION UP (deltaY > 0) in COLLAPSE ZONE → COLLAPSE ALL to 0
+      // This is a quick-collapse gesture for the bottom area
+      if (e.deltaY > 0 && inCollapseZone && current > 0) {
+        console.log('[ThreadPreview Wheel] ACTION: COLLAPSE (from collapse zone)');
+        scrollHandler(0);
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      
       // SCROLL DOWN (deltaY > 0) at BOTTOM → COLLAPSE ALL to 0
       if (e.deltaY > 0 && atBottom && current > 0) {
         console.log('[ThreadPreview Wheel] ACTION: COLLAPSE to 0');
@@ -635,6 +651,24 @@ export function ThreadPreview({
       const total = totalMessagesRef.current;
       const atTop = container.scrollTop <= 5;
       const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 5;
+      
+      // Check if touch is in the "collapse zone" (bottom ~60px of the container)
+      const containerRect = container.getBoundingClientRect();
+      const distanceFromBottom = containerRect.bottom - y;
+      const inCollapseZone = distanceFromBottom >= 0 && distanceFromBottom <= 60;
+      
+      // SWIPE UP (finger moving up, deltaY < 0) in COLLAPSE ZONE → COLLAPSE to 0
+      // Note: for touch, finger moving up = Y position decreasing = negative deltaY
+      if (deltaY < 0 && inCollapseZone && current > 0) {
+        console.log('[ThreadPreview Touch] ACTION: COLLAPSE (from collapse zone)');
+        scrollHandler(0);
+        e.preventDefault();
+        e.stopPropagation();
+        accumulatedDelta = 0;
+        hasRevealedThisGesture.current = true;
+        resetGesture();
+        return;
+      }
 
       // OVERSCROLL at BOTTOM (finger up, deltaY < 0) → COLLAPSE to 0
       if (deltaY < 0 && atBottom && current > 0) {
