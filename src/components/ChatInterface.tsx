@@ -477,15 +477,12 @@ export function ChatInterface({
           // 2) If the most recent message isn't fully visible → request EXPAND
           // 3) Otherwise → reveal next message
           if (current === 0) {
-            console.log('[Chat Scroll] ACTION: REVEAL (touch) → 1');
             handleScrollReveal(1);
             hasActedThisGesture.current = true;
           } else if (current === 1 && messageNeedsExpandRef.current) {
-            console.log('[Chat Scroll] ACTION: EXPAND (touch)');
             setExpandRequestId((v) => v + 1);
             hasActedThisGesture.current = true;
           } else if (current < total) {
-            console.log('[Chat Scroll] ACTION: REVEAL (touch) →', current + 1);
             handleScrollReveal(current + 1);
             hasActedThisGesture.current = true;
           }
@@ -527,15 +524,12 @@ export function ChatInterface({
           // 2) If the most recent message isn't fully visible → request EXPAND
           // 3) Otherwise → reveal next message
           if (current === 0) {
-            console.log('[Chat Scroll] ACTION: REVEAL → 1');
             handleScrollReveal(1);
             hasActedThisGesture.current = true;
           } else if (current === 1 && messageNeedsExpandRef.current) {
-            console.log('[Chat Scroll] ACTION: EXPAND');
             setExpandRequestId((v) => v + 1);
             hasActedThisGesture.current = true;
           } else if (current < total) {
-            console.log('[Chat Scroll] ACTION: REVEAL →', current + 1);
             handleScrollReveal(current + 1);
             hasActedThisGesture.current = true;
           }
@@ -602,8 +596,6 @@ export function ChatInterface({
     // CRITICAL: Only save if the messages belong to the thread we're saving to
     // This prevents race conditions when navigating between threads
     if (messagesThreadIdRef.current !== threadIdToSave) {
-      console.log('[ChatPersist] Skipping save - thread mismatch:', 
-        messagesThreadIdRef.current, '!==', threadIdToSave);
       return;
     }
     
@@ -625,7 +617,6 @@ export function ChatInterface({
       try {
         // Double-check thread ID hasn't changed during the debounce period
         if (messagesThreadIdRef.current !== capturedThreadId) {
-          console.log('[ChatPersist] Skipping delayed save - thread changed during debounce');
           return;
         }
         

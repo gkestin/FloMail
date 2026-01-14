@@ -4,7 +4,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, FolderOpen, Clock, Shield, ShieldOff } from 'lucide-react';
 import { EmailThread, EmailMessage } from '@/types';
-import { EmailHtmlViewer, isRichHtmlContent, stripBasicHtml } from './EmailHtmlViewer';
+import { EmailHtmlViewer, isRichHtmlContent, normalizeEmailPlainText, stripBasicHtml } from './EmailHtmlViewer';
 import { UnsubscribeButton } from './UnsubscribeButton';
 import Linkify from 'linkify-react';
 
@@ -111,7 +111,8 @@ function EmailBodyWithQuotes({
   isDraft?: boolean;
 }) {
   const [showQuoted, setShowQuoted] = useState(false);
-  const { mainContent, quotedContent, attributionLine } = parseEmailContent(content);
+  const normalized = normalizeEmailPlainText(content);
+  const { mainContent, quotedContent, attributionLine } = parseEmailContent(normalized);
   
   return (
     <div 
@@ -361,14 +362,6 @@ export function ThreadPreview({
 
       if (needsExpand !== needsExpandRef.current) {
         needsExpandRef.current = needsExpand;
-        console.log('[ThreadPreview] needsExpand →', needsExpand, {
-          count,
-          atTop,
-          hasMoreBelow: shouldShow,
-          canExpand,
-          height: Math.round(messagesHeightRef.current),
-          maxAllowedHeight: Math.round(maxAllowedHeight),
-        });
         onNeedsExpandChangeRef.current?.(needsExpand);
       }
     };
@@ -415,14 +408,6 @@ export function ThreadPreview({
       
       if (needsExpand !== needsExpandRef.current) {
         needsExpandRef.current = needsExpand;
-        console.log('[ThreadPreview] needsExpand →', needsExpand, {
-          count,
-          atTop,
-          hasMoreBelow: shouldShow,
-          canExpand,
-          height: Math.round(messagesHeightRef.current),
-          maxAllowedHeight: Math.round(maxAllowedHeight),
-        });
         onNeedsExpandChangeRef.current?.(needsExpand);
       }
     };
@@ -485,7 +470,6 @@ export function ThreadPreview({
     if (!wasExpanded && isExpanded) {
       const baseline = manualHeightRef.current;
       if (Math.abs(messagesHeightRef.current - baseline) > 1) {
-        console.log('[ThreadPreview] OPEN → reset height to baseline', Math.round(baseline));
         setMessagesHeight(baseline);
         messagesHeightRef.current = baseline;
         currentHeightRef.current = baseline;
@@ -509,17 +493,10 @@ export function ThreadPreview({
     const newHeight = Math.min(contentHeight, maxAllowedHeight);
     
     if (newHeight > messagesHeightRef.current + 1) {
-      console.log('[ThreadPreview] EXPAND request → height', Math.round(messagesHeightRef.current), '→', Math.round(newHeight));
       setMessagesHeight(newHeight);
       messagesHeightRef.current = newHeight;
       currentHeightRef.current = newHeight;
       // NOTE: do not persist auto-expands; only manual resizes persist.
-    } else {
-      console.log('[ThreadPreview] EXPAND request ignored (already at max/fit)', {
-        currentHeight: Math.round(messagesHeightRef.current),
-        newHeight: Math.round(newHeight),
-        maxAllowedHeight: Math.round(maxAllowedHeight),
-      });
     }
   }, [expandRequestId, isExpanded, saveHeight]);
   
@@ -529,12 +506,7 @@ export function ThreadPreview({
     if (!isExpanded) return;
     
     const container = containerRef.current;
-    if (!container) {
-      console.log('[ThreadPreview] Wheel setup: container not ready yet');
-      return;
-    }
-    
-    console.log('[ThreadPreview] Wheel handlers attached to message container');
+    if (!container) return;
     
     let accumulatedDelta = 0;
     const threshold = 60;
@@ -570,7 +542,6 @@ export function ThreadPreview({
       // HAND MOTION UP (deltaY > 0) in COLLAPSE ZONE → COLLAPSE ALL to 0
       // This is a quick-collapse gesture for the bottom area
       if (e.deltaY > 0 && inCollapseZone && current > 0) {
-        console.log('[ThreadPreview Wheel] ACTION: COLLAPSE (from collapse zone)');
         scrollHandler(0);
         e.preventDefault();
         e.stopPropagation();
@@ -579,7 +550,6 @@ export function ThreadPreview({
       
       // SCROLL DOWN (deltaY > 0) at BOTTOM → COLLAPSE ALL to 0
       if (e.deltaY > 0 && atBottom && current > 0) {
-        console.log('[ThreadPreview Wheel] ACTION: COLLAPSE to 0');
         scrollHandler(0);
         e.preventDefault();
         e.stopPropagation();
@@ -598,26 +568,17 @@ export function ThreadPreview({
             const newHeight = Math.min(contentHeight, maxAllowedHeight);
             
             if (newHeight > messagesHeightRef.current + 1) {
-              console.log('[ThreadPreview Wheel] ACTION: EXPAND', {
-                from: Math.round(messagesHeightRef.current),
-                to: Math.round(newHeight),
-              });
               setMessagesHeight(newHeight);
               messagesHeightRef.current = newHeight;
               currentHeightRef.current = newHeight;
               // NOTE: do not persist auto-expands; only manual resizes persist.
             } else {
-              console.log('[ThreadPreview Wheel] EXPAND no-op (already fits/max)', {
-                currentHeight: Math.round(messagesHeightRef.current),
-                newHeight: Math.round(newHeight),
-              });
             }
             
             hasRevealedThisGesture.current = true;
           } else {
             // Otherwise reveal the next older message
             if (current < total) {
-              console.log('[ThreadPreview Wheel] ACTION: REVEAL', current + 1, 'of', total);
               scrollHandler(current + 1);
               hasRevealedThisGesture.current = true;
             }
@@ -660,7 +621,6 @@ export function ThreadPreview({
       // SWIPE UP (finger moving up, deltaY < 0) in COLLAPSE ZONE → COLLAPSE to 0
       // Note: for touch, finger moving up = Y position decreasing = negative deltaY
       if (deltaY < 0 && inCollapseZone && current > 0) {
-        console.log('[ThreadPreview Touch] ACTION: COLLAPSE (from collapse zone)');
         scrollHandler(0);
         e.preventDefault();
         e.stopPropagation();
@@ -672,7 +632,6 @@ export function ThreadPreview({
 
       // OVERSCROLL at BOTTOM (finger up, deltaY < 0) → COLLAPSE to 0
       if (deltaY < 0 && atBottom && current > 0) {
-        console.log('[ThreadPreview Touch] ACTION: COLLAPSE to 0');
         scrollHandler(0);
         e.preventDefault();
         e.stopPropagation();
@@ -693,23 +652,14 @@ export function ThreadPreview({
             const newHeight = Math.min(contentHeight, maxAllowedHeight);
 
             if (newHeight > messagesHeightRef.current + 1) {
-              console.log('[ThreadPreview Touch] ACTION: EXPAND', {
-                from: Math.round(messagesHeightRef.current),
-                to: Math.round(newHeight),
-              });
               setMessagesHeight(newHeight);
               messagesHeightRef.current = newHeight;
               currentHeightRef.current = newHeight;
               // NOTE: do not persist auto-expands; only manual resizes persist.
             } else {
-              console.log('[ThreadPreview Touch] EXPAND no-op (already fits/max)', {
-                currentHeight: Math.round(messagesHeightRef.current),
-                newHeight: Math.round(newHeight),
-              });
             }
             hasRevealedThisGesture.current = true;
           } else if (current < total) {
-            console.log('[ThreadPreview Touch] ACTION: REVEAL', current + 1, 'of', total);
             scrollHandler(current + 1);
             hasRevealedThisGesture.current = true;
           }

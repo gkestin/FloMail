@@ -11,6 +11,34 @@ interface EmailHtmlViewerProps {
 }
 
 /**
+ * Normalize plain text for display:
+ * - Convert CRLF to LF
+ * - Treat whitespace-only lines as empty
+ * - Strip trailing whitespace per line
+ * - Collapse excessive blank lines (3+ newlines -> 2 newlines)
+ *
+ * This fixes common artifacts like "\n \n\n" (blank line with a single space).
+ */
+export function normalizeEmailPlainText(text: string): string {
+  if (!text) return '';
+  let t = text;
+  t = t.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  t = t.replace(/\u00a0/g, ' '); // nbsp -> space
+
+  const lines = t.split('\n').map((line) => {
+    // Keep leading whitespace (indentation), but strip trailing whitespace
+    const withoutTrailing = line.replace(/[ \t]+$/g, '');
+    // If line is only whitespace, treat as blank
+    return withoutTrailing.trim().length === 0 ? '' : withoutTrailing;
+  });
+
+  t = lines.join('\n');
+  // Collapse excessive blank lines to a single blank line
+  t = t.replace(/\n{3,}/g, '\n\n');
+  return t.trim();
+}
+
+/**
  * EmailHtmlViewer - A secure HTML email viewer component
  * 
  * Displays HTML emails exactly as they were designed, with a white background
@@ -31,6 +59,7 @@ export function EmailHtmlViewer({
   const [iframeHeight, setIframeHeight] = useState(150);
   const [isLoading, setIsLoading] = useState(true);
   const heightCheckRef = useRef<NodeJS.Timeout | null>(null);
+  const fitScaleRef = useRef(1);
 
   // Sanitize HTML with DOMPurify - DO NOT modify colors
   const sanitizedHtml = useMemo(() => {
@@ -123,15 +152,22 @@ export function EmailHtmlViewer({
       color: ${textColor};
       word-wrap: break-word;
     }
+    html, body { overflow-x: hidden; }
     img { max-width: 100%; height: auto; }
     table { border-collapse: collapse; max-width: 100%; }
     a { color: ${linkColor}; }
     /* Hide tracking pixels */
     img[width="1"], img[height="1"] { display: none !important; }
+    /* Root wrapper allows fit-to-width scaling when content is wider than viewport */
+    #flomail-email-root {
+      display: inline-block;
+      min-width: 100%;
+      transform-origin: top left;
+    }
     ${darkThemeOverrides}
   </style>
 </head>
-<body>${sanitizedHtml}</body>
+<body><div id="flomail-email-root">${sanitizedHtml}</div></body>
 </html>`;
   }, [sanitizedHtml, needsWhiteBackground]);
 
@@ -142,19 +178,43 @@ export function EmailHtmlViewer({
     
     try {
       const iframeDoc = iframeRef.current.contentDocument || iframeRef.current.contentWindow?.document;
-      if (iframeDoc && iframeDoc.body) {
-        const height = Math.max(
-          iframeDoc.body.scrollHeight,
-          iframeDoc.body.offsetHeight,
-          iframeDoc.documentElement?.scrollHeight || 0,
-          iframeDoc.documentElement?.offsetHeight || 0
-        );
-        
-        if (height > 0) {
-          // Don't clamp - let the iframe be full height, outer container handles scroll
-          setIframeHeight(height + 16);
-          setIsLoading(false);
+      if (!iframeDoc || !iframeDoc.body) return;
+
+      const root = iframeDoc.getElementById('flomail-email-root') as HTMLElement | null;
+      const docEl = iframeDoc.documentElement;
+
+      // ===== Fit-to-width for mobile/non-responsive emails =====
+      // If content is wider than the viewport, scale it down to fit.
+      if (root && docEl) {
+        const viewportWidth = docEl.clientWidth;
+        const contentWidth = root.scrollWidth;
+        const nextScale = contentWidth > viewportWidth + 4 ? Math.min(1, viewportWidth / contentWidth) : 1;
+
+        // Update transform only if meaningfully changed to avoid thrash
+        if (Math.abs(nextScale - fitScaleRef.current) > 0.01) {
+          fitScaleRef.current = nextScale;
+          if (nextScale < 0.999) {
+            root.style.transform = `scale(${nextScale})`;
+          } else {
+            root.style.transform = '';
+          }
         }
+      }
+
+      // Measure visible height (accounts for scaling via getBoundingClientRect)
+      const height = root
+        ? Math.ceil(root.getBoundingClientRect().height)
+        : Math.max(
+            iframeDoc.body.scrollHeight,
+            iframeDoc.body.offsetHeight,
+            docEl?.scrollHeight || 0,
+            docEl?.offsetHeight || 0
+          );
+
+      if (height > 0) {
+        // Don't clamp - let the iframe be full height, outer container handles scroll
+        setIframeHeight(height + 16);
+        setIsLoading(false);
       }
     } catch {
       setIframeHeight(300);
@@ -206,6 +266,13 @@ export function EmailHtmlViewer({
     };
   }, [iframeContent, measureHeight]);
 
+  // Re-measure on window resize (helps fit-to-width on rotation / viewport changes)
+  useEffect(() => {
+    const onResize = () => measureHeight();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [measureHeight]);
+
   // Fallback to plain text
   if (!sanitizedHtml) {
     if (plainText) {
@@ -214,7 +281,7 @@ export function EmailHtmlViewer({
           className={`whitespace-pre-wrap text-sm leading-relaxed ${className}`}
           style={{ color: 'var(--text-primary)' }}
         >
-          {plainText}
+          {normalizeEmailPlainText(plainText)}
         </div>
       );
     }
@@ -357,7 +424,6 @@ export function isRichHtmlContent(content: string): boolean {
   // === CHECK 1: Does it have loadable images? ===
   // Images need the iframe context to render properly
   if (hasLoadableImages(cleaned)) {
-    console.log('[isRichHtml] Triggered by loadable images');
     return true;
   }
   
@@ -368,7 +434,6 @@ export function isRichHtmlContent(content: string): boolean {
     for (const match of bgcolorMatch) {
       const colorValue = match.replace(/bgcolor\s*=\s*["']?/i, '').replace(/["']$/, '').toLowerCase();
       if (!isDefaultColor(colorValue)) {
-        console.log('[isRichHtml] Triggered by bgcolor attr:', colorValue);
         return true;
       }
     }
@@ -382,7 +447,6 @@ export function isRichHtmlContent(content: string): boolean {
       if (colorMatch) {
         const colorValue = colorMatch[2].toLowerCase().trim();
         if (!isDefaultColor(colorValue)) {
-          console.log('[isRichHtml] Triggered by inline background:', colorValue);
           return true;
         }
       }
@@ -405,7 +469,6 @@ export function isRichHtmlContent(content: string): boolean {
           const colorValue = match.replace(/.*:\s*/i, '').trim().toLowerCase();
           // Skip if it's a default background color
           if (!isDefaultColor(colorValue)) {
-            console.log('[isRichHtml] Triggered by CSS background:', colorValue);
             return true;
           }
         }
@@ -416,7 +479,6 @@ export function isRichHtmlContent(content: string): boolean {
   // === CHECK 4: Real tables with visible structure? ===
   // Only data tables with actual borders, not Outlook layout wrappers
   if (hasRealTables(cleaned)) {
-    console.log('[isRichHtml] Triggered by real tables with borders');
     return true;
   }
   
@@ -424,14 +486,12 @@ export function isRichHtmlContent(content: string): boolean {
   // Lists, bold, italic, headings - these need HTML rendering to look right
   const hasLists = /<(ul|ol)\b/i.test(cleaned) && /<li\b/i.test(cleaned);
   if (hasLists) {
-    console.log('[isRichHtml] Triggered by list formatting (ul/ol + li)');
     return true;
   }
   
   // Headings indicate structured content
   const hasHeadings = /<h[1-6]\b/i.test(cleaned);
   if (hasHeadings) {
-    console.log('[isRichHtml] Triggered by headings');
     return true;
   }
   
@@ -550,8 +610,5 @@ export function stripBasicHtml(html: string): string {
   text = text.replace(/&#(\d+);/gi, (_, num) => String.fromCharCode(parseInt(num, 10)));
   text = text.replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
   
-  // Clean up excessive whitespace/newlines
-  text = text.replace(/\n{3,}/g, '\n\n');
-  
-  return text.trim();
+  return normalizeEmailPlainText(text);
 }
