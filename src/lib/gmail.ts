@@ -293,12 +293,19 @@ function extractBody(payload: any): { text: string; html: string } {
 
 // Helper to check if message has attachments
 function hasAttachments(payload: any): boolean {
+  if (!payload) return false;
   if (payload.filename && payload.filename.length > 0) {
+    return true;
+  }
+  if (payload.body?.attachmentId) {
     return true;
   }
   if (payload.parts) {
     for (const part of payload.parts) {
       if (part.filename && part.filename.length > 0) {
+        return true;
+      }
+      if (part.body?.attachmentId) {
         return true;
       }
       if (part.parts && hasAttachments(part)) {
@@ -397,8 +404,12 @@ export async function fetchInbox(
  * Does NOT fetch message bodies, only headers and snippet
  */
 async function fetchThreadMetadata(accessToken: string, threadId: string): Promise<EmailThread> {
-  // format=metadata returns headers only, no body content
-  const response = await fetch(`${GMAIL_API_BASE}/threads/${threadId}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=Cc`, {
+  // Use format=full with fields mask to include attachment structure but avoid body data
+  const fields = [
+    'id',
+    'messages(id,threadId,labelIds,snippet,payload/headers,payload/filename,payload/parts,payload/body/attachmentId)',
+  ].join(',');
+  const response = await fetch(`${GMAIL_API_BASE}/threads/${threadId}?format=full&fields=${encodeURIComponent(fields)}&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=Cc`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 
@@ -432,6 +443,9 @@ async function fetchThreadMetadata(accessToken: string, threadId: string): Promi
     to.forEach((t) => participants.set(t.email, t));
     cc?.forEach((c) => participants.set(c.email, c));
 
+    // Check for attachments in metadata (payload.parts may be available)
+    const msgHasAttachments = msg.payload ? hasAttachments(msg.payload) : false;
+    
     messages.push({
       id: msg.id,
       threadId: msg.threadId,
@@ -444,7 +458,7 @@ async function fetchThreadMetadata(accessToken: string, threadId: string): Promi
       body: msg.snippet || '', // Use snippet as placeholder until full load
       isRead: !msg.labelIds?.includes('UNREAD'),
       labels: msg.labelIds || [],
-      hasAttachments: false, // Can't determine from metadata
+      hasAttachments: msgHasAttachments,
       // Flag indicating full content not loaded
       _metadataOnly: true,
     });

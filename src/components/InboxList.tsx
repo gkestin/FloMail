@@ -1211,33 +1211,31 @@ function SwipeableEmailRow({
             
             {/* Row 1: Sender name with time/metadata */}
             <div className="flex items-center justify-between gap-2 mb-0.5">
-              {/* Sender name - bold for unread */}
-              <span
-                className={`text-sm truncate ${!thread.isRead ? 'font-bold' : 'font-medium'}`}
-                style={{ color: !thread.isRead ? 'var(--text-primary)' : 'var(--text-secondary)' }}
-              >
-                {getSenderNames(thread)}
-              </span>
-              
-              {/* Right side metadata */}
-              <div className="flex items-center gap-1.5 flex-shrink-0">
-                {/* Message count */}
+              {/* Left side: sender + count + draft */}
+              <div className="flex items-center gap-2 min-w-0">
+                <span
+                  className={`text-sm truncate ${!thread.isRead ? 'font-bold' : 'font-medium'}`}
+                  style={{ color: !thread.isRead ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+                >
+                  {getSenderNames(thread)}
+                </span>
                 {thread.messages.length > 1 && (
                   <span className={`text-xs ${!thread.isRead ? 'font-semibold' : 'font-medium'}`} style={{ color: 'var(--text-muted)' }}>
                     ({thread.messages.length})
                   </span>
                 )}
-                {/* Draft indicator */}
                 {hasDraft && (
                   <span className="text-xs font-semibold text-red-400 bg-red-500/15 px-1.5 py-0.5 rounded">
                     Draft
                   </span>
                 )}
-                {/* Time */}
+              </div>
+              
+              {/* Right side metadata */}
+              <div className="flex items-center gap-1.5 flex-shrink-0">
                 <span className={`text-xs ${!thread.isRead ? 'font-medium' : ''}`} style={{ color: 'var(--text-muted)' }}>
                   {formatDate(thread.lastMessageDate)}
                 </span>
-                {/* Label badge for search results */}
                 {labelBadge}
               </div>
             </div>
