@@ -5,6 +5,41 @@ import type { ListUnsubscribeAction } from './mail-driver/types';
 
 const GMAIL_API_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 
+// ============================================================================
+// HTML ENTITY DECODING
+// ============================================================================
+
+/**
+ * Decode HTML entities in text (used for snippets from Gmail API)
+ */
+function decodeHtmlEntities(text: string): string {
+  if (!text) return '';
+  let decoded = text;
+  // Named entities
+  decoded = decoded.replace(/&nbsp;/gi, ' ');
+  decoded = decoded.replace(/&amp;/gi, '&');
+  decoded = decoded.replace(/&lt;/gi, '<');
+  decoded = decoded.replace(/&gt;/gi, '>');
+  decoded = decoded.replace(/&quot;/gi, '"');
+  decoded = decoded.replace(/&#39;/gi, "'");
+  decoded = decoded.replace(/&apos;/gi, "'");
+  decoded = decoded.replace(/&ndash;/gi, '\u2013');
+  decoded = decoded.replace(/&mdash;/gi, '\u2014');
+  decoded = decoded.replace(/&lsquo;/gi, '\u2018');
+  decoded = decoded.replace(/&rsquo;/gi, '\u2019');
+  decoded = decoded.replace(/&ldquo;/gi, '\u201C');
+  decoded = decoded.replace(/&rdquo;/gi, '\u201D');
+  decoded = decoded.replace(/&hellip;/gi, '\u2026');
+  decoded = decoded.replace(/&copy;/gi, '\u00A9');
+  decoded = decoded.replace(/&reg;/gi, '\u00AE');
+  decoded = decoded.replace(/&trade;/gi, '\u2122');
+  // Numeric entities (decimal)
+  decoded = decoded.replace(/&#(\d+);/gi, (_, num) => String.fromCharCode(parseInt(num, 10)));
+  // Numeric entities (hex)
+  decoded = decoded.replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+  return decoded;
+}
+
 // Re-export list unsubscribe utilities for use in components
 export { getListUnsubscribeAction };
 export type { ListUnsubscribeAction };
@@ -400,7 +435,7 @@ async function fetchThreadMetadata(accessToken: string, threadId: string): Promi
     messages.push({
       id: msg.id,
       threadId: msg.threadId,
-      snippet: msg.snippet || '',
+      snippet: decodeHtmlEntities(msg.snippet || ''),
       subject: getHeader(headers, 'Subject'),
       from,
       to,
@@ -494,7 +529,7 @@ export async function fetchThread(accessToken: string, threadId: string): Promis
       id: msg.id,
       threadId: msg.threadId,
       messageId: getHeader(headers, 'Message-ID') || getHeader(headers, 'Message-Id'),
-      snippet: msg.snippet || '',
+      snippet: decodeHtmlEntities(msg.snippet || ''),
       subject: getHeader(headers, 'Subject'),
       from,
       to,
@@ -918,7 +953,7 @@ export async function listGmailDrafts(accessToken: string): Promise<GmailDraftIn
           threadId: message?.threadId,
           subject: getHeader('Subject') || '(No Subject)',
           to: toAddresses,
-          snippet: message?.snippet || '',
+          snippet: decodeHtmlEntities(message?.snippet || ''),
           date: getHeader('Date') || new Date().toISOString(),
         } as GmailDraftInfo;
       }
