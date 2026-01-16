@@ -956,23 +956,41 @@ function SwipeableEmailRow({
   labelBadge,
 }: SwipeableEmailRowProps) {
   const x = useMotionValue(0);
-  const [swipeState, setSwipeState] = useState<'idle' | 'pending' | 'archived'>('idle');
+  const [swipeState, setSwipeState] = useState<'idle' | 'pending' | 'archived' | 'snoozed'>('idle');
   const undoTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const dragStartX = useRef(0);
   const hasDragged = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [isMobile, setIsMobile] = useState(false);
+  
+  // Detect mobile viewport
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 640);
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
   
   const SWIPE_THRESHOLD = -80;
+  const SNOOZE_THRESHOLD = 80; // Right swipe threshold for snooze
   const UNDO_DURATION = 4000;
   
-  // Smooth transforms for visual feedback
+  // Smooth transforms for visual feedback (left swipe = archive)
   const archiveBgOpacity = useTransform(x, [-120, -40, 0], [1, 0.3, 0]);
   const archiveIconScale = useTransform(x, [-120, -60, 0], [1.1, 0.9, 0.7]);
   const archiveIconX = useTransform(x, [-120, -60, 0], [0, 10, 30]);
   
+  // Right swipe = snooze
+  const snoozeBgOpacity = useTransform(x, [0, 40, 120], [0, 0.3, 1]);
+  const snoozeIconScale = useTransform(x, [0, 60, 120], [0.7, 0.9, 1.1]);
+  const snoozeIconX = useTransform(x, [0, 60, 120], [-30, -10, 0]);
+  
   const handleDragEnd = (event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
     const shouldArchive = info.offset.x < SWIPE_THRESHOLD || 
                           (info.offset.x < -50 && info.velocity.x < -200);
+    const shouldSnooze = isInInbox && onSnooze && (
+                          info.offset.x > SNOOZE_THRESHOLD || 
+                          (info.offset.x > 50 && info.velocity.x > 200));
     
     if (shouldArchive) {
       setSwipeState('pending');
@@ -982,6 +1000,10 @@ function SwipeableEmailRow({
           onArchive({ stopPropagation: () => {} } as React.MouseEvent);
         }, 300);
       }, UNDO_DURATION);
+    } else if (shouldSnooze) {
+      // Open snooze picker
+      animate(x, 0, { type: 'spring', stiffness: 400, damping: 30 });
+      onSnooze?.({ stopPropagation: () => {} } as React.MouseEvent);
     } else {
       // Animate back to 0 with spring physics
       animate(x, 0, { type: 'spring', stiffness: 400, damping: 30 });
@@ -1085,7 +1107,32 @@ function SwipeableEmailRow({
       transition={skipAnimation ? { duration: 0 } : { delay: index * 0.02 }}
       className="relative overflow-hidden"
     >
-      {/* Archive action background (revealed on swipe) */}
+      {/* Snooze action background (revealed on right swipe) */}
+      {isInInbox && onSnooze && (
+        <motion.div 
+          className="absolute inset-0 flex items-center justify-start pl-6"
+          style={{ 
+            opacity: snoozeBgOpacity,
+            background: 'linear-gradient(to right, rgb(251 191 36 / 0.9), rgb(245 158 11 / 0.7))'
+          }}
+        >
+          <motion.div 
+            style={{ scale: snoozeIconScale, x: snoozeIconX }}
+            className="flex items-center gap-2"
+          >
+            <Clock className="w-5 h-5 text-white" />
+            <motion.span 
+              className="text-white text-sm font-medium"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+            >
+              Snooze
+            </motion.span>
+          </motion.div>
+        </motion.div>
+      )}
+      
+      {/* Archive action background (revealed on left swipe) */}
       <motion.div 
         className="absolute inset-0 flex items-center justify-end pr-6"
         style={{ 
@@ -1111,7 +1158,7 @@ function SwipeableEmailRow({
       {/* Swipeable content */}
       <motion.div
         drag="x"
-        dragConstraints={{ left: -150, right: 0 }}
+        dragConstraints={{ left: -150, right: isInInbox && onSnooze ? 150 : 0 }}
         dragElastic={0.08}
         dragMomentum={false}
         onDragStart={handleDragStart}
@@ -1163,6 +1210,7 @@ function SwipeableEmailRow({
                   {thread.subject || '(No Subject)'}
                 </span>
               </div>
+              {/* Metadata - show inline on desktop, message count/draft/attachment inline always */}
               <div className="flex items-center gap-1.5 flex-shrink-0">
                 {/* Message count */}
                 {thread.messages.length > 1 && (
@@ -1180,16 +1228,24 @@ function SwipeableEmailRow({
                 {thread.messages.some(m => m.hasAttachments) && (
                   <Paperclip className="w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} />
                 )}
-                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                {/* Time - hidden on mobile (shown below) */}
+                <span className="text-xs hidden sm:inline" style={{ color: 'var(--text-muted)' }}>
                   {formatDate(thread.lastMessageDate)}
                 </span>
                 {/* Label badge for search results */}
                 {labelBadge}
               </div>
             </div>
-            <p className="text-xs truncate" style={{ color: 'var(--text-secondary)' }}>
-              {thread.snippet}
-            </p>
+            {/* Row 2: Snippet with time on mobile */}
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs truncate flex-1" style={{ color: 'var(--text-secondary)' }}>
+                {thread.snippet}
+              </p>
+              {/* Time on mobile - shown on second line */}
+              <span className="text-xs sm:hidden flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
+                {formatDate(thread.lastMessageDate)}
+              </span>
+            </div>
           </div>
 
           {/* Snooze indicator (for snoozed folder) */}
@@ -1201,8 +1257,8 @@ function SwipeableEmailRow({
             </div>
           )}
           
-          {/* Action buttons */}
-          <div className="flex items-center gap-1 self-center">
+          {/* Action buttons - hidden on mobile (use swipe gestures) */}
+          <div className="hidden sm:flex items-center gap-1 self-center">
             {/* Snooze button (for inbox emails) */}
             {isInInbox && onSnooze && (
               <motion.button

@@ -8,7 +8,7 @@ import { LoginScreen } from './LoginScreen';
 import { InboxList, MailFolder } from './InboxList';
 import { ChatInterface } from './ChatInterface';
 import { EmailThread, EmailDraft, AIProvider } from '@/types';
-import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock, ChevronDown, Settings, Plus } from 'lucide-react';
+import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock, ChevronDown, Settings, Plus, Pencil } from 'lucide-react';
 import { OPENAI_MODELS } from '@/lib/openai';
 import { CLAUDE_MODELS } from '@/lib/anthropic';
 import { sendEmail, archiveThread, getAttachment, createGmailDraft, updateGmailDraft, hasSnoozedLabel, fetchThread, fetchInbox } from '@/lib/gmail';
@@ -1082,25 +1082,6 @@ export function FloMailApp() {
         )}
 
         <div className="flex items-center gap-2 flex-shrink-0">
-          {/* Compose button - visible in inbox view */}
-          {currentView === 'inbox' && (
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={() => {
-                setSelectedThread(null);
-                setCurrentDraft(null);
-                setCurrentView('chat');
-              }}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-white font-medium transition-all"
-              style={{ background: 'linear-gradient(to right, rgb(168, 85, 247), rgb(6, 182, 212))' }}
-              title="Compose new message"
-            >
-              <Plus className="w-4 h-4" />
-              <span className="text-sm">Compose</span>
-            </motion.button>
-          )}
-          
           {/* Profile */}
           <button
             onClick={() => setShowProfile(!showProfile)}
@@ -1169,6 +1150,37 @@ export function FloMailApp() {
 
       {/* Bottom safe area */}
       <div className="safe-bottom" />
+
+      {/* Floating compose button - bottom right, only on inbox view */}
+      <AnimatePresence>
+        {currentView === 'inbox' && (
+          <motion.button
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.8 }}
+            whileHover={{ scale: 1.1 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => {
+              setSelectedThread(null);
+              setCurrentDraft(null);
+              setCurrentView('chat');
+            }}
+            className="fixed bottom-6 right-6 z-40 w-14 h-14 rounded-full shadow-lg flex items-center justify-center text-white transition-all group"
+            style={{ 
+              background: 'linear-gradient(135deg, rgb(168, 85, 247), rgb(6, 182, 212))',
+              boxShadow: '0 4px 20px rgba(168, 85, 247, 0.4)'
+            }}
+            title="Compose new message"
+          >
+            <Pencil className="w-6 h-6" />
+            {/* Hover tooltip */}
+            <span className="absolute right-full mr-3 px-2.5 py-1.5 text-sm font-medium rounded-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
+              style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}>
+              Compose
+            </span>
+          </motion.button>
+        )}
+      </AnimatePresence>
 
       {/* Snooze Picker Modal */}
       <SnoozePicker

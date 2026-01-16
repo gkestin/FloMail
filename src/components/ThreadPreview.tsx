@@ -2,11 +2,27 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, FolderOpen, Clock, Shield, ShieldOff } from 'lucide-react';
+import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, FolderOpen, Clock, Shield, ShieldOff, Paperclip, Download, FileText, Image as ImageIcon, Film, Music, FileArchive, FileCode, File } from 'lucide-react';
 import { EmailThread, EmailMessage } from '@/types';
 import { EmailHtmlViewer, isRichHtmlContent, normalizeEmailPlainText, stripBasicHtml } from './EmailHtmlViewer';
 import { UnsubscribeButton } from './UnsubscribeButton';
 import Linkify from 'linkify-react';
+
+import { Attachment } from '@/types';
+import { useAuth } from '@/contexts/AuthContext';
+import { getAttachment } from '@/lib/gmail';
+import { formatFileSize } from '@/lib/email-parsing';
+
+// Get appropriate icon for attachment type
+function getAttachmentIcon(mimeType: string): React.ElementType {
+  if (mimeType.startsWith('image/')) return ImageIcon;
+  if (mimeType.startsWith('video/')) return Film;
+  if (mimeType.startsWith('audio/')) return Music;
+  if (mimeType.includes('pdf') || mimeType.includes('document')) return FileText;
+  if (mimeType.includes('zip') || mimeType.includes('archive') || mimeType.includes('compressed')) return FileArchive;
+  if (mimeType.includes('javascript') || mimeType.includes('json') || mimeType.includes('xml') || mimeType.includes('html')) return FileCode;
+  return File;
+}
 
 // Folder type and display config
 type MailFolder = 'inbox' | 'sent' | 'starred' | 'all' | 'drafts' | 'snoozed' | 'spam';
@@ -242,6 +258,8 @@ export function ThreadPreview({
   onNextEmail,
   onPreviousEmail,
 }: ThreadPreviewProps) {
+  const { getAccessToken } = useAuth();
+  
   // If revealedMessageCount is provided (parent-controlled mode):
   // - 0 means collapsed
   // - 1+ means expanded with N messages visible
@@ -969,22 +987,18 @@ export function ThreadPreview({
       <div className="relative" style={{ background: 'var(--bg-sidebar)' }}>
         {/* Header row - contains subject AND expand/collapse controls */}
         <div className="relative z-10 flex items-center gap-3 px-4 py-2.5">
-        {/* Clickable subject area */}
+        {/* Clickable subject area - no envelope icon, no folder badge for more space */}
         <button
           onClick={handleToggleExpand}
-          className="flex items-center gap-3 flex-1 min-w-0 hover:opacity-80 transition-opacity text-left"
+          className="flex items-center gap-2 flex-1 min-w-0 hover:opacity-80 transition-opacity text-left"
         >
-          <div className="p-1.5 rounded-lg bg-blue-500/20">
-            <Mail className="w-4 h-4 text-blue-400" />
-          </div>
-          
           <div className="flex-1 min-w-0">
-            {/* Row 1: Sender + Subject (clear visual distinction) */}
+            {/* Row 1: Sender + Subject (clear visual distinction) + message count */}
             <div className="flex items-center gap-1.5">
               {/* Sender (slightly larger, less badge-like) */}
               <span
                 className="flex-shrink-0 text-sm font-semibold"
-                style={{ color: 'rgb(147, 197, 253)', maxWidth: '45%' }}
+                style={{ color: 'rgb(147, 197, 253)', maxWidth: '40%' }}
               >
                 <span className="truncate block">
                   {thread.messages[thread.messages.length - 1]?.from.name || 
@@ -994,25 +1008,17 @@ export function ThreadPreview({
               </span>
               {/* Divider (clear separation, not a dot) */}
               <span
-                className="mx-1.5 h-4 w-px flex-shrink-0"
+                className="mx-1 h-4 w-px flex-shrink-0"
                 style={{ background: 'rgba(255,255,255,0.16)' }}
               />
-              {/* Subject */}
+              {/* Subject - gets more space now */}
               <span className="font-medium truncate flex-1 text-sm" style={{ color: 'var(--text-primary)' }}>
                 {thread.subject || '(No Subject)'}
               </span>
-              {/* Message count */}
-              <span className="flex-shrink-0 text-xs text-blue-300/70 bg-blue-500/10 px-1.5 py-0.5 rounded">
-                {thread.messages.length}
-              </span>
-              {/* Folder badge - always show for consistency */}
-              {folder && (
-                <span className={`flex-shrink-0 text-xs px-1.5 py-0.5 rounded flex items-center gap-1 ${FOLDER_DISPLAY[folder].color}`}>
-                  {(() => {
-                    const Icon = FOLDER_DISPLAY[folder].icon;
-                    return <Icon className="w-3 h-3" />;
-                  })()}
-                  {FOLDER_DISPLAY[folder].label}
+              {/* Message count - compact */}
+              {thread.messages.length > 1 && (
+                <span className="flex-shrink-0 text-xs text-blue-300/70 bg-blue-500/10 px-1.5 py-0.5 rounded">
+                  {thread.messages.length}
                 </span>
               )}
             </div>
@@ -1104,6 +1110,7 @@ export function ThreadPreview({
                             getAvatarColor={getAvatarColor}
                             onNextEmail={onNextEmail}
                             onPreviousEmail={onPreviousEmail}
+                            getAccessToken={getAccessToken}
                           />
                         </motion.div>
                       );
@@ -1182,6 +1189,67 @@ export function ThreadPreview({
   );
 }
 
+// Attachment item component
+function AttachmentItem({ 
+  attachment, 
+  messageId,
+  getAccessToken 
+}: { 
+  attachment: Attachment; 
+  messageId: string;
+  getAccessToken: () => Promise<string | null>;
+}) {
+  const [loading, setLoading] = useState(false);
+  const Icon = getAttachmentIcon(attachment.mimeType);
+  
+  const handleDownload = async () => {
+    setLoading(true);
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+      
+      const base64Data = await getAttachment(token, messageId, attachment.id);
+      
+      // Convert base64 to blob and download
+      const binaryStr = atob(base64Data.replace(/-/g, '+').replace(/_/g, '/'));
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) {
+        bytes[i] = binaryStr.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: attachment.mimeType });
+      
+      // Create download link
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = attachment.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to download attachment:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  return (
+    <button
+      onClick={handleDownload}
+      disabled={loading}
+      className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs transition-colors hover:bg-white/10 disabled:opacity-50"
+      style={{ background: 'var(--bg-interactive)', border: '1px solid var(--border-subtle)' }}
+      title={`Download ${attachment.filename}`}
+    >
+      <Icon className="w-4 h-4 text-slate-400" />
+      <span className="truncate max-w-[120px]" style={{ color: 'var(--text-primary)' }}>{attachment.filename}</span>
+      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{formatFileSize(attachment.size)}</span>
+      <Download className={`w-3 h-3 text-slate-500 ${loading ? 'animate-pulse' : ''}`} />
+    </button>
+  );
+}
+
 // Individual message item
 function MessageItem({
   message,
@@ -1192,6 +1260,7 @@ function MessageItem({
   getAvatarColor,
   onNextEmail,
   onPreviousEmail,
+  getAccessToken,
 }: {
   message: EmailMessage;
   isExpanded: boolean;
@@ -1201,9 +1270,11 @@ function MessageItem({
   getAvatarColor: (email: string) => string;
   onNextEmail?: () => void;
   onPreviousEmail?: () => void;
+  getAccessToken: () => Promise<string | null>;
 }) {
   const senderName = message.from.name || message.from.email.split('@')[0];
   const senderInitial = senderName.charAt(0).toUpperCase();
+  const hasAttachments = message.hasAttachments || (message.attachments && message.attachments.length > 0);
   
   // Check if this message is a draft
   const isDraft = message.labels?.includes('DRAFT');
@@ -1245,6 +1316,9 @@ function MessageItem({
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
               {formatDate(message.date)}
             </span>
+            {hasAttachments && (
+              <Paperclip className="w-3 h-3" style={{ color: 'var(--text-muted)' }} />
+            )}
           </div>
           {!isExpanded && (
             <p className="text-xs truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
@@ -1326,6 +1400,28 @@ function MessageItem({
                   content={message.bodyHtml ? stripBasicHtml(message.bodyHtml) : (message.body || '')}
                   isDraft={isDraft}
                 />
+              )}
+              
+              {/* Attachments section */}
+              {message.attachments && message.attachments.length > 0 && (
+                <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <Paperclip className="w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} />
+                    <span className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>
+                      {message.attachments.length} attachment{message.attachments.length > 1 ? 's' : ''}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {message.attachments.map((att) => (
+                      <AttachmentItem 
+                        key={att.id} 
+                        attachment={att} 
+                        messageId={message.id}
+                        getAccessToken={getAccessToken}
+                      />
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           </motion.div>

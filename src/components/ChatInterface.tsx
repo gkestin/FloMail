@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Loader2, Sparkles, ChevronDown, ChevronRight, X, Edit2, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp, EyeOff, Search, Globe, ExternalLink, CheckCircle, XCircle, Save, Ghost } from 'lucide-react';
+import { Send, Loader2, Sparkles, ChevronDown, ChevronRight, ChevronLeft, X, Edit2, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp, EyeOff, Search, Globe, ExternalLink, CheckCircle, XCircle, Save, Ghost, Copy, Check } from 'lucide-react';
 import { DraftCard } from './DraftCard';
 import { ThreadPreview } from './ThreadPreview';
 import { WaveformVisualizer } from './WaveformVisualizer';
@@ -27,6 +27,10 @@ function CompletedDraftPreview({
   status: 'cancelled' | 'saved' | 'sent';
 }) {
   const [expanded, setExpanded] = useState(false);
+  
+  // Check if there are CC/BCC recipients
+  const hasCc = draft.cc && draft.cc.length > 0;
+  const hasBcc = draft.bcc && draft.bcc.length > 0;
   
   // Different styling for each status
   const statusConfig = {
@@ -68,12 +72,23 @@ function CompletedDraftPreview({
         onClick={() => setExpanded(!expanded)}
         className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-white/5 transition-colors"
       >
-        <div className="flex items-center gap-2">
-          <Icon className={`w-4 h-4 ${config.iconColor}`} />
+        <div className="flex items-center gap-2 flex-wrap min-w-0">
+          <Icon className={`w-4 h-4 ${config.iconColor} flex-shrink-0`} />
           <span className={`text-sm ${config.labelColor}`}>{config.label}</span>
           <span className="text-xs text-slate-500">• {draft.to.join(', ').slice(0, 20)}{draft.to.join(', ').length > 20 ? '...' : ''}</span>
+          {/* Show CC/BCC inline if they exist */}
+          {hasCc && (
+            <span className="text-xs text-slate-500">
+              <span className="text-slate-600">CC:</span> {draft.cc!.join(', ').slice(0, 15)}{draft.cc!.join(', ').length > 15 ? '...' : ''}
+            </span>
+          )}
+          {hasBcc && (
+            <span className="text-xs text-slate-500">
+              <span className="text-slate-600">BCC:</span> {draft.bcc!.join(', ').slice(0, 15)}{draft.bcc!.join(', ').length > 15 ? '...' : ''}
+            </span>
+          )}
         </div>
-        <ChevronDown className={`w-4 h-4 text-slate-500 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+        <ChevronDown className={`w-4 h-4 text-slate-500 transition-transform flex-shrink-0 ${expanded ? 'rotate-180' : ''}`} />
       </button>
       
       {expanded && (
@@ -82,6 +97,18 @@ function CompletedDraftPreview({
             <span className="text-slate-500 w-12">To:</span>
             <span className="text-slate-400">{draft.to.join(', ')}</span>
           </div>
+          {hasCc && (
+            <div className="flex gap-2">
+              <span className="text-slate-500 w-12">CC:</span>
+              <span className="text-slate-400">{draft.cc!.join(', ')}</span>
+            </div>
+          )}
+          {hasBcc && (
+            <div className="flex gap-2">
+              <span className="text-slate-500 w-12">BCC:</span>
+              <span className="text-slate-400">{draft.bcc!.join(', ')}</span>
+            </div>
+          )}
           <div className="flex gap-2">
             <span className="text-slate-500 w-12">Subj:</span>
             <span className="text-slate-400">{draft.subject}</span>
@@ -92,6 +119,36 @@ function CompletedDraftPreview({
         </div>
       )}
     </div>
+  );
+}
+
+// Copy button for AI responses
+function CopyButton({ content }: { content: string }) {
+  const [copied, setCopied] = useState(false);
+  
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
+  
+  return (
+    <button
+      onClick={handleCopy}
+      className="absolute -right-8 top-1 p-1 rounded opacity-0 group-hover/assistant:opacity-60 hover:!opacity-100 transition-opacity"
+      style={{ color: 'var(--text-muted)' }}
+      title={copied ? 'Copied!' : 'Copy response'}
+    >
+      {copied ? (
+        <Check className="w-3.5 h-3.5 text-green-400" />
+      ) : (
+        <Copy className="w-3.5 h-3.5" />
+      )}
+    </button>
   );
 }
 
@@ -1611,45 +1668,90 @@ export function ChatInterface({
             
             {/* Action buttons - always visible regardless of incognito */}
             {thread ? (
-              <div className="flex flex-wrap gap-2 justify-center">
-                {/* AI-powered actions */}
-                {['Summarize', 'Draft reply'].map((suggestion) => (
-                  <button
-                    key={suggestion}
-                    onClick={() => sendMessage(suggestion)}
-                    className="px-4 py-2.5 rounded-full text-sm font-medium transition-colors"
+              <div className="flex flex-col items-center gap-4 w-full max-w-xs">
+                {/* AI-powered actions - chat bubble style */}
+                <div className="flex flex-wrap gap-2 justify-center">
+                  {['Summarize', 'Draft reply'].map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      onClick={() => sendMessage(suggestion)}
+                      className="px-4 py-2.5 rounded-full text-sm font-medium transition-all hover:scale-[1.02] active:scale-[0.98]"
+                      style={{ 
+                        background: 'var(--bg-interactive)', 
+                        color: 'var(--text-secondary)',
+                        border: '1px solid var(--border-subtle)'
+                      }}
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+                
+                {/* Navigation/Action buttons - distinct button style */}
+                <div className="flex items-center gap-1.5">
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => onPreviousEmail?.()}
+                    className="flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
                     style={{ 
-                      background: 'var(--bg-interactive)', 
+                      background: 'var(--bg-elevated)', 
                       color: 'var(--text-secondary)',
                       border: '1px solid var(--border-subtle)'
                     }}
                   >
-                    {suggestion}
-                  </button>
-                ))}
-                {/* Direct actions - no AI needed */}
-                <button
-                  onClick={() => archiveWithNotification()}
-                  className="px-4 py-2.5 rounded-full text-sm font-medium transition-colors hover:bg-blue-500/20 hover:text-blue-300"
-                  style={{ 
-                    background: 'var(--bg-interactive)', 
-                    color: 'var(--text-secondary)',
-                    border: '1px solid var(--border-subtle)'
-                  }}
+                    <ChevronLeft className="w-4 h-4" />
+                    Prev
+                  </motion.button>
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => archiveWithNotification()}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                    style={{ 
+                      background: 'rgba(59, 130, 246, 0.15)', 
+                      color: 'rgb(147, 197, 253)',
+                      border: '1px solid rgba(59, 130, 246, 0.3)'
+                    }}
+                  >
+                    <Archive className="w-4 h-4" />
+                    Archive
+                  </motion.button>
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => onNextEmail?.()}
+                    className="flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
+                    style={{ 
+                      background: 'var(--bg-elevated)', 
+                      color: 'var(--text-secondary)',
+                      border: '1px solid var(--border-subtle)'
+                    }}
+                  >
+                    Next
+                    <ChevronRight className="w-4 h-4" />
+                  </motion.button>
+                </div>
+                
+                {/* Large mic button - soft gradient, inviting */}
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={startRecording}
+                  disabled={isLoading}
+                  className="relative w-20 h-20 rounded-full flex items-center justify-center mt-2 disabled:opacity-50 transition-all overflow-hidden"
+                  title="Start voice chat"
                 >
-                  Archive
-                </button>
-                <button
-                  onClick={() => onNextEmail?.()}
-                  className="px-4 py-2.5 rounded-full text-sm font-medium transition-colors hover:bg-green-500/20 hover:text-green-300"
-                  style={{ 
-                    background: 'var(--bg-interactive)', 
-                    color: 'var(--text-secondary)',
-                    border: '1px solid var(--border-subtle)'
-                  }}
-                >
-                  Next
-                </button>
+                  {/* Soft radial gradient background */}
+                  <div className="absolute inset-0 bg-gradient-to-br from-purple-500/80 via-purple-600/60 to-cyan-500/40" />
+                  <div className="absolute inset-0 bg-gradient-radial from-white/10 via-transparent to-transparent" />
+                  {/* Subtle glow effect */}
+                  <div 
+                    className="absolute -inset-1 rounded-full opacity-40 blur-md"
+                    style={{ background: 'linear-gradient(135deg, rgba(168, 85, 247, 0.6), rgba(6, 182, 212, 0.4))' }}
+                  />
+                  <Mic className="w-8 h-8 text-white relative z-10" />
+                </motion.button>
               </div>
             ) : (
               <div className="flex flex-wrap gap-2 justify-center">
@@ -1923,22 +2025,15 @@ export function ChatInterface({
                       )}
                     </div>
                     
-                    {/* Action buttons - show on hover or when can edit */}
+                    {/* Action buttons - only show edit on hover for completed messages */}
                     {!message.isTranscribing && !isLoading && (
-                      <div className="absolute -left-20 top-1/2 -translate-y-1/2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="absolute -left-12 top-1/2 -translate-y-1/2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button
                           onClick={() => startEditing(message.id, message.content)}
                           className="p-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 transition-colors"
-                          title="Edit"
+                          title="Edit and resend"
                         >
                           <Edit2 className="w-3.5 h-3.5 text-slate-400" />
-                        </button>
-                        <button
-                          onClick={() => cancelMessage(message.id)}
-                          className="p-1.5 rounded-lg bg-slate-700 hover:bg-red-500/20 transition-colors"
-                          title="Delete"
-                        >
-                          <X className="w-3.5 h-3.5 text-slate-400" />
                         </button>
                       </div>
                     )}
@@ -1958,12 +2053,14 @@ export function ChatInterface({
               </div>
             )}
 
-            {/* Assistant message - no bubble, just text */}
+            {/* Assistant message - no bubble, just text with subtle copy button */}
             {!message.isSystemMessage && message.role === 'assistant' && message.content?.trim() && (
-              <div className="max-w-[85%] px-1 py-2">
+              <div className="max-w-[85%] px-1 py-2 group/assistant relative">
                 <p className="text-sm whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--text-primary)' }}>
                   {message.content}
                 </p>
+                {/* Subtle copy button - appears on hover */}
+                <CopyButton content={message.content} />
               </div>
             )}
 
