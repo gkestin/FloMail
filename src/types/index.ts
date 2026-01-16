@@ -124,6 +124,28 @@ export interface AIConfig {
   model: string;
 }
 
+// AI Drafting Preferences
+export type DraftTone = 'professional' | 'friendly' | 'casual' | 'formal';
+export type DraftLength = 'brief' | 'moderate' | 'detailed';
+export type SignOffStyle = 'none' | 'best' | 'thanks' | 'regards' | 'cheers' | 'custom';
+
+export interface AIDraftingPreferences {
+  // User identity (so AI knows who is sending)
+  userName: string;
+  
+  // Writing style - tones can be combined (array), length is optional
+  tones: DraftTone[];       // Multiple tones can be selected
+  length?: DraftLength;     // Optional - can be unselected
+  useExclamations?: boolean;  // Optional - can be unselected
+  
+  // Sign-off
+  signOffStyle: SignOffStyle;
+  customSignOff?: string;    // Used when signOffStyle is 'custom'
+  
+  // Custom instructions (free-form text)
+  customInstructions?: string;
+}
+
 // Voice Recording Types
 export interface VoiceRecording {
   blob: Blob;

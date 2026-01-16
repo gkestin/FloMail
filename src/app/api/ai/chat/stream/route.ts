@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { EmailThread } from '@/types';
+import { EmailThread, AIDraftingPreferences } from '@/types';
 
 // Stream event types
 export type StreamEventType = 
@@ -487,7 +487,8 @@ async function* streamAgentCall(
   thread: EmailThread | undefined,
   folder: string,
   provider: 'openai' | 'anthropic',
-  model: string
+  model: string,
+  draftingPreferences?: AIDraftingPreferences
 ): AsyncGenerator<StreamEvent | { _toolCalls: CollectedToolCall[]; _content: string }> {
   const collectedToolCalls: CollectedToolCall[] = [];
   let streamedContent = '';
@@ -496,7 +497,7 @@ async function* streamAgentCall(
     const { agentChatStreamClaude, CLAUDE_MODELS } = await import('@/lib/anthropic');
     const validModel = model && model in CLAUDE_MODELS ? model as keyof typeof CLAUDE_MODELS : 'claude-sonnet-4-20250514';
     
-    for await (const event of agentChatStreamClaude(messages, thread, validModel, folder)) {
+    for await (const event of agentChatStreamClaude(messages, thread, validModel, folder, draftingPreferences)) {
       if (event.type === 'text') {
         streamedContent = event.data.fullContent;
       }
@@ -513,7 +514,7 @@ async function* streamAgentCall(
     const { agentChatStream, OPENAI_MODELS } = await import('@/lib/openai');
     const validModel = model && model in OPENAI_MODELS ? model as keyof typeof OPENAI_MODELS : 'gpt-4.1';
     
-    for await (const event of agentChatStream(messages, thread, validModel, folder)) {
+    for await (const event of agentChatStream(messages, thread, validModel, folder, draftingPreferences)) {
       if (event.type === 'text') {
         streamedContent = event.data.fullContent;
       }
@@ -543,6 +544,7 @@ export async function POST(request: NextRequest) {
       model,
       accessToken,
       currentDraft,
+      draftingPreferences,
     }: {
       messages: { role: 'user' | 'assistant'; content: string }[];
       thread?: EmailThread;
@@ -557,6 +559,7 @@ export async function POST(request: NextRequest) {
         type: 'reply' | 'forward' | 'new';
         gmailDraftId?: string;
       };
+      draftingPreferences?: AIDraftingPreferences;
     } = body;
 
     if (!messages || !Array.isArray(messages)) {
@@ -632,7 +635,7 @@ IMPORTANT INSTRUCTIONS:
           // Subsequent iterations: don't stream (just execute tools)
           if (iteration === 1) {
             // Stream the first response
-            for await (const event of streamAgentCall(currentMessages, thread, folder, provider, model || '')) {
+            for await (const event of streamAgentCall(currentMessages, thread, folder, provider, model || '', draftingPreferences)) {
               if ('_toolCalls' in event) {
                 // This is our internal data packet
                 collectedToolCalls = event._toolCalls;

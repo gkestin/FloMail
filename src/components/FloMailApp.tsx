@@ -7,8 +7,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { LoginScreen } from './LoginScreen';
 import { InboxList, MailFolder } from './InboxList';
 import { ChatInterface } from './ChatInterface';
-import { EmailThread, EmailDraft, AIProvider } from '@/types';
-import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock, ChevronDown, Settings, Plus, Pencil } from 'lucide-react';
+import { EmailThread, EmailDraft, AIProvider, AIDraftingPreferences, DraftTone, DraftLength, SignOffStyle } from '@/types';
+import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock, ChevronDown, Settings, Plus, Pencil, Edit3 } from 'lucide-react';
 import { OPENAI_MODELS } from '@/lib/openai';
 import { CLAUDE_MODELS } from '@/lib/anthropic';
 import { sendEmail, archiveThread, getAttachment, createGmailDraft, updateGmailDraft, hasSnoozedLabel, fetchThread, fetchInbox } from '@/lib/gmail';
@@ -87,6 +87,68 @@ export function FloMailApp() {
     const defaultModel = aiProvider === 'openai' ? 'gpt-4.1' : 'claude-sonnet-4-20250514';
     setAiModel(defaultModel);
   }, [aiProvider]);
+  
+  // AI Drafting Preferences
+  const defaultPreferences: AIDraftingPreferences = {
+    userName: user?.displayName || '',
+    tones: [],  // No tones selected by default
+    length: undefined,  // No length selected by default
+    useExclamations: undefined,  // No preference by default
+    signOffStyle: 'none',
+    customSignOff: '',
+    customInstructions: '',
+  };
+  
+  // Tooltip descriptions for each option
+  const toneTooltips: Record<DraftTone, string> = {
+    professional: 'Prompt: "Use a professional, business-appropriate tone. Be clear and direct."',
+    friendly: 'Prompt: "Use a warm, friendly tone while remaining appropriate. Be personable."',
+    casual: 'Prompt: "Use a casual, relaxed tone. Keep it conversational and approachable."',
+    formal: 'Prompt: "Use a formal, respectful tone. Be courteous and precise."',
+  };
+  
+  const lengthTooltips: Record<DraftLength, string> = {
+    brief: 'Prompt: "Keep messages concise and to the point. Aim for 2-3 sentences when possible."',
+    moderate: 'Prompt: "Write messages of moderate length. Include necessary context but avoid being verbose."',
+    detailed: 'Prompt: "Write thorough, detailed messages. Include full context and explanation when helpful."',
+  };
+  
+  const [aiDraftingPreferences, setAiDraftingPreferences] = useState<AIDraftingPreferences>(defaultPreferences);
+  const [showDraftingSettings, setShowDraftingSettings] = useState(false);
+  
+  // Load AI drafting preferences from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('flomail-drafting-preferences');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        // Migrate old 'tone' (single) to new 'tones' (array) format
+        if (parsed.tone && !parsed.tones) {
+          parsed.tones = [parsed.tone];
+          delete parsed.tone;
+        }
+        // Remove deprecated fields
+        delete parsed.userRole;
+        delete parsed.userOrganization;
+        setAiDraftingPreferences({ ...defaultPreferences, ...parsed });
+      } catch {
+        // Invalid JSON, ignore
+      }
+    } else if (user?.displayName) {
+      // Initialize with user's display name
+      setAiDraftingPreferences(prev => ({ ...prev, userName: user.displayName || '' }));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.displayName]);
+  
+  // Save AI drafting preferences to localStorage
+  const updateDraftingPreferences = useCallback((updates: Partial<AIDraftingPreferences>) => {
+    setAiDraftingPreferences(prev => {
+      const updated = { ...prev, ...updates };
+      localStorage.setItem('flomail-drafting-preferences', JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
   const currentThreadIndexRef = useRef(0);
   const archiveHandlerRef = useRef<(() => void) | null>(null);
   const isUpdatingFromUrl = useRef(false); // Prevent URL update loops
@@ -853,7 +915,7 @@ export function FloMailApp() {
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
-              className="absolute top-16 right-4 z-50 w-64 rounded-xl shadow-2xl overflow-hidden"
+              className="absolute top-16 right-4 z-50 w-80 max-h-[calc(100vh-100px)] rounded-xl shadow-2xl overflow-y-auto"
               style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)' }}
             >
               <div className="p-4" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
@@ -936,6 +998,244 @@ export function FloMailApp() {
                   </select>
                   <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none" style={{ color: 'var(--text-muted)' }} />
                 </div>
+              </div>
+              
+              {/* AI Drafting Preferences - Distinct section with gradient border */}
+              <div 
+                className="m-2 rounded-lg overflow-hidden"
+                style={{ 
+                  background: 'linear-gradient(135deg, rgba(168, 85, 247, 0.1), rgba(6, 182, 212, 0.1))',
+                  border: '1px solid rgba(168, 85, 247, 0.3)'
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setShowDraftingSettings(!showDraftingSettings)}
+                  className="w-full flex items-center justify-between p-3"
+                >
+                  <div className="flex items-center gap-2">
+                    <Edit3 className="w-4 h-4" style={{ color: 'rgb(168, 85, 247)' }} />
+                    <span className="text-xs font-medium uppercase tracking-wide" style={{ color: 'rgb(168, 85, 247)' }}>Drafting Preferences</span>
+                  </div>
+                  <ChevronDown 
+                    className={`w-4 h-4 transition-transform ${showDraftingSettings ? 'rotate-180' : ''}`} 
+                    style={{ color: 'rgb(168, 85, 247)' }} 
+                  />
+                </button>
+                
+                <AnimatePresence>
+                  {showDraftingSettings && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="overflow-hidden"
+                    >
+                      <div className="px-3 pb-3 space-y-4">
+                        {/* User Identity */}
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                            Your Name <span className="font-normal" style={{ color: 'var(--text-muted)' }}>(for sign-offs)</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={aiDraftingPreferences.userName}
+                            onChange={(e) => updateDraftingPreferences({ userName: e.target.value })}
+                            placeholder="e.g., Greg Kestin"
+                            className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-1"
+                            style={{ 
+                              background: 'var(--bg-interactive)', 
+                              border: '1px solid var(--border-subtle)',
+                              color: 'var(--text-primary)'
+                            }}
+                          />
+                        </div>
+                        
+                        {/* Tone - Multiple selection */}
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                            Tone <span className="font-normal" style={{ color: 'var(--text-muted)' }}>(select any that apply)</span>
+                          </label>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            {(['professional', 'friendly', 'casual', 'formal'] as DraftTone[]).map((t) => {
+                              const isSelected = aiDraftingPreferences.tones?.includes(t);
+                              return (
+                                <button
+                                  key={t}
+                                  type="button"
+                                  title={toneTooltips[t]}
+                                  onClick={() => {
+                                    const currentTones = aiDraftingPreferences.tones || [];
+                                    const newTones = isSelected
+                                      ? currentTones.filter(tone => tone !== t)
+                                      : [...currentTones, t];
+                                    updateDraftingPreferences({ tones: newTones });
+                                  }}
+                                  className="px-2 py-1.5 rounded-lg text-xs font-medium transition-all capitalize"
+                                  style={isSelected ? {
+                                    background: 'rgba(168, 85, 247, 0.2)',
+                                    color: 'rgb(216, 180, 254)',
+                                    border: '1px solid rgba(168, 85, 247, 0.5)'
+                                  } : {
+                                    background: 'var(--bg-interactive)',
+                                    color: 'var(--text-secondary)',
+                                    border: '1px solid transparent'
+                                  }}
+                                >
+                                  {t}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        
+                        {/* Length - Toggle selection */}
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                            Message Length <span className="font-normal" style={{ color: 'var(--text-muted)' }}>(click again to deselect)</span>
+                          </label>
+                          <div className="flex gap-1.5">
+                            {(['brief', 'moderate', 'detailed'] as DraftLength[]).map((l) => (
+                              <button
+                                key={l}
+                                type="button"
+                                title={lengthTooltips[l]}
+                                onClick={() => {
+                                  // Toggle: click again to deselect
+                                  const newLength = aiDraftingPreferences.length === l ? undefined : l;
+                                  updateDraftingPreferences({ length: newLength });
+                                }}
+                                className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all capitalize"
+                                style={aiDraftingPreferences.length === l ? {
+                                  background: 'rgba(6, 182, 212, 0.2)',
+                                  color: 'rgb(103, 232, 249)',
+                                  border: '1px solid rgba(6, 182, 212, 0.5)'
+                                } : {
+                                  background: 'var(--bg-interactive)',
+                                  color: 'var(--text-secondary)',
+                                  border: '1px solid transparent'
+                                }}
+                              >
+                                {l}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        
+                        {/* Exclamations - 3-state toggle */}
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                            Exclamation Marks
+                          </label>
+                          <div className="flex gap-1.5">
+                            <button
+                              type="button"
+                              title='Prompt: "You may use exclamation marks where appropriate to convey enthusiasm or warmth."'
+                              onClick={() => updateDraftingPreferences({ useExclamations: aiDraftingPreferences.useExclamations === true ? undefined : true })}
+                              className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all"
+                              style={aiDraftingPreferences.useExclamations === true ? {
+                                background: 'rgba(34, 197, 94, 0.2)',
+                                color: 'rgb(134, 239, 172)',
+                                border: '1px solid rgba(34, 197, 94, 0.5)'
+                              } : {
+                                background: 'var(--bg-interactive)',
+                                color: 'var(--text-secondary)',
+                                border: '1px solid transparent'
+                              }}
+                            >
+                              Use them!
+                            </button>
+                            <button
+                              type="button"
+                              title='Prompt: "Avoid using exclamation marks. Keep punctuation understated."'
+                              onClick={() => updateDraftingPreferences({ useExclamations: aiDraftingPreferences.useExclamations === false ? undefined : false })}
+                              className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all"
+                              style={aiDraftingPreferences.useExclamations === false ? {
+                                background: 'rgba(239, 68, 68, 0.2)',
+                                color: 'rgb(252, 165, 165)',
+                                border: '1px solid rgba(239, 68, 68, 0.5)'
+                              } : {
+                                background: 'var(--bg-interactive)',
+                                color: 'var(--text-secondary)',
+                                border: '1px solid transparent'
+                              }}
+                            >
+                              Avoid
+                            </button>
+                          </div>
+                        </div>
+                        
+                        {/* Sign-off style */}
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                            Sign-off Style
+                          </label>
+                          <div className="relative">
+                            <select
+                              value={aiDraftingPreferences.signOffStyle}
+                              onChange={(e) => updateDraftingPreferences({ signOffStyle: e.target.value as SignOffStyle })}
+                              className="w-full px-2 py-1.5 rounded-lg text-xs appearance-none cursor-pointer focus:outline-none"
+                              style={{ 
+                                background: 'var(--bg-interactive)', 
+                                border: '1px solid var(--border-subtle)',
+                                color: 'var(--text-primary)'
+                              }}
+                            >
+                              <option value="none">No sign-off</option>
+                              <option value="best">Best, [Name]</option>
+                              <option value="thanks">Thanks, [Name]</option>
+                              <option value="regards">Regards, [Name]</option>
+                              <option value="cheers">Cheers, [Name]</option>
+                              <option value="custom">Custom...</option>
+                            </select>
+                            <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none" style={{ color: 'var(--text-muted)' }} />
+                          </div>
+                          {aiDraftingPreferences.signOffStyle === 'custom' && (
+                            <input
+                              type="text"
+                              value={aiDraftingPreferences.customSignOff || ''}
+                              onChange={(e) => updateDraftingPreferences({ customSignOff: e.target.value })}
+                              placeholder="e.g., Warmly, Greg"
+                              className="w-full px-2 py-1.5 rounded-lg text-xs focus:outline-none focus:ring-1"
+                              style={{ 
+                                background: 'var(--bg-interactive)', 
+                                border: '1px solid var(--border-subtle)',
+                                color: 'var(--text-primary)'
+                              }}
+                            />
+                          )}
+                        </div>
+                        
+                        {/* Custom Instructions */}
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                            Custom Instructions
+                          </label>
+                          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                            Free-form instructions added to the AI prompt
+                          </p>
+                          <textarea
+                            value={aiDraftingPreferences.customInstructions || ''}
+                            onChange={(e) => updateDraftingPreferences({ customInstructions: e.target.value })}
+                            placeholder="e.g., Always be concise. Never use 'per our conversation'. Include relevant context from the thread."
+                            rows={3}
+                            className="w-full px-2 py-1.5 rounded-lg text-xs focus:outline-none focus:ring-1 resize-none"
+                            style={{ 
+                              background: 'var(--bg-interactive)', 
+                              border: '1px solid var(--border-subtle)',
+                              color: 'var(--text-primary)'
+                            }}
+                          />
+                        </div>
+                        
+                        <p className="text-xs italic" style={{ color: 'var(--text-muted)' }}>
+                          💡 Hover over options to see the exact prompt text
+                        </p>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
               
               <button
@@ -1130,6 +1430,7 @@ export function FloMailApp() {
                 folder={currentMailFolder}
                 provider={aiProvider}
                 model={aiModel}
+                draftingPreferences={aiDraftingPreferences}
                 onDraftCreated={handleDraftCreated}
                 onSendEmail={handleSendEmail}
                 onSaveDraft={handleSaveDraft}

@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { EmailThread } from '@/types';
+import { EmailThread, AIDraftingPreferences } from '@/types';
 import { getAnthropicTools, parseToolCalls, ToolCall } from './agent-tools';
 
 // Status messages for different tool calls
@@ -152,12 +152,85 @@ ${hasStarredLabel ? '• Is STARRED - star_email will have no effect, but unstar
 ${folder === 'sent' ? '• This is a SENT email. If user wants to "reply", they mean follow-up to the original recipients, not themselves.' : ''}`;
 }
 
+// Build user preferences context for drafting
+function buildUserPreferencesContext(prefs: AIDraftingPreferences): string {
+  const parts: string[] = [];
+  
+  // User identity
+  if (prefs.userName) {
+    const identity = `The user's name is ${prefs.userName}. They are the SENDER of any drafted messages.`;
+    parts.push(identity);
+  }
+  
+  // Tone guidance - now supports multiple tones
+  const toneDescriptions: Record<string, string> = {
+    professional: 'Use a professional, business-appropriate tone. Be clear and direct.',
+    friendly: 'Use a warm, friendly tone while remaining appropriate. Be personable.',
+    casual: 'Use a casual, relaxed tone. Keep it conversational and approachable.',
+    formal: 'Use a formal, respectful tone. Be courteous and precise.',
+  };
+  if (prefs.tones && prefs.tones.length > 0) {
+    const toneInstructions = prefs.tones
+      .map(t => toneDescriptions[t])
+      .filter(Boolean)
+      .join(' ');
+    if (toneInstructions) {
+      parts.push(toneInstructions);
+    }
+  }
+  
+  // Length guidance (optional)
+  const lengthDescriptions: Record<string, string> = {
+    brief: 'Keep messages concise and to the point. Aim for 2-3 sentences when possible.',
+    moderate: 'Write messages of moderate length. Include necessary context but avoid being verbose.',
+    detailed: 'Write thorough, detailed messages. Include full context and explanation when helpful.',
+  };
+  if (prefs.length && lengthDescriptions[prefs.length]) {
+    parts.push(lengthDescriptions[prefs.length]);
+  }
+  
+  // Exclamation marks (only add if explicitly set)
+  if (prefs.useExclamations === true) {
+    parts.push('You may use exclamation marks where appropriate to convey enthusiasm or warmth.');
+  } else if (prefs.useExclamations === false) {
+    parts.push('Avoid using exclamation marks. Keep punctuation understated.');
+  }
+  // If undefined, don't add anything - let AI decide naturally
+  
+  // Sign-off
+  if (prefs.signOffStyle && prefs.signOffStyle !== 'none') {
+    const userName = prefs.userName?.split(' ')[0] || 'User'; // First name
+    let signOff = '';
+    switch (prefs.signOffStyle) {
+      case 'best': signOff = `Best,\n${userName}`; break;
+      case 'thanks': signOff = `Thanks,\n${userName}`; break;
+      case 'regards': signOff = `Regards,\n${userName}`; break;
+      case 'cheers': signOff = `Cheers,\n${userName}`; break;
+      case 'custom': signOff = prefs.customSignOff || `Best,\n${userName}`; break;
+    }
+    parts.push(`End emails with this sign-off: "${signOff}"`);
+  }
+  // If 'none', don't add instruction - let AI decide
+  
+  // Custom instructions
+  if (prefs.customInstructions && prefs.customInstructions.trim()) {
+    parts.push(`Additional user instructions: ${prefs.customInstructions.trim()}`);
+  }
+  
+  if (parts.length === 0) return '';
+  
+  return `<user_drafting_preferences>
+${parts.join('\n\n')}
+</user_drafting_preferences>`;
+}
+
 // Agent chat with tool calling
 export async function agentChatClaude(
   messages: { role: 'user' | 'assistant'; content: string }[],
   thread?: EmailThread,
   model: ClaudeModel = 'claude-sonnet-4-20250514',
-  folder: string = 'inbox'
+  folder: string = 'inbox',
+  draftingPreferences?: AIDraftingPreferences
 ): Promise<{
   content: string;
   toolCalls: ToolCall[];
@@ -166,6 +239,15 @@ export async function agentChatClaude(
   const anthropic = getAnthropicClient();
 
   let systemPrompt = FLOMAIL_AGENT_PROMPT;
+  
+  // Add user drafting preferences
+  if (draftingPreferences) {
+    const prefsContext = buildUserPreferencesContext(draftingPreferences);
+    if (prefsContext) {
+      systemPrompt += `\n\n${prefsContext}`;
+    }
+  }
+  
   if (thread) {
     systemPrompt += `\n\n${buildEmailContext(thread, folder)}`;
   }
@@ -288,11 +370,21 @@ export async function* agentChatStreamClaude(
   messages: { role: 'user' | 'assistant'; content: string }[],
   thread?: EmailThread,
   model: ClaudeModel = 'claude-sonnet-4-20250514',
-  folder: string = 'inbox'
+  folder: string = 'inbox',
+  draftingPreferences?: AIDraftingPreferences
 ): AsyncGenerator<StreamEvent> {
   const anthropic = getAnthropicClient();
 
   let systemPrompt = FLOMAIL_AGENT_PROMPT;
+  
+  // Add user drafting preferences
+  if (draftingPreferences) {
+    const prefsContext = buildUserPreferencesContext(draftingPreferences);
+    if (prefsContext) {
+      systemPrompt += `\n\n${prefsContext}`;
+    }
+  }
+  
   if (thread) {
     systemPrompt += `\n\n${buildEmailContext(thread, folder)}`;
   }

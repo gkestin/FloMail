@@ -6,7 +6,7 @@ import { Send, Loader2, Sparkles, ChevronDown, ChevronRight, ChevronLeft, X, Edi
 import { DraftCard } from './DraftCard';
 import { ThreadPreview } from './ThreadPreview';
 import { WaveformVisualizer } from './WaveformVisualizer';
-import { ChatMessage, EmailThread, EmailDraft, AIProvider } from '@/types';
+import { ChatMessage, EmailThread, EmailDraft, AIProvider, AIDraftingPreferences } from '@/types';
 import { ToolCall, buildDraftFromToolCall } from '@/lib/agent-tools';
 import { useAuth } from '@/contexts/AuthContext';
 import { 
@@ -162,6 +162,7 @@ interface ChatInterfaceProps {
   // AI settings (managed by parent)
   provider?: AIProvider;
   model?: string;
+  draftingPreferences?: AIDraftingPreferences;
   onDraftCreated?: (draft: EmailDraft) => void;
   onSendEmail?: (draft: EmailDraft) => Promise<void>;
   onSaveDraft?: (draft: EmailDraft) => Promise<EmailDraft>;
@@ -212,6 +213,7 @@ export function ChatInterface({
   threadLabels = [],
   provider = 'anthropic',
   model = 'claude-sonnet-4-20250514',
+  draftingPreferences,
   onDraftCreated,
   onSendEmail,
   onSaveDraft,
@@ -936,6 +938,7 @@ export function ChatInterface({
           model,
           accessToken, // For email search
           currentDraft: currentDraft, // Pass existing draft so AI can modify it
+          draftingPreferences, // User's drafting preferences
         }),
         signal: abortControllerRef.current.signal,
       });
