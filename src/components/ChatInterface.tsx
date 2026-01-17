@@ -1634,7 +1634,7 @@ export function ChatInterface({
         const quotePatterns = [
           /\n\nOn .+ wrote:\n/,           // "On Mon, Jan 12, 2026 at 4:03 PM ... wrote:"
           /\n\nOn .+ at .+,.*wrote:\n/,   // Variations
-          /\n>.*$/s,                       // Lines starting with > (and everything after)
+          /\n>/,                           // Lines starting with > 
         ];
         
         for (const pattern of quotePatterns) {
