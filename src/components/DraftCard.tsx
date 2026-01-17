@@ -2,10 +2,186 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, X, Loader2, Reply, Forward, Mail, Plus, Paperclip, Trash2, AlertTriangle, ArrowLeftRight, Save, FileIcon as LucideFile, ImageIcon as LucideImage, FileText as LucideFileText, Film, Music, FileArchive, FileCode, FileSpreadsheet, Presentation } from 'lucide-react';
-import { EmailDraft, DraftAttachment, EmailDraftType, EmailThread } from '@/types';
+import { Send, X, Loader2, Reply, Forward, Mail, Plus, Paperclip, Trash2, AlertTriangle, ArrowLeftRight, Save, FileIcon as LucideFile, ImageIcon as LucideImage, FileText as LucideFileText, Film, Music, FileArchive, FileCode, FileSpreadsheet, Presentation, ChevronDown } from 'lucide-react';
+import { EmailDraft, DraftAttachment, EmailDraftType, EmailThread, EmailMessage } from '@/types';
 import { buildReplyQuote } from '@/lib/agent-tools';
 import { formatFileSize, getFileIcon as getFileIconType } from '@/lib/email-parsing';
+import { EmailHtmlViewer, isRichHtmlContent, stripBasicHtml } from './EmailHtmlViewer';
+import Linkify from 'linkify-react';
+
+// Format date for message display
+function formatMessageDate(dateString: string): string {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  
+  if (diffDays === 0) {
+    return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  } else if (diffDays === 1) {
+    return 'Yesterday';
+  } else if (diffDays < 7) {
+    return date.toLocaleDateString('en-US', { weekday: 'short' });
+  } else {
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }
+}
+
+// Get avatar color based on email
+function getAvatarColor(email: string): string {
+  const colors = [
+    'from-blue-500 to-blue-600',
+    'from-emerald-500 to-emerald-600',
+    'from-violet-500 to-violet-600',
+    'from-amber-500 to-amber-600',
+    'from-rose-500 to-rose-600',
+    'from-cyan-500 to-cyan-600',
+  ];
+  const hash = email.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return colors[hash % colors.length];
+}
+
+// Parse draft body to separate user's content from quoted reply content
+// Returns the user's new text (before the "On ... wrote:" line) and whether there's quoted content
+function parseDraftBody(body: string): { userContent: string; hasQuotedContent: boolean } {
+  if (!body) return { userContent: '', hasQuotedContent: false };
+  
+  // Common patterns for quote attribution lines
+  const quotePatterns = [
+    /^On .+ wrote:$/m,                    // "On Mon, Jan 12, 2026 at 4:03 PM ... wrote:"
+    /^On .+ at .+,.*wrote:$/m,            // Variations
+    /^>\s/m,                              // Lines starting with >
+    /^-{3,}\s*Original Message/im,        // "--- Original Message ---"
+    /^_{3,}\s*$/m,                        // "___" separators
+  ];
+  
+  let splitIndex = body.length;
+  
+  for (const pattern of quotePatterns) {
+    const match = body.match(pattern);
+    if (match && match.index !== undefined) {
+      splitIndex = Math.min(splitIndex, match.index);
+    }
+  }
+  
+  // If we found a split point, extract user content
+  if (splitIndex < body.length) {
+    const userContent = body.slice(0, splitIndex).trim();
+    return { userContent, hasQuotedContent: true };
+  }
+  
+  return { userContent: body, hasQuotedContent: false };
+}
+
+// Thread message preview component - shows messages like the message region
+// Uses the same HTML rendering as the message region
+function ThreadMessagePreview({ message, isLast }: { message: EmailMessage; isLast: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const senderName = message.from.name || message.from.email.split('@')[0];
+  const senderInitial = senderName.charAt(0).toUpperCase();
+  
+  // Get preview text - use snippet if available, otherwise strip HTML
+  const previewText = message.snippet || 
+    (message.bodyHtml ? stripBasicHtml(message.bodyHtml).slice(0, 150) : (message.body || '').slice(0, 150));
+  const hasRichHtml = message.bodyHtml && isRichHtmlContent(message.bodyHtml);
+  
+  return (
+    <div 
+      className={!isLast ? 'pb-3 mb-3' : ''}
+      style={!isLast ? { borderBottom: '1px solid var(--border-subtle)' } : {}}
+    >
+      {/* Message header */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 text-left hover:bg-white/5 rounded-lg p-1 -m-1 transition-colors"
+      >
+        {/* Avatar */}
+        <div
+          className={`w-7 h-7 rounded-full bg-gradient-to-br ${getAvatarColor(message.from.email)} flex items-center justify-center flex-shrink-0`}
+        >
+          <span className="text-white font-medium text-xs">{senderInitial}</span>
+        </div>
+        
+        {/* Sender & date */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>
+              {senderName}
+            </span>
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              {formatMessageDate(message.date)}
+            </span>
+          </div>
+          {!expanded && (
+            <p className="text-xs truncate" style={{ color: 'var(--text-secondary)' }}>
+              {previewText}{previewText.length >= 150 ? '...' : ''}
+            </p>
+          )}
+        </div>
+        
+        {/* Expand indicator */}
+        <ChevronDown 
+          className={`w-4 h-4 text-slate-500 transition-transform ${expanded ? 'rotate-180' : ''}`}
+        />
+      </button>
+      
+      {/* Expanded body - use same rendering as message region */}
+      <AnimatePresence>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="overflow-hidden"
+          >
+            <div className="mt-2 pl-9">
+              {/* Recipients info */}
+              <div className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+                To: {message.to.map((t) => t.name || t.email).join(', ')}
+                {message.cc && message.cc.length > 0 && (
+                  <span className="ml-2">· Cc: {message.cc.map((c) => c.name || c.email).join(', ')}</span>
+                )}
+              </div>
+              
+              {/* Email body - use HTML viewer for rich content, plain text with Linkify otherwise */}
+              {hasRichHtml ? (
+                <EmailHtmlViewer
+                  html={message.bodyHtml!}
+                  plainText={message.body}
+                  maxHeight={400}
+                />
+              ) : (
+                <div 
+                  className="text-sm leading-relaxed whitespace-pre-wrap"
+                  style={{ color: 'var(--text-primary)' }}
+                >
+                  <Linkify
+                    options={{
+                      target: '_blank',
+                      rel: 'noopener noreferrer',
+                      className: 'text-blue-400 hover:underline',
+                    }}
+                  >
+                    {message.bodyHtml ? stripBasicHtml(message.bodyHtml) : (message.body || '')}
+                  </Linkify>
+                </div>
+              )}
+              
+              {/* Attachments indicator */}
+              {message.attachments && message.attachments.length > 0 && (
+                <div className="mt-2 flex items-center gap-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+                  <Paperclip className="w-3 h-3" />
+                  <span>{message.attachments.length} attachment{message.attachments.length > 1 ? 's' : ''}</span>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
 
 interface DraftCardProps {
   draft: EmailDraft;
@@ -49,6 +225,17 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
   const lastSyncedDraftIdRef = useRef(draft.id);
   // Track previous streaming state to detect when streaming ends
   const wasStreamingRef = useRef(isStreaming);
+  
+  // For replies with thread context, parse body to separate user content from garbled quoted content
+  // We'll show thread messages with proper HTML rendering instead of the malformed quoted text
+  const { userContent, hasQuotedContent } = editedDraft.type === 'reply' && thread?.messages 
+    ? parseDraftBody(editedDraft.body)
+    : { userContent: editedDraft.body, hasQuotedContent: false };
+  
+  // Track the displayed body (user content only for replies with thread)
+  const displayedBody = (editedDraft.type === 'reply' && thread?.messages && hasQuotedContent) 
+    ? userContent 
+    : editedDraft.body;
   
   // Count original attachments (from forward)
   const originalAttachments = editedDraft.attachments?.filter(a => a.isFromOriginal) || [];
@@ -492,10 +679,17 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
           
           <textarea
             ref={bodyRef}
-            value={editedDraft.body}
+            value={displayedBody}
             onChange={(e) => {
               hasUserEditsRef.current = true;
-              setEditedDraft({ ...editedDraft, body: e.target.value });
+              // For replies with thread context, we only edit the user content part
+              // The quoted content is shown separately via thread messages
+              if (editedDraft.type === 'reply' && thread?.messages && hasQuotedContent) {
+                // Keep just the user's new content
+                setEditedDraft({ ...editedDraft, body: e.target.value });
+              } else {
+                setEditedDraft({ ...editedDraft, body: e.target.value });
+              }
             }}
             placeholder="Write your message..."
             disabled={isSending || isStreaming}
@@ -507,29 +701,57 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
             }}
           />
 
-          {/* Quoted content - different display for reply vs forward */}
-          {editedDraft.quotedContent && editedDraft.type === 'reply' && (
+          {/* Quoted content / Thread context - show for replies when thread has messages or body has quoted content */}
+          {editedDraft.type === 'reply' && (thread?.messages?.length || hasQuotedContent || editedDraft.quotedContent) && (
             <>
               <button
                 onClick={() => setShowQuoted(!showQuoted)}
-                className={`inline-flex items-center px-3 py-1.5 rounded-full text-base mt-4 transition-all duration-200 cursor-pointer ${showQuoted ? 'bg-slate-600/60 text-slate-200' : 'bg-slate-700/40 text-slate-400 hover:bg-slate-600/50 hover:text-slate-200'}`}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm mt-4 transition-all duration-200 cursor-pointer ${showQuoted ? 'bg-slate-600/60 text-slate-200' : 'bg-slate-700/40 text-slate-400 hover:bg-slate-600/50 hover:text-slate-200'}`}
               >
                 <span className="font-black tracking-wider">···</span>
+                {thread?.messages && thread.messages.length > 0 && (
+                  <span className="text-xs opacity-70">
+                    {thread.messages.length} previous {thread.messages.length === 1 ? 'message' : 'messages'}
+                  </span>
+                )}
               </button>
 
               {showQuoted && (
-                <div className="mt-3 pl-3 border-l-2 border-slate-500/50">
-                  <textarea
-                    ref={quotedRef}
-                    value={editedDraft.quotedContent}
-                    onChange={(e) => {
-                      hasUserEditsRef.current = true;
-                      setEditedDraft({ ...editedDraft, quotedContent: e.target.value });
-                    }}
-                    disabled={isSending}
-                    className="w-full bg-transparent text-slate-400 leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0"
-                    style={{ fontSize: '16px' }}
-                  />
+                <div className="mt-3">
+                  {/* ALWAYS prefer thread messages for proper HTML rendering */}
+                  {thread?.messages && thread.messages.length > 0 ? (
+                    <div 
+                      className="rounded-lg p-3 max-h-[400px] overflow-y-auto"
+                      style={{ 
+                        background: 'var(--bg-secondary)', 
+                        border: '1px solid var(--border-subtle)' 
+                      }}
+                    >
+                      {/* Show messages in chronological order (oldest first) */}
+                      {thread.messages.map((msg, idx) => (
+                        <ThreadMessagePreview 
+                          key={msg.id} 
+                          message={msg}
+                          isLast={idx === thread.messages.length - 1}
+                        />
+                      ))}
+                    </div>
+                  ) : editedDraft.quotedContent ? (
+                    /* Fallback to plain text ONLY if no thread messages available */
+                    <div className="pl-3 border-l-2 border-slate-500/50">
+                      <textarea
+                        ref={quotedRef}
+                        value={editedDraft.quotedContent}
+                        onChange={(e) => {
+                          hasUserEditsRef.current = true;
+                          setEditedDraft({ ...editedDraft, quotedContent: e.target.value });
+                        }}
+                        disabled={isSending}
+                        className="w-full bg-transparent text-slate-400 leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0"
+                        style={{ fontSize: '16px' }}
+                      />
+                    </div>
+                  ) : null}
                 </div>
               )}
             </>

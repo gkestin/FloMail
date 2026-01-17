@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, FolderOpen, Clock, Shield, ShieldOff, Paperclip, Download, FileText, Image as ImageIcon, Film, Music, FileArchive, FileCode, File } from 'lucide-react';
+import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, FolderOpen, Clock, Shield, ShieldOff, Paperclip, Download, FileText, Image as ImageIcon, Film, Music, FileArchive, FileCode, File, X } from 'lucide-react';
 import { EmailThread, EmailMessage } from '@/types';
 import { EmailHtmlViewer, isRichHtmlContent, normalizeEmailPlainText, stripBasicHtml } from './EmailHtmlViewer';
 import { UnsubscribeButton } from './UnsubscribeButton';
@@ -239,6 +239,11 @@ interface ThreadPreviewProps {
   onNextEmail?: () => void;
   /** Navigate to previous thread (swipe right) */
   onPreviousEmail?: () => void;
+  /** If true, start with full height (70% of viewport) - used for unread emails */
+  startFullyExpanded?: boolean;
+  /** Callback when user clicks edit draft - opens draft in chat for editing
+   *  Receives isFullyExpanded: true if message region is at ~70% viewport height */
+  onEditDraft?: (isFullyExpanded: boolean) => void;
 }
 
 // Storage keys for persisting state
@@ -257,6 +262,8 @@ export function ThreadPreview({
   onNeedsExpandChange,
   onNextEmail,
   onPreviousEmail,
+  startFullyExpanded = false,
+  onEditDraft,
 }: ThreadPreviewProps) {
   const { getAccessToken } = useAuth();
   
@@ -284,13 +291,19 @@ export function ThreadPreview({
   );
   
   // Load persisted height from localStorage
+  // For unread emails (startFullyExpanded), use 70% of viewport height
   const [messagesHeight, setMessagesHeight] = useState(() => {
-    if (typeof window === 'undefined') return 250;
+    if (typeof window === 'undefined') return startFullyExpanded ? 500 : 250;
+    if (startFullyExpanded) {
+      // Use 70% of viewport height for unread emails
+      return Math.floor(window.innerHeight * 0.7);
+    }
     const saved = localStorage.getItem(STORAGE_KEY_HEIGHT);
     return saved !== null ? parseInt(saved, 10) : 250;
   });
   // The user's baseline (manually resized) height. Auto-expands should NOT overwrite this.
-  const manualHeightRef = useRef(messagesHeight);
+  // For unread emails, we don't want to persist the large initial height
+  const manualHeightRef = useRef(startFullyExpanded ? 250 : messagesHeight);
   
   const isDragging = useRef(false);
   const startY = useRef(0);
@@ -447,6 +460,38 @@ export function ThreadPreview({
       clearTimeout(t3);
     };
   }, [isExpanded, expandedMessages.size, thread.messages.length, messagesHeight, checkHasMoreBelow]);
+  
+  // Auto-expand for unread emails: immediately expand to fit content
+  useEffect(() => {
+    if (!startFullyExpanded || !isExpanded) return;
+    
+    const container = containerRef.current;
+    if (!container) return;
+    
+    const autoExpandToFit = () => {
+      const maxAllowedHeight = window.innerHeight * 0.7;
+      const contentHeight = container.scrollHeight + 20;
+      const newHeight = Math.min(contentHeight, maxAllowedHeight);
+      
+      if (newHeight > messagesHeight) {
+        setMessagesHeight(newHeight);
+        messagesHeightRef.current = newHeight;
+      }
+    };
+    
+    // Multiple attempts to catch iframe/image loading
+    const t1 = setTimeout(autoExpandToFit, 100);
+    const t2 = setTimeout(autoExpandToFit, 300);
+    const t3 = setTimeout(autoExpandToFit, 600);
+    const t4 = setTimeout(autoExpandToFit, 1000);
+    
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      clearTimeout(t4);
+    };
+  }, [startFullyExpanded, isExpanded, thread.id]); // eslint-disable-line react-hooks/exhaustive-deps
   
   // Handler for toggling expand state
   const handleToggleExpand = useCallback(() => {
@@ -990,43 +1035,71 @@ export function ThreadPreview({
         {/* Clickable subject area - no envelope icon, no folder badge for more space */}
         <button
           onClick={handleToggleExpand}
-          className="flex items-center gap-2 flex-1 min-w-0 hover:opacity-80 transition-opacity text-left"
+          className="flex items-start gap-2 flex-1 min-w-0 hover:opacity-80 transition-opacity text-left"
         >
           <div className="flex-1 min-w-0">
-            {/* Row 1: Sender + Subject (clear visual distinction) + message count */}
-            <div className="flex items-center gap-1.5">
-              {/* Sender (slightly larger, less badge-like) */}
-              <span
-                className="flex-shrink-0 text-sm font-semibold"
-                style={{ color: 'rgb(147, 197, 253)', maxWidth: '40%' }}
-              >
-                <span className="truncate block">
-                  {thread.messages[thread.messages.length - 1]?.from.name || 
-                   thread.messages[thread.messages.length - 1]?.from.email.split('@')[0] || 
-                   'Unknown'}
+            {/* Collapsed: Sender + Subject on one line */}
+            {/* Expanded: Sender on first line, Subject on second line (multi-line allowed) */}
+            {!isExpanded ? (
+              // Collapsed view - single line
+              <div className="flex items-center gap-1.5">
+                <span
+                  className="flex-shrink-0 text-sm font-semibold"
+                  style={{ color: 'rgb(147, 197, 253)', maxWidth: '40%' }}
+                >
+                  <span className="truncate block">
+                    {thread.messages[thread.messages.length - 1]?.from.name || 
+                     thread.messages[thread.messages.length - 1]?.from.email.split('@')[0] || 
+                     'Unknown'}
+                  </span>
                 </span>
-              </span>
-              {/* Divider (clear separation, not a dot) */}
-              <span
-                className="mx-1 h-4 w-px flex-shrink-0"
-                style={{ background: 'rgba(255,255,255,0.16)' }}
-              />
-              {/* Subject - gets more space now */}
-              <span className="font-medium truncate flex-1 text-sm" style={{ color: 'var(--text-primary)' }}>
-                {thread.subject || '(No Subject)'}
-              </span>
-              {/* Message count - compact */}
-              {thread.messages.length > 1 && (
-                <span className="flex-shrink-0 text-xs text-blue-300/70 bg-blue-500/10 px-1.5 py-0.5 rounded">
-                  {thread.messages.length}
+                <span
+                  className="mx-1 h-4 w-px flex-shrink-0"
+                  style={{ background: 'rgba(255,255,255,0.16)' }}
+                />
+                <span className="font-medium truncate flex-1 text-sm" style={{ color: 'var(--text-primary)' }}>
+                  {thread.subject || '(No Subject)'}
                 </span>
-              )}
-            </div>
+                {thread.messages.length > 1 && (
+                  <span className="flex-shrink-0 text-xs text-blue-300/70 bg-blue-500/10 px-1.5 py-0.5 rounded">
+                    {thread.messages.length}
+                  </span>
+                )}
+              </div>
+            ) : (
+              // Expanded view - subject gets its own line(s)
+              <div className="space-y-1">
+                {/* Row 1: Sender + message count */}
+                <div className="flex items-center gap-2">
+                  <span
+                    className="text-sm font-semibold"
+                    style={{ color: 'rgb(147, 197, 253)' }}
+                  >
+                    {thread.messages[thread.messages.length - 1]?.from.name || 
+                     thread.messages[thread.messages.length - 1]?.from.email.split('@')[0] || 
+                     'Unknown'}
+                  </span>
+                  {thread.messages.length > 1 && (
+                    <span className="text-xs text-blue-300/70 bg-blue-500/10 px-1.5 py-0.5 rounded">
+                      {thread.messages.length}
+                    </span>
+                  )}
+                </div>
+                {/* Row 2: Full subject (can wrap to multiple lines) */}
+                <p 
+                  className="font-medium text-sm leading-snug" 
+                  style={{ color: 'var(--text-primary)' }}
+                >
+                  {thread.subject || '(No Subject)'}
+                </p>
+              </div>
+            )}
           </div>
 
           <motion.div
             animate={{ rotate: isExpanded ? 180 : 0 }}
             transition={{ duration: 0.2 }}
+            className="flex-shrink-0 mt-0.5"
           >
             <ChevronDown className="w-4 h-4 text-blue-400/60" />
           </motion.div>
@@ -1081,6 +1154,24 @@ export function ThreadPreview({
                 style={{ maxHeight: `${messagesHeight}px` }}
                 className="overflow-y-auto px-4 pb-3"
               >
+                {/* Collapsed messages indicator - shows count of hidden older messages */}
+                {isPullToRevealMode && thread.messages.length > (revealedMessageCount || 1) && (
+                  <div className="flex items-center gap-3 py-2 mb-1">
+                    <div className="flex-1 h-px" style={{ background: 'linear-gradient(to right, transparent, rgba(147, 197, 253, 0.3), rgba(147, 197, 253, 0.3))' }} />
+                    <span 
+                      className="text-xs px-2 py-0.5 rounded-full flex-shrink-0"
+                      style={{ 
+                        color: 'rgba(147, 197, 253, 0.8)', 
+                        background: 'rgba(59, 130, 246, 0.1)',
+                        border: '1px solid rgba(59, 130, 246, 0.2)'
+                      }}
+                    >
+                      {thread.messages.length - (revealedMessageCount || 1)} older {thread.messages.length - (revealedMessageCount || 1) === 1 ? 'message' : 'messages'}
+                    </span>
+                    <div className="flex-1 h-px" style={{ background: 'linear-gradient(to left, transparent, rgba(147, 197, 253, 0.3), rgba(147, 197, 253, 0.3))' }} />
+                  </div>
+                )}
+                
                 <AnimatePresence mode="popLayout">
                   {(() => {
                     // In pull-to-reveal mode, only show the N most recent messages
@@ -1111,6 +1202,12 @@ export function ThreadPreview({
                             onNextEmail={onNextEmail}
                             onPreviousEmail={onPreviousEmail}
                             getAccessToken={getAccessToken}
+                            onEditDraft={onEditDraft ? () => {
+                              // Calculate if fully expanded (height at ~70% of viewport)
+                              const maxAllowedHeight = typeof window !== 'undefined' ? window.innerHeight * 0.7 : 500;
+                              const isFullyExpanded = messagesHeightRef.current >= maxAllowedHeight * 0.85;
+                              onEditDraft(isFullyExpanded);
+                            } : undefined}
                           />
                         </motion.div>
                       );
@@ -1120,7 +1217,7 @@ export function ThreadPreview({
                 
               </div>
                 
-                {/* Scroll indicator - positioned absolutely at bottom of wrapper, full width */}
+                {/* Collapse zone - positioned absolutely at bottom, handles click AND scroll-up */}
                 <AnimatePresence>
                   {hasMoreBelow && (
                     <motion.div
@@ -1128,28 +1225,76 @@ export function ThreadPreview({
                       animate={{ opacity: 1 }}
                       exit={{ opacity: 0 }}
                       transition={{ duration: 0.15 }}
-                      className="absolute bottom-0 left-0 right-0 pointer-events-none"
+                      className="absolute bottom-0 left-0 right-0 z-10"
+                      style={{ marginBottom: 0 }}
                     >
-                      {/* Gradient fade - full width, taller for better coverage */}
-                      <div 
-                        style={{ 
-                          height: '3.5rem',
-                          background: 'linear-gradient(to top, var(--bg-elevated) 50%, transparent)',
-                        }}
-                      />
-                      {/* Chevron indicator - clickable, centered */}
-                      <button
+                      {/* Clickable/scrollable collapse zone - more visible bluish gradient */}
+                      <div
                         onClick={() => {
-                          containerRef.current?.scrollBy({ top: 100, behavior: 'smooth' });
+                          // Collapse the message region
+                          if (isPullToRevealMode && onScrollReveal) {
+                            onScrollReveal(0);
+                          } else {
+                            setLocalIsExpanded(false);
+                          }
                         }}
-                        className="absolute bottom-3 left-1/2 -translate-x-1/2 p-1.5 rounded-full pointer-events-auto transition-all hover:scale-110 shadow-lg"
+                        onWheel={(e) => {
+                          // Scroll UP (negative deltaY on desktop, positive on natural scroll) = collapse
+                          // We want scroll-up gesture to collapse, which is deltaY > 0 on most systems
+                          if (e.deltaY > 0) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (isPullToRevealMode && onScrollReveal) {
+                              onScrollReveal(0);
+                            } else {
+                              setLocalIsExpanded(false);
+                            }
+                          }
+                        }}
+                        onTouchStart={(e) => {
+                          const touch = e.touches[0];
+                          (e.currentTarget as HTMLElement).dataset.touchStartY = String(touch.clientY);
+                        }}
+                        onTouchMove={(e) => {
+                          const startY = parseFloat((e.currentTarget as HTMLElement).dataset.touchStartY || '0');
+                          const currentY = e.touches[0].clientY;
+                          const deltaY = currentY - startY;
+                          // Swipe up (negative delta) = collapse
+                          if (deltaY < -30) {
+                            if (isPullToRevealMode && onScrollReveal) {
+                              onScrollReveal(0);
+                            } else {
+                              setLocalIsExpanded(false);
+                            }
+                          }
+                        }}
+                        className="w-full cursor-pointer group flex items-end justify-center pb-0"
                         style={{ 
-                          background: 'var(--bg-interactive)',
-                          border: '1px solid var(--border-default)',
+                          height: '2.5rem',
+                          background: 'linear-gradient(to top, rgba(15, 23, 42, 0.9) 0%, rgba(15, 23, 42, 0.5) 50%, transparent 100%)',
                         }}
                       >
-                        <ChevronDown className="w-4 h-4" style={{ color: 'var(--text-secondary)' }} />
-                      </button>
+                        {/* Semicircle collapse handle - connected to bottom edge */}
+                        <div 
+                          className="relative flex items-center justify-center transition-all group-hover:scale-105"
+                          title="Scroll or tap to collapse"
+                          style={{
+                            width: '56px',
+                            height: '28px',
+                            borderTopLeftRadius: '28px',
+                            borderTopRightRadius: '28px',
+                            background: 'linear-gradient(to bottom, rgba(59, 130, 246, 0.35), rgba(59, 130, 246, 0.5))',
+                            boxShadow: '0 -2px 12px rgba(59, 130, 246, 0.3), inset 0 1px 0 rgba(147, 197, 253, 0.3)',
+                            marginBottom: '-1px', // Connect to bottom edge
+                          }}
+                        >
+                          <ChevronUp 
+                            className="w-5 h-5 transition-transform group-hover:-translate-y-0.5" 
+                            style={{ color: 'rgba(147, 197, 253, 1)' }} 
+                            strokeWidth={2.5}
+                          />
+                        </div>
+                      </div>
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -1261,6 +1406,7 @@ function MessageItem({
   onNextEmail,
   onPreviousEmail,
   getAccessToken,
+  onEditDraft,
 }: {
   message: EmailMessage;
   isExpanded: boolean;
@@ -1271,6 +1417,7 @@ function MessageItem({
   onNextEmail?: () => void;
   onPreviousEmail?: () => void;
   getAccessToken: () => Promise<string | null>;
+  onEditDraft?: () => void; // Callback - editing happens in chat
 }) {
   const senderName = message.from.name || message.from.email.split('@')[0];
   const senderInitial = senderName.charAt(0).toUpperCase();
@@ -1378,9 +1525,22 @@ function MessageItem({
                 )}
               </div>
 
-              {/* Email body - use HTML viewer only for rich HTML content (tables, images, styles) */}
+              {/* Edit Draft button at top for drafts */}
+              {isDraft && onEditDraft && (
+                <div className="mb-3">
+                  <button
+                    onClick={onEditDraft}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30"
+                  >
+                    <span>✎</span>
+                    Edit in Chat
+                  </button>
+                </div>
+              )}
+
+              {/* Email body - HTML viewer for rich content, plain text otherwise */}
               {message.bodyHtml && isRichHtmlContent(message.bodyHtml) ? (
-                <div className={isDraft ? 'italic' : ''}>
+                <div className={isDraft ? 'italic opacity-80' : ''}>
                   <EmailHtmlViewer
                     html={message.bodyHtml}
                     plainText={message.body}
@@ -1388,11 +1548,6 @@ function MessageItem({
                     onNextEmail={onNextEmail}
                     onPreviousEmail={onPreviousEmail}
                   />
-                  {isDraft && (
-                    <div className="mt-2 text-xs text-red-400/70 not-italic">
-                      — This is a draft, not yet sent
-                    </div>
-                  )}
                 </div>
               ) : (
                 <EmailBodyWithQuotes 
@@ -1421,6 +1576,19 @@ function MessageItem({
                       />
                     ))}
                   </div>
+                </div>
+              )}
+              
+              {/* Edit Draft button at bottom for drafts */}
+              {isDraft && onEditDraft && (
+                <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                  <button
+                    onClick={onEditDraft}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30"
+                  >
+                    <span>✎</span>
+                    Edit in Chat
+                  </button>
                 </div>
               )}
             </div>

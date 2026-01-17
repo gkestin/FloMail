@@ -453,12 +453,21 @@ export function ChatInterface({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Reset revealed messages when thread changes - use stored preference
+  // Reset revealed messages when thread changes
+  // For unread emails, always start expanded (revealed = 1)
+  // For read emails, use stored preference
   useEffect(() => {
-    const pref = getLoadPreference();
-    setRevealedMessageCount(pref);
-    setBaseRevealedCount(pref);
-  }, [thread?.id, getLoadPreference]);
+    if (thread && !thread.isRead) {
+      // Unread email - start fully expanded
+      setRevealedMessageCount(1);
+      setBaseRevealedCount(1);
+    } else {
+      // Read email - use stored preference
+      const pref = getLoadPreference();
+      setRevealedMessageCount(pref);
+      setBaseRevealedCount(pref);
+    }
+  }, [thread?.id, thread?.isRead, getLoadPreference]);
 
   // ===========================================
   // SCROLL-TO-REVEAL/CLOSE LOGIC + HORIZONTAL NAV
@@ -1571,6 +1580,80 @@ export function ChatInterface({
       setIsDeleting(false);
     }
   };
+  
+  // Handle editing a draft message in the thread preview
+  // This opens the draft in the chat area for editing using the DraftCard component
+  // isFullyExpanded: true if message region is at ~70% viewport height
+  const handleEditDraftInThread = useCallback(async (isFullyExpanded: boolean) => {
+    if (!thread) return;
+    
+    try {
+      const accessToken = await getAccessToken();
+      if (!accessToken) throw new Error('Not authenticated');
+      
+      // Step 1: Cancel any existing unsaved drafts in the chat
+      // This keeps them in history but collapsed, just like when user continues the conversation
+      setMessages(prev => prev.map(m => {
+        if (m.draft && !m.draftCancelled && !m.draftSaved && !m.draftSent) {
+          return { ...m, draftCancelled: true };
+        }
+        return m;
+      }));
+      
+      // Step 2: Collapse the message region if fully expanded
+      // If half-expanded, we can see both chat and message region, so no need to collapse
+      if (isFullyExpanded) {
+        setRevealedMessageCount(0);
+        setBaseRevealedCount(0);
+      }
+      
+      // Step 3: Find the draft for this thread from Gmail (source of truth)
+      const gmailDraft = await getDraftForThread(accessToken, thread.id);
+      if (!gmailDraft) {
+        // No draft found - show error
+        const errorMessage: UIMessage = {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: '⚠️ Could not find draft to edit.',
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, errorMessage]);
+        return;
+      }
+      
+      // Step 4: Convert Gmail draft to EmailDraft format and set as currentDraft
+      // This will show the DraftCard in the chat area with the CURRENT saved version
+      const draftToEdit: EmailDraft = {
+        to: gmailDraft.to,
+        cc: gmailDraft.cc,
+        bcc: gmailDraft.bcc,
+        subject: gmailDraft.subject,
+        body: gmailDraft.body,
+        type: gmailDraft.type,
+        threadId: gmailDraft.threadId,
+        inReplyTo: gmailDraft.inReplyTo,
+        references: gmailDraft.references,
+        gmailDraftId: gmailDraft.id,
+      };
+      
+      setCurrentDraft(draftToEdit);
+      
+      // Step 5: Scroll to the bottom of the chat to show the draft card
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
+      
+    } catch (error) {
+      console.error('Failed to load draft for editing:', error);
+      const errorMessage: UIMessage = {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: '⚠️ Failed to load draft for editing.',
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    }
+  }, [thread, getAccessToken]);
 
   const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -1595,6 +1678,8 @@ export function ChatInterface({
           onNeedsExpandChange={handleNeedsExpandChange}
           onNextEmail={onNextEmail}
           onPreviousEmail={onPreviousEmail}
+          startFullyExpanded={!thread.isRead} // Unread emails open fully expanded
+          onEditDraft={handleEditDraftInThread}
         />
       )}
 
@@ -2130,8 +2215,8 @@ export function ChatInterface({
           </motion.div>
         ))}
 
-        {/* Current draft */}
-        {currentDraft && !messages.some(m => m.draft) && (
+        {/* Current draft - only show if no ACTIVE (non-cancelled/saved/sent) draft in messages */}
+        {currentDraft && !messages.some(m => m.draft && !m.draftCancelled && !m.draftSaved && !m.draftSent) && (
           <motion.div
             // Only animate opacity - no transforms to avoid iOS cursor positioning issues in textareas
             initial={{ opacity: 0 }}
