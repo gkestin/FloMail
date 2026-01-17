@@ -7,7 +7,7 @@ import { DraftCard } from './DraftCard';
 import { ThreadPreview } from './ThreadPreview';
 import { WaveformVisualizer } from './WaveformVisualizer';
 import { ChatMessage, EmailThread, EmailDraft, AIProvider, AIDraftingPreferences } from '@/types';
-import { ToolCall, buildDraftFromToolCall } from '@/lib/agent-tools';
+import { ToolCall, buildDraftFromToolCall, buildReplyQuote } from '@/lib/agent-tools';
 import { useAuth } from '@/contexts/AuthContext';
 import { 
   loadThreadChat, 
@@ -1622,18 +1622,46 @@ export function ChatInterface({
       }
       
       // Step 4: Convert Gmail draft to EmailDraft format and set as currentDraft
-      // This will show the DraftCard in the chat area with the CURRENT saved version
+      // IMPORTANT: For replies, we need to:
+      // 1. Parse the body to extract just the user's new content (before quoted text)
+      // 2. Rebuild quotedContent from the thread's HTML (not the garbled plain text)
+      
+      let cleanBody = gmailDraft.body;
+      let quotedContent: string | undefined;
+      
+      if (gmailDraft.type === 'reply' && thread) {
+        // Parse body to extract user's content (before the "On ... wrote:" line)
+        const quotePatterns = [
+          /\n\nOn .+ wrote:\n/,           // "On Mon, Jan 12, 2026 at 4:03 PM ... wrote:"
+          /\n\nOn .+ at .+,.*wrote:\n/,   // Variations
+          /\n>.*$/s,                       // Lines starting with > (and everything after)
+        ];
+        
+        for (const pattern of quotePatterns) {
+          const match = cleanBody.match(pattern);
+          if (match && match.index !== undefined) {
+            cleanBody = cleanBody.slice(0, match.index).trim();
+            break;
+          }
+        }
+        
+        // Rebuild quotedContent from the thread's actual HTML content
+        // This ensures proper rendering instead of garbled plain text
+        quotedContent = buildReplyQuote(thread);
+      }
+      
       const draftToEdit: EmailDraft = {
         to: gmailDraft.to,
         cc: gmailDraft.cc,
         bcc: gmailDraft.bcc,
         subject: gmailDraft.subject,
-        body: gmailDraft.body,
+        body: cleanBody,
         type: gmailDraft.type,
         threadId: gmailDraft.threadId,
         inReplyTo: gmailDraft.inReplyTo,
         references: gmailDraft.references,
         gmailDraftId: gmailDraft.id,
+        quotedContent,
       };
       
       setCurrentDraft(draftToEdit);
