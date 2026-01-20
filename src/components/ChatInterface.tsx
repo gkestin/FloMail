@@ -1947,8 +1947,8 @@ export function ChatInterface({
                   setCurrentDraft(null);
                   // Also clear from persistence if not incognito
                   if (!isIncognito && thread?.id && user?.uid) {
-                    import('@/lib/chat-persistence').then(({ deleteThreadChat }) => {
-                      deleteThreadChat(user.uid, thread.id);
+                    import('@/lib/chat-persistence').then(({ clearThreadChat }) => {
+                      clearThreadChat(user.uid, thread.id);
                     });
                   }
                 }
