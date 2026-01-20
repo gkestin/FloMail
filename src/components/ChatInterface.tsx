@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Loader2, Sparkles, ChevronDown, ChevronRight, ChevronLeft, X, Edit2, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp, EyeOff, Search, Globe, ExternalLink, CheckCircle, XCircle, Save, Ghost, Copy, Check } from 'lucide-react';
+import { Send, Loader2, Sparkles, ChevronDown, ChevronRight, ChevronLeft, X, Edit2, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp, EyeOff, Search, Globe, ExternalLink, CheckCircle, XCircle, Save, Ghost, Copy, Check, Clock, Trash2 } from 'lucide-react';
 import { DraftCard } from './DraftCard';
 import { ThreadPreview } from './ThreadPreview';
 import { WaveformVisualizer } from './WaveformVisualizer';
@@ -244,6 +244,9 @@ export function ChatInterface({
   // Chat persistence state
   const [isIncognito, setIsIncognito] = useState(false);
   const [isLoadingChat, setIsLoadingChat] = useState(false);
+  
+  // Track if message region is fully expanded (for mobile action buttons)
+  const [isMessageFullyExpanded, setIsMessageFullyExpanded] = useState(false);
   
   // Voice recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -1708,6 +1711,7 @@ export function ChatInterface({
           onPreviousEmail={onPreviousEmail}
           startFullyExpanded={!thread.isRead} // Unread emails open fully expanded
           onEditDraft={handleEditDraftInThread}
+          onFullyExpandedChange={setIsMessageFullyExpanded}
         />
       )}
 
@@ -1905,29 +1909,61 @@ export function ChatInterface({
           </motion.div>
         )}
         
-        {/* Incognito banner - shows at top when chat has started */}
-        {isIncognito && messages.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            className="flex items-center justify-center gap-2 py-1.5 px-3 rounded-full mx-auto -mt-2 mb-2"
-            style={{ 
-              background: 'rgba(139, 92, 246, 0.15)', 
-              border: '1px solid rgba(139, 92, 246, 0.3)',
-              maxWidth: 'fit-content',
-            }}
-          >
-            <Ghost className="w-3.5 h-3.5 text-purple-400" />
-            <span className="text-xs text-purple-300">Incognito</span>
-            <button
-              onClick={() => setIsIncognito(false)}
-              className="ml-1 p-0.5 rounded hover:bg-purple-500/30 transition-colors"
-              title="Exit incognito mode"
+        {/* Chat controls bar - shows when there are messages */}
+        {messages.length > 0 && (
+          <div className="flex items-center justify-center gap-2 -mt-2 mb-2">
+            {/* Incognito banner */}
+            {isIncognito && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="flex items-center gap-2 py-1.5 px-3 rounded-full"
+                style={{ 
+                  background: 'rgba(139, 92, 246, 0.15)', 
+                  border: '1px solid rgba(139, 92, 246, 0.3)',
+                }}
+              >
+                <Ghost className="w-3.5 h-3.5 text-purple-400" />
+                <span className="text-xs text-purple-300">Incognito</span>
+                <button
+                  onClick={() => setIsIncognito(false)}
+                  className="ml-1 p-0.5 rounded hover:bg-purple-500/30 transition-colors"
+                  title="Exit incognito mode"
+                >
+                  <X className="w-3 h-3 text-purple-400" />
+                </button>
+              </motion.div>
+            )}
+            
+            {/* Clear chat button - subtle, appears when messages exist */}
+            <motion.button
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => {
+                if (confirm('Clear all chat messages?')) {
+                  setMessages([]);
+                  setCurrentDraft(null);
+                  // Also clear from persistence if not incognito
+                  if (!isIncognito && thread?.id && user?.uid) {
+                    import('@/lib/chat-persistence').then(({ deleteThreadChat }) => {
+                      deleteThreadChat(user.uid, thread.id);
+                    });
+                  }
+                }
+              }}
+              className="flex items-center gap-1.5 py-1.5 px-3 rounded-full transition-colors hover:bg-red-500/20 group"
+              style={{ 
+                background: 'var(--bg-interactive)', 
+                border: '1px solid var(--border-subtle)',
+              }}
+              title="Clear chat"
             >
-              <X className="w-3 h-3 text-purple-400" />
-            </button>
-          </motion.div>
+              <Trash2 className="w-3.5 h-3.5 group-hover:text-red-400" style={{ color: 'var(--text-muted)' }} />
+              <span className="text-xs group-hover:text-red-400" style={{ color: 'var(--text-muted)' }}>Clear</span>
+            </motion.button>
+          </div>
         )}
 
         {messages.map((message) => (
@@ -2341,57 +2377,124 @@ export function ChatInterface({
           )}
         </AnimatePresence>
 
-        {/* Text Input with mic and settings */}
-        <form onSubmit={handleSubmit} className="flex items-center gap-2">
-          {!isRecording && (
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              type="button"
-              onClick={startRecording}
-              disabled={isLoading}
-              className="p-3 rounded-xl bg-gradient-to-r from-purple-500 to-cyan-500 text-white disabled:opacity-50"
+        {/* When message is fully expanded on mobile, show action buttons instead of chat input */}
+        <AnimatePresence mode="wait">
+          {isMessageFullyExpanded && thread ? (
+            <motion.div
+              key="action-buttons"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              transition={{ duration: 0.2 }}
+              className="flex items-center justify-center gap-3"
             >
-              <Mic className="w-5 h-5" />
-            </motion.button>
-          )}
-          
-          <div className="flex-1 relative">
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSubmit(e);
-                }
-              }}
-              placeholder={isRecording ? 'Recording...' : 'Type or tap mic...'}
-              rows={1}
-              disabled={isRecording}
-              className="w-full px-4 py-3 rounded-2xl focus:outline-none focus:ring-2 focus:ring-purple-500/30 resize-none disabled:opacity-50"
-              style={{ 
-                background: 'var(--bg-interactive)', 
-                border: '1px solid var(--border-subtle)',
-                color: 'var(--text-primary)'
-              }}
-            />
-          </div>
-          
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            type="submit"
-            disabled={!input.trim() || isLoading || isRecording}
-            className="p-3 rounded-xl text-white disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ background: '#3b82f6' }}
-            title="Add to chat"
-          >
-            <ArrowUp className="w-5 h-5" />
-          </motion.button>
+              {/* Previous button */}
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={onPreviousEmail}
+                disabled={!onPreviousEmail}
+                className="flex items-center gap-2 px-4 py-3 rounded-xl transition-colors disabled:opacity-50"
+                style={{ 
+                  background: 'var(--bg-interactive)', 
+                  border: '1px solid var(--border-subtle)',
+                  color: 'var(--text-primary)'
+                }}
+              >
+                <ChevronLeft className="w-5 h-5" />
+                <span className="text-sm font-medium hidden sm:inline">Prev</span>
+              </motion.button>
 
-        </form>
+              {/* Archive button */}
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={onArchive}
+                disabled={!onArchive}
+                className="flex items-center gap-2 px-6 py-3 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 transition-colors disabled:opacity-50"
+                style={{ color: 'rgb(52, 211, 153)' }}
+              >
+                <Archive className="w-5 h-5" />
+                <span className="text-sm font-medium">Archive</span>
+              </motion.button>
+
+              {/* Next button */}
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={onNextEmail}
+                disabled={!onNextEmail}
+                className="flex items-center gap-2 px-4 py-3 rounded-xl transition-colors disabled:opacity-50"
+                style={{ 
+                  background: 'var(--bg-interactive)', 
+                  border: '1px solid var(--border-subtle)',
+                  color: 'var(--text-primary)'
+                }}
+              >
+                <span className="text-sm font-medium hidden sm:inline">Next</span>
+                <ChevronRight className="w-5 h-5" />
+              </motion.button>
+            </motion.div>
+          ) : (
+            <motion.form 
+              key="chat-input"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              transition={{ duration: 0.2 }}
+              onSubmit={handleSubmit} 
+              className="flex items-center gap-2"
+            >
+              {!isRecording && (
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  type="button"
+                  onClick={startRecording}
+                  disabled={isLoading}
+                  className="p-3 rounded-xl bg-gradient-to-r from-purple-500 to-cyan-500 text-white disabled:opacity-50"
+                >
+                  <Mic className="w-5 h-5" />
+                </motion.button>
+              )}
+              
+              <div className="flex-1 relative">
+                <textarea
+                  ref={inputRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSubmit(e);
+                    }
+                  }}
+                  placeholder={isRecording ? 'Recording...' : 'Type or tap mic...'}
+                  rows={1}
+                  disabled={isRecording}
+                  className="w-full px-4 py-3 rounded-2xl focus:outline-none focus:ring-2 focus:ring-purple-500/30 resize-none disabled:opacity-50"
+                  style={{ 
+                    background: 'var(--bg-interactive)', 
+                    border: '1px solid var(--border-subtle)',
+                    color: 'var(--text-primary)'
+                  }}
+                />
+              </div>
+              
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                type="submit"
+                disabled={!input.trim() || isLoading || isRecording}
+                className="p-3 rounded-xl text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{ background: '#3b82f6' }}
+                title="Add to chat"
+              >
+                <ArrowUp className="w-5 h-5" />
+              </motion.button>
+            </motion.form>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );

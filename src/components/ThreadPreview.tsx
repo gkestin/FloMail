@@ -244,6 +244,8 @@ interface ThreadPreviewProps {
   /** Callback when user clicks edit draft - opens draft in chat for editing
    *  Receives isFullyExpanded: true if message region is at ~70% viewport height */
   onEditDraft?: (isFullyExpanded: boolean) => void;
+  /** Callback when the "fully expanded" state changes - for showing/hiding action buttons */
+  onFullyExpandedChange?: (isFullyExpanded: boolean) => void;
 }
 
 // Storage keys for persisting state
@@ -264,6 +266,7 @@ export function ThreadPreview({
   onPreviousEmail,
   startFullyExpanded = false,
   onEditDraft,
+  onFullyExpandedChange,
 }: ThreadPreviewProps) {
   const { getAccessToken } = useAuth();
   
@@ -540,6 +543,18 @@ export function ThreadPreview({
   // Ref for height to use in scroll handler
   const messagesHeightRef = useRef(messagesHeight);
   useEffect(() => { messagesHeightRef.current = messagesHeight; }, [messagesHeight]);
+  
+  // Report fully expanded state to parent
+  const lastFullyExpandedRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!onFullyExpandedChange) return;
+    const maxAllowedHeight = typeof window !== 'undefined' ? window.innerHeight * 0.7 : 500;
+    const isFullyExpanded = isExpanded && messagesHeight >= maxAllowedHeight * 0.85;
+    if (lastFullyExpandedRef.current !== isFullyExpanded) {
+      lastFullyExpandedRef.current = isFullyExpanded;
+      onFullyExpandedChange(isFullyExpanded);
+    }
+  }, [messagesHeight, isExpanded, onFullyExpandedChange]);
 
   // When the message region is re-opened (collapsed → expanded), reset to the user's baseline height.
   // This keeps the "first open = half-ish" behavior consistent even after a temporary auto-expand.
@@ -1271,7 +1286,7 @@ export function ThreadPreview({
                         className="w-full cursor-pointer group flex items-end justify-center pb-0"
                         style={{ 
                           height: '2.5rem',
-                          background: 'linear-gradient(to top, rgba(15, 23, 42, 0.9) 0%, rgba(15, 23, 42, 0.5) 50%, transparent 100%)',
+                          background: 'linear-gradient(to top, rgba(30, 58, 138, 0.85) 0%, rgba(37, 99, 235, 0.5) 40%, transparent 100%)',
                         }}
                       >
                         {/* Semicircle collapse handle - connected to bottom edge */}

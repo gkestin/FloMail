@@ -310,6 +310,8 @@ export function SnoozePicker({ isOpen, onClose, onSelect, isLoading = false }: S
                       background: 'var(--bg-interactive)', 
                       color: 'var(--text-primary)',
                       border: '1px solid var(--border-default)',
+                      maxWidth: '100%',
+                      boxSizing: 'border-box',
                     }}
                   />
                 </div>
@@ -327,6 +329,8 @@ export function SnoozePicker({ isOpen, onClose, onSelect, isLoading = false }: S
                       background: 'var(--bg-interactive)', 
                       color: 'var(--text-primary)',
                       border: '1px solid var(--border-default)',
+                      maxWidth: '100%',
+                      boxSizing: 'border-box',
                     }}
                   />
                 </div>

@@ -74,6 +74,7 @@ export function FloMailApp() {
   const [searchQuery, setSearchQuery] = useState(''); // Search query for inbox
   const [snoozePickerOpen, setSnoozePickerOpen] = useState(false);
   const [snoozeLoading, setSnoozeLoading] = useState(false);
+  const [isArchiving, setIsArchiving] = useState(false); // For archive button spinner
   const [refreshKey, setRefreshKey] = useState(0); // Increment to trigger InboxList refresh
   const [urlInitialized, setUrlInitialized] = useState(false);
   
@@ -653,12 +654,17 @@ export function FloMailApp() {
   }, [selectedThread, getAccessToken, currentMailFolder, folderThreads, allThreads]);
 
   // Handler for top bar archive button - uses registered handler from ChatInterface for notification
-  const handleTopBarArchive = useCallback(() => {
-    if (archiveHandlerRef.current) {
-      archiveHandlerRef.current();
-    } else {
-      // Fallback if handler not registered
-      handleArchive();
+  const handleTopBarArchive = useCallback(async () => {
+    setIsArchiving(true);
+    try {
+      if (archiveHandlerRef.current) {
+        await archiveHandlerRef.current();
+      } else {
+        // Fallback if handler not registered
+        await handleArchive();
+      }
+    } finally {
+      setIsArchiving(false);
     }
   }, [handleArchive]);
 
@@ -866,16 +872,17 @@ export function FloMailApp() {
       // Save to Firestore client-side (where auth context is available)
       const { saveSnoozedEmail } = await import('@/lib/snooze-persistence');
       await saveSnoozedEmail(user.uid, selectedThread.id, new Date(data.snoozeUntil), emailInfo);
-
-      // Close picker and update UI
-      setSnoozePickerOpen(false);
       
       // Invalidate caches
       emailCache.invalidateFolder('inbox');
       emailCache.invalidateFolder('snoozed');
       
-      // Navigate to next thread
-      handleNextEmail();
+      // Navigate to next thread BEFORE closing picker
+      // so we don't see the current thread briefly
+      await handleNextEmail();
+      
+      // Now close picker after navigation is complete
+      setSnoozePickerOpen(false);
     } catch (err) {
       console.error('Failed to snooze:', err);
     } finally {
@@ -1341,11 +1348,16 @@ export function FloMailApp() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={handleTopBarArchive}
-                className="p-2 rounded-lg transition-colors hover:text-blue-400"
+                disabled={isArchiving}
+                className="p-2 rounded-lg transition-colors hover:text-blue-400 disabled:opacity-50"
                 style={{ color: 'var(--text-muted)' }}
                 title="Archive"
               >
-                <Archive className="w-4 h-4" />
+                {isArchiving ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Archive className="w-4 h-4" />
+                )}
               </motion.button>
             </>
           )}

@@ -63,6 +63,15 @@ interface InboxListProps {
   onThreadsUpdate?: (threads: EmailThread[], folder: MailFolder) => void; // Notify parent when threads change
 }
 
+// Type for pending undo actions (archive with undo capability)
+interface PendingUndo {
+  id: string;
+  threadId: string;
+  subject: string;
+  createdAt: number;
+  duration: number;
+}
+
 export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'inbox', searchQuery = '', onClearSearch, onFolderChange, onRegisterLoadMore, onThreadsUpdate }: InboxListProps) {
   const { getAccessToken, user } = useAuth();
   const [threads, setThreads] = useState<EmailThread[]>([]);
@@ -77,6 +86,10 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
   const [error, setError] = useState<string | null>(null);
   const [currentFolder, setCurrentFolder] = useState<MailFolder>(defaultFolder);
   const loadMoreRef = useRef<HTMLDivElement>(null); // For intersection observer
+  
+  // Floating undo state - track archived threads that can be undone
+  const [pendingUndos, setPendingUndos] = useState<PendingUndo[]>([]);
+  const UNDO_DURATION = 5000; // 5 seconds to undo
   
   // Search state (query comes from parent, results managed here)
   const [searchResults, setSearchResults] = useState<EmailThread[]>([]);
@@ -367,20 +380,67 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
     }
   };
 
-  const handleArchive = async (e: React.MouseEvent, threadId: string) => {
+  const handleArchive = async (e: React.MouseEvent, threadId: string, threadSubject?: string) => {
     e.stopPropagation();
     try {
       const token = await getAccessToken();
       if (!token) return;
       
+      // Get thread info before removing
+      const thread = threads.find(t => t.id === threadId);
+      const subject = threadSubject || thread?.subject || '(No subject)';
+      
+      // Archive immediately
       await archiveThread(token, threadId);
+      
+      // Remove from UI immediately
       setThreads((prev) => prev.filter((t) => t.id !== threadId));
       
       // Update cache: remove from current folder, invalidate all mail (archived emails appear there)
       emailCache.removeThreadFromFolder(currentFolder, threadId);
       emailCache.invalidateFolder('all');
+      
+      // Add floating undo button
+      const undoId = `undo-${Date.now()}`;
+      setPendingUndos(prev => [...prev, {
+        id: undoId,
+        threadId,
+        subject,
+        createdAt: Date.now(),
+        duration: UNDO_DURATION,
+      }]);
+      
+      // Auto-remove undo button after duration
+      setTimeout(() => {
+        setPendingUndos(prev => prev.filter(u => u.id !== undoId));
+      }, UNDO_DURATION);
+      
     } catch (err) {
       console.error('Failed to archive:', err);
+    }
+  };
+  
+  // Undo an archive action
+  const handleUndoArchive = async (undoId: string, threadId: string) => {
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+      
+      // Move back to inbox
+      await moveToInbox(token, threadId);
+      
+      // Remove the undo button
+      setPendingUndos(prev => prev.filter(u => u.id !== undoId));
+      
+      // Refresh the list to show the thread again
+      emailCache.invalidateFolder(currentFolder);
+      emailCache.invalidateFolder('inbox');
+      
+      // Refetch to show the thread
+      await loadFolder(currentFolder, true);
+      
+    } catch (err) {
+      console.error('Failed to undo archive:', err);
     }
   };
 
@@ -901,6 +961,53 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
         )}
       </div>
       
+      {/* Floating Undo Buttons */}
+      <AnimatePresence>
+        {pendingUndos.length > 0 && (
+          <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2">
+            {pendingUndos.map((undo) => (
+              <motion.button
+                key={undo.id}
+                initial={{ opacity: 0, y: 20, scale: 0.9 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 10, scale: 0.9 }}
+                transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+                onClick={() => handleUndoArchive(undo.id, undo.threadId)}
+                className="relative flex items-center gap-2 px-4 py-2.5 rounded-full shadow-lg overflow-hidden"
+                style={{ 
+                  background: 'var(--bg-elevated)', 
+                  border: '1px solid var(--border-default)',
+                  minWidth: '160px',
+                }}
+              >
+                {/* Animated progress ring */}
+                <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ margin: '-1px' }}>
+                  <motion.rect
+                    x="0"
+                    y="0"
+                    width="100%"
+                    height="100%"
+                    rx="9999"
+                    fill="none"
+                    stroke="rgb(34, 197, 94)"
+                    strokeWidth="2"
+                    initial={{ pathLength: 1 }}
+                    animate={{ pathLength: 0 }}
+                    transition={{ duration: undo.duration / 1000, ease: 'linear' }}
+                    style={{ strokeDasharray: 1, strokeDashoffset: 0 }}
+                  />
+                </svg>
+                
+                <Undo2 className="w-4 h-4 text-green-400" />
+                <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                  Undo archive
+                </span>
+              </motion.button>
+            ))}
+          </div>
+        )}
+      </AnimatePresence>
+      
       {/* Snooze Picker Modal */}
       <SnoozePicker
         isOpen={snoozePickerOpen}
@@ -956,8 +1063,7 @@ function SwipeableEmailRow({
   labelBadge,
 }: SwipeableEmailRowProps) {
   const x = useMotionValue(0);
-  const [swipeState, setSwipeState] = useState<'idle' | 'pending' | 'archived' | 'snoozed'>('idle');
-  const undoTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [swipeState, setSwipeState] = useState<'idle' | 'archived' | 'snoozed'>('idle');
   const dragStartX = useRef(0);
   const hasDragged = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -973,7 +1079,6 @@ function SwipeableEmailRow({
   
   const SWIPE_THRESHOLD = -80;
   const SNOOZE_THRESHOLD = 80; // Right swipe threshold for snooze
-  const UNDO_DURATION = 4000;
   
   // Smooth transforms for visual feedback (left swipe = archive)
   const archiveBgOpacity = useTransform(x, [-120, -40, 0], [1, 0.3, 0]);
@@ -993,17 +1098,20 @@ function SwipeableEmailRow({
                           (info.offset.x > 50 && info.velocity.x > 200));
     
     if (shouldArchive) {
-      setSwipeState('pending');
-      undoTimeoutRef.current = setTimeout(() => {
+      // Animate slide off screen to the left, then archive
+      const containerWidth = containerRef.current?.offsetWidth || 400;
+      animate(x, -containerWidth, { type: 'tween', duration: 0.2, ease: 'easeOut' }).then(() => {
         setSwipeState('archived');
-        setTimeout(() => {
-          onArchive({ stopPropagation: () => {} } as React.MouseEvent);
-        }, 300);
-      }, UNDO_DURATION);
+        // Archive immediately - floating undo button will appear from parent
+        onArchive({ stopPropagation: () => {} } as React.MouseEvent);
+      });
     } else if (shouldSnooze) {
-      // Open snooze picker
-      animate(x, 0, { type: 'spring', stiffness: 400, damping: 30 });
-      onSnooze?.({ stopPropagation: () => {} } as React.MouseEvent);
+      // Animate slide off screen to the right, then open snooze picker
+      const containerWidth = containerRef.current?.offsetWidth || 400;
+      animate(x, containerWidth, { type: 'tween', duration: 0.2, ease: 'easeOut' }).then(() => {
+        setSwipeState('snoozed');
+        onSnooze?.({ stopPropagation: () => {} } as React.MouseEvent);
+      });
     } else {
       // Animate back to 0 with spring physics
       animate(x, 0, { type: 'spring', stiffness: 400, damping: 30 });
@@ -1013,16 +1121,6 @@ function SwipeableEmailRow({
     setTimeout(() => {
       hasDragged.current = false;
     }, 100);
-  };
-  
-  const handleUndo = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (undoTimeoutRef.current) {
-      clearTimeout(undoTimeoutRef.current);
-      undoTimeoutRef.current = null;
-    }
-    setSwipeState('idle');
-    animate(x, 0, { type: 'spring', stiffness: 400, damping: 30 });
   };
   
   const handleDragStart = () => {
@@ -1036,63 +1134,14 @@ function SwipeableEmailRow({
       onSelect();
     }
   };
-  
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (undoTimeoutRef.current) {
-        clearTimeout(undoTimeoutRef.current);
-      }
-    };
-  }, []);
 
-  // Pending archive state - show undo option
-  if (swipeState === 'pending') {
+  // Archived/snoozed state - animate row collapse smoothly
+  if (swipeState === 'archived' || swipeState === 'snoozed') {
     return (
       <motion.div
         initial={{ opacity: 1, height: 'auto' }}
-        animate={{ opacity: 1, height: 'auto' }}
-        style={{ 
-          background: 'linear-gradient(to right, rgba(22, 163, 74, 0.15), rgba(21, 128, 61, 0.1))',
-          borderBottom: '1px solid rgba(22, 163, 74, 0.2)'
-        }}
-      >
-        <div className="flex items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-2 text-green-400">
-            <Check className="w-4 h-4" />
-            <span className="text-sm font-medium">Archived</span>
-          </div>
-          <motion.button
-            initial={{ opacity: 0, scale: 0.8 }}
-            animate={{ opacity: 1, scale: 1 }}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={handleUndo}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all text-sm font-medium"
-            style={{ background: 'var(--bg-interactive)', color: 'var(--text-secondary)' }}
-          >
-            <Undo2 className="w-3.5 h-3.5" />
-            Undo
-          </motion.button>
-        </div>
-        {/* Animated progress bar for undo timeout */}
-        <motion.div
-          initial={{ scaleX: 1 }}
-          animate={{ scaleX: 0 }}
-          transition={{ duration: UNDO_DURATION / 1000, ease: 'linear' }}
-          className="h-0.5 bg-green-500/50 origin-left"
-        />
-      </motion.div>
-    );
-  }
-  
-  // Archived state - animate out
-  if (swipeState === 'archived') {
-    return (
-      <motion.div
-        initial={{ opacity: 1, height: 'auto' }}
-        animate={{ opacity: 0, height: 0, marginBottom: 0 }}
-        transition={{ duration: 0.3, ease: 'easeOut' }}
+        animate={{ opacity: 0, height: 0, marginBottom: 0, paddingTop: 0, paddingBottom: 0 }}
+        transition={{ duration: 0.25, ease: 'easeOut' }}
         className="overflow-hidden"
       />
     );
@@ -1298,14 +1347,8 @@ function SwipeableEmailRow({
                 whileTap={{ scale: 0.9 }}
                 onClick={(e) => {
                   e.stopPropagation();
-                  // Use the same undo flow for button clicks
-                  setSwipeState('pending');
-                  undoTimeoutRef.current = setTimeout(() => {
-                    setSwipeState('archived');
-                    setTimeout(() => {
-                      onArchive(e);
-                    }, 300);
-                  }, UNDO_DURATION);
+                  // Archive immediately - floating undo button will appear
+                  onArchive(e);
                 }}
                 className="p-2 rounded-lg transition-colors hover:bg-green-500/20 hover:text-green-400"
                 style={{ background: 'var(--bg-interactive)', color: 'var(--text-muted)' }}
