@@ -420,8 +420,8 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
     }
   };
   
-  // Undo an archive action
-  const handleUndoArchive = async (undoId: string, threadId: string) => {
+  // Undo a single archive action
+  const handleUndoSingleArchive = async (undoId: string, threadId: string) => {
     try {
       const token = await getAccessToken();
       if (!token) return;
@@ -429,18 +429,43 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
       // Move back to inbox
       await moveToInbox(token, threadId);
       
-      // Remove the undo button
+      // Remove the undo from list
       setPendingUndos(prev => prev.filter(u => u.id !== undoId));
       
-      // Refresh the list to show the thread again
+      // Refresh if this was the last one
       emailCache.invalidateFolder(currentFolder);
       emailCache.invalidateFolder('inbox');
-      
-      // Refetch to show the thread
       await loadFolder(currentFolder, true);
       
     } catch (err) {
       console.error('Failed to undo archive:', err);
+    }
+  };
+  
+  // Undo all pending archives
+  const handleUndoAllArchives = async () => {
+    if (pendingUndos.length === 0) return;
+    
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+      
+      // Move all back to inbox in parallel
+      const undosToProcess = [...pendingUndos];
+      await Promise.all(
+        undosToProcess.map(undo => moveToInbox(token, undo.threadId))
+      );
+      
+      // Clear all pending undos
+      setPendingUndos([]);
+      
+      // Refresh the list once
+      emailCache.invalidateFolder(currentFolder);
+      emailCache.invalidateFolder('inbox');
+      await loadFolder(currentFolder, true);
+      
+    } catch (err) {
+      console.error('Failed to undo archives:', err);
     }
   };
 
@@ -470,11 +495,24 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
   const [snoozePickerOpen, setSnoozePickerOpen] = useState(false);
   const [snoozeTargetThread, setSnoozeTargetThread] = useState<EmailThread | null>(null);
   const [snoozeLoading, setSnoozeLoading] = useState(false);
+  const [snoozeCancelledId, setSnoozeCancelledId] = useState<string | null>(null); // Track which thread's snooze was cancelled
 
   const handleOpenSnoozePicker = (e: React.MouseEvent, thread: EmailThread) => {
     e.stopPropagation();
     setSnoozeTargetThread(thread);
+    setSnoozeCancelledId(null); // Reset cancelled state
     setSnoozePickerOpen(true);
+  };
+  
+  const handleCloseSnoozePickerWithCancel = () => {
+    if (!snoozeLoading) {
+      // Mark this thread's snooze as cancelled so SwipeableEmailRow can reset
+      if (snoozeTargetThread) {
+        setSnoozeCancelledId(snoozeTargetThread.id);
+      }
+      setSnoozePickerOpen(false);
+      setSnoozeTargetThread(null);
+    }
   };
 
   const handleSnooze = async (option: SnoozeOption, customDate?: Date) => {
@@ -538,11 +576,16 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
       // Invalidate snoozed folder cache
       emailCache.invalidateFolder('snoozed');
       
-      // Close picker
+      // Close picker - clear cancelled ID since this was a success
       setSnoozePickerOpen(false);
       setSnoozeTargetThread(null);
+      setSnoozeCancelledId(null);
     } catch (err) {
       console.error('Failed to snooze:', err);
+      // On error, treat like cancel - reset the row
+      if (snoozeTargetThread) {
+        setSnoozeCancelledId(snoozeTargetThread.id);
+      }
     } finally {
       setSnoozeLoading(false);
     }
@@ -794,6 +837,7 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
                     skipAnimation={skipAnimation}
                     isInInbox={isInInbox}
                     isUnsnoozed={isThreadUnsnoozed}
+                    snoozeCancelled={snoozeCancelledId === thread.id}
                     onSelect={() => {
                       // For search results, pass them as the folder threads
                       onSelectThread(thread, 'all', searchResults);
@@ -927,6 +971,7 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
                   isSnoozed={threadIsSnoozed}
                   snoozeUntil={snoozeUntilStr}
                   isUnsnoozed={isThreadUnsnoozed}
+                  snoozeCancelled={snoozeCancelledId === thread.id}
                   onSelect={() => handleSelect(thread)}
                   onArchive={(e) => handleArchive(e, thread.id)}
                   onMoveToInbox={(e) => handleMoveToInbox(e, thread.id)}
@@ -961,62 +1006,82 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
         )}
       </div>
       
-      {/* Floating Undo Buttons */}
+      {/* Undo Banner - Fixed at bottom, doesn't scroll with list */}
       <AnimatePresence>
-        {pendingUndos.length > 0 && (
-          <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2">
-            {pendingUndos.map((undo) => (
-              <motion.button
-                key={undo.id}
-                initial={{ opacity: 0, y: 20, scale: 0.9 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 10, scale: 0.9 }}
-                transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-                onClick={() => handleUndoArchive(undo.id, undo.threadId)}
-                className="relative flex items-center gap-2 px-4 py-2.5 rounded-full shadow-lg overflow-hidden"
+        {pendingUndos.length > 0 && (() => {
+          // Calculate time remaining for progress bar based on oldest pending undo
+          const oldestUndo = pendingUndos.reduce((oldest, current) => 
+            current.createdAt < oldest.createdAt ? current : oldest
+          );
+          const elapsed = Date.now() - oldestUndo.createdAt;
+          const remaining = Math.max(0, UNDO_DURATION - elapsed);
+          const progressPercent = (remaining / UNDO_DURATION) * 100;
+          
+          return (
+            <motion.div
+              key="undo-banner"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 10 }}
+              transition={{ duration: 0.2, ease: 'easeOut' }}
+              className="absolute bottom-0 left-0 right-0 z-50 px-3 pb-3 pt-2"
+              style={{ 
+                background: 'linear-gradient(to top, var(--bg-primary) 70%, transparent)',
+                pointerEvents: 'none'
+              }}
+            >
+              <motion.div 
+                className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl"
                 style={{ 
                   background: 'var(--bg-elevated)', 
-                  border: '1px solid var(--border-default)',
-                  minWidth: '160px',
+                  border: '1px solid var(--border-subtle)',
+                  boxShadow: '0 2px 12px rgba(0,0,0,0.15)',
+                  pointerEvents: 'auto'
                 }}
               >
-                {/* Animated progress ring */}
-                <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ margin: '-1px' }}>
-                  <motion.rect
-                    x="0"
-                    y="0"
-                    width="100%"
-                    height="100%"
-                    rx="9999"
-                    fill="none"
-                    stroke="rgb(34, 197, 94)"
-                    strokeWidth="2"
-                    initial={{ pathLength: 1 }}
-                    animate={{ pathLength: 0 }}
-                    transition={{ duration: undo.duration / 1000, ease: 'linear' }}
-                    style={{ strokeDasharray: 1, strokeDashoffset: 0 }}
-                  />
-                </svg>
+                {/* Left side: Message */}
+                <div className="flex items-center gap-2 min-w-0">
+                  <Archive className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--text-muted)' }} />
+                  <span className="text-sm truncate" style={{ color: 'var(--text-secondary)' }}>
+                    {pendingUndos.length === 1 
+                      ? 'Conversation archived' 
+                      : `${pendingUndos.length} conversations archived`}
+                  </span>
+                </div>
                 
-                <Undo2 className="w-4 h-4 text-green-400" />
-                <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
-                  Undo archive
-                </span>
-              </motion.button>
-            ))}
-          </div>
-        )}
+                {/* Right side: Undo button with subtle progress indicator */}
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleUndoAllArchives}
+                  className="relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors overflow-hidden"
+                  style={{ 
+                    background: 'var(--bg-interactive)',
+                    color: 'var(--text-accent-blue)'
+                  }}
+                >
+                  {/* Progress bar underneath - starts from remaining time */}
+                  <motion.div
+                    key={oldestUndo.id} // Reset animation when oldest changes
+                    className="absolute bottom-0 left-0 h-0.5 rounded-full"
+                    style={{ background: 'var(--text-accent-blue)', opacity: 0.4 }}
+                    initial={{ width: `${progressPercent}%` }}
+                    animate={{ width: '0%' }}
+                    transition={{ duration: remaining / 1000, ease: 'linear' }}
+                  />
+                  <Undo2 className="w-3.5 h-3.5" />
+                  <span className="text-sm font-medium">Undo</span>
+                </motion.button>
+              </motion.div>
+            </motion.div>
+          );
+        })()}
       </AnimatePresence>
       
       {/* Snooze Picker Modal */}
       <SnoozePicker
         isOpen={snoozePickerOpen}
-        onClose={() => {
-          if (!snoozeLoading) {
-            setSnoozePickerOpen(false);
-            setSnoozeTargetThread(null);
-          }
-        }}
+        onClose={handleCloseSnoozePickerWithCancel}
         onSelect={handleSnooze}
         isLoading={snoozeLoading}
       />
@@ -1035,6 +1100,7 @@ interface SwipeableEmailRowProps {
   isSnoozed?: boolean; // Whether this thread is snoozed
   snoozeUntil?: string; // When the snooze expires (formatted string)
   isUnsnoozed?: boolean; // Whether this thread just returned from snooze
+  snoozeCancelled?: boolean; // Reset swipe when snooze picker is cancelled
   onSelect: () => void;
   onArchive: (e: React.MouseEvent) => void;
   onMoveToInbox?: (e: React.MouseEvent) => void; // For moving archived emails back to inbox
@@ -1054,6 +1120,7 @@ function SwipeableEmailRow({
   isSnoozed,
   snoozeUntil,
   isUnsnoozed,
+  snoozeCancelled,
   onSelect,
   onArchive,
   onMoveToInbox,
@@ -1063,57 +1130,60 @@ function SwipeableEmailRow({
   labelBadge,
 }: SwipeableEmailRowProps) {
   const x = useMotionValue(0);
-  const [swipeState, setSwipeState] = useState<'idle' | 'archived' | 'snoozed'>('idle');
-  const dragStartX = useRef(0);
+  const [swipeState, setSwipeState] = useState<'idle' | 'archived' | 'snoozed' | 'snooze-pending'>('idle');
   const hasDragged = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [isMobile, setIsMobile] = useState(false);
   
-  // Detect mobile viewport
+  const SWIPE_THRESHOLD = -100; // Threshold to trigger archive
+  const SNOOZE_THRESHOLD = 100; // Right swipe threshold for snooze
+  
+  // Reset swipe state when snooze is cancelled
   useEffect(() => {
-    const checkMobile = () => setIsMobile(window.innerWidth < 640);
-    checkMobile();
-    window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
-  }, []);
+    if (snoozeCancelled && swipeState === 'snooze-pending') {
+      setSwipeState('idle');
+      animate(x, 0, { type: 'spring', stiffness: 300, damping: 25 });
+    }
+  }, [snoozeCancelled, swipeState, x]);
   
-  const SWIPE_THRESHOLD = -80;
-  const SNOOZE_THRESHOLD = 80; // Right swipe threshold for snooze
+  // Get container width for calculations
+  const getContainerWidth = () => containerRef.current?.offsetWidth || 400;
   
   // Smooth transforms for visual feedback (left swipe = archive)
-  const archiveBgOpacity = useTransform(x, [-120, -40, 0], [1, 0.3, 0]);
-  const archiveIconScale = useTransform(x, [-120, -60, 0], [1.1, 0.9, 0.7]);
-  const archiveIconX = useTransform(x, [-120, -60, 0], [0, 10, 30]);
+  // Icon stays pinned to edge, moves with content after threshold
+  const archiveBgOpacity = useTransform(x, [-200, -60, 0], [1, 0.6, 0]);
+  const archiveIconScale = useTransform(x, [-150, -80, 0], [1.2, 1, 0.8]);
   
   // Right swipe = snooze
-  const snoozeBgOpacity = useTransform(x, [0, 40, 120], [0, 0.3, 1]);
-  const snoozeIconScale = useTransform(x, [0, 60, 120], [0.7, 0.9, 1.1]);
-  const snoozeIconX = useTransform(x, [0, 60, 120], [-30, -10, 0]);
+  const snoozeBgOpacity = useTransform(x, [0, 60, 200], [0, 0.6, 1]);
+  const snoozeIconScale = useTransform(x, [0, 80, 150], [0.8, 1, 1.2]);
   
   const handleDragEnd = (event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
-    const shouldArchive = info.offset.x < SWIPE_THRESHOLD || 
-                          (info.offset.x < -50 && info.velocity.x < -200);
+    const velocity = info.velocity.x;
+    const offset = info.offset.x;
+    
+    // More responsive thresholds - consider velocity for quick flicks
+    const shouldArchive = offset < SWIPE_THRESHOLD || 
+                          (offset < -60 && velocity < -300);
     const shouldSnooze = isInInbox && onSnooze && (
-                          info.offset.x > SNOOZE_THRESHOLD || 
-                          (info.offset.x > 50 && info.velocity.x > 200));
+                          offset > SNOOZE_THRESHOLD || 
+                          (offset > 60 && velocity > 300));
     
     if (shouldArchive) {
       // Animate slide off screen to the left, then archive
-      const containerWidth = containerRef.current?.offsetWidth || 400;
-      animate(x, -containerWidth, { type: 'tween', duration: 0.2, ease: 'easeOut' }).then(() => {
+      const containerWidth = getContainerWidth();
+      animate(x, -containerWidth - 20, { type: 'tween', duration: 0.15, ease: 'easeOut' }).then(() => {
         setSwipeState('archived');
-        // Archive immediately - floating undo button will appear from parent
         onArchive({ stopPropagation: () => {} } as React.MouseEvent);
       });
     } else if (shouldSnooze) {
-      // Animate slide off screen to the right, then open snooze picker
-      const containerWidth = containerRef.current?.offsetWidth || 400;
-      animate(x, containerWidth, { type: 'tween', duration: 0.2, ease: 'easeOut' }).then(() => {
-        setSwipeState('snoozed');
+      // Mark as pending snooze (waiting for picker), slide off screen
+      const containerWidth = getContainerWidth();
+      animate(x, containerWidth + 20, { type: 'tween', duration: 0.15, ease: 'easeOut' }).then(() => {
+        setSwipeState('snooze-pending');
         onSnooze?.({ stopPropagation: () => {} } as React.MouseEvent);
       });
     } else {
-      // Animate back to 0 with spring physics
+      // Snap back with smooth spring
       animate(x, 0, { type: 'spring', stiffness: 400, damping: 30 });
     }
     
@@ -1124,7 +1194,6 @@ function SwipeableEmailRow({
   };
   
   const handleDragStart = () => {
-    dragStartX.current = x.get();
     hasDragged.current = true;
   };
   
@@ -1135,17 +1204,20 @@ function SwipeableEmailRow({
     }
   };
 
-  // Archived/snoozed state - animate row collapse smoothly
-  if (swipeState === 'archived' || swipeState === 'snoozed') {
+  // Archived state - animate row collapse smoothly
+  if (swipeState === 'archived') {
     return (
       <motion.div
         initial={{ opacity: 1, height: 'auto' }}
         animate={{ opacity: 0, height: 0, marginBottom: 0, paddingTop: 0, paddingBottom: 0 }}
-        transition={{ duration: 0.25, ease: 'easeOut' }}
+        transition={{ duration: 0.2, ease: 'easeOut' }}
         className="overflow-hidden"
       />
     );
   }
+  
+  // Snooze pending - keep off screen but don't collapse (waiting for picker result)
+  // The snoozeCancelled prop will reset this state
 
   return (
     <motion.div
@@ -1162,21 +1234,17 @@ function SwipeableEmailRow({
           className="absolute inset-0 flex items-center justify-start pl-6"
           style={{ 
             opacity: snoozeBgOpacity,
-            background: 'linear-gradient(to right, rgb(251 191 36 / 0.9), rgb(245 158 11 / 0.7))'
+            background: 'linear-gradient(90deg, rgb(251 191 36) 0%, rgb(245 158 11) 100%)'
           }}
         >
           <motion.div 
-            style={{ scale: snoozeIconScale, x: snoozeIconX }}
+            style={{ scale: snoozeIconScale }}
             className="flex items-center gap-2"
           >
-            <Clock className="w-5 h-5 text-white" />
-            <motion.span 
-              className="text-white text-sm font-medium"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-            >
+            <Clock className="w-6 h-6 text-white drop-shadow-sm" />
+            <span className="text-white text-sm font-semibold drop-shadow-sm">
               Snooze
-            </motion.span>
+            </span>
           </motion.div>
         </motion.div>
       )}
@@ -1186,30 +1254,26 @@ function SwipeableEmailRow({
         className="absolute inset-0 flex items-center justify-end pr-6"
         style={{ 
           opacity: archiveBgOpacity,
-          background: 'linear-gradient(to left, rgb(22 163 74 / 0.9), rgb(21 128 61 / 0.7))'
+          background: 'linear-gradient(270deg, rgb(22 163 74) 0%, rgb(21 128 61) 100%)'
         }}
       >
         <motion.div 
-          style={{ scale: archiveIconScale, x: archiveIconX }}
+          style={{ scale: archiveIconScale }}
           className="flex items-center gap-2"
         >
-          <Archive className="w-5 h-5 text-white" />
-          <motion.span 
-            className="text-white text-sm font-medium"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-          >
+          <span className="text-white text-sm font-semibold drop-shadow-sm">
             Archive
-          </motion.span>
+          </span>
+          <Archive className="w-6 h-6 text-white drop-shadow-sm" />
         </motion.div>
       </motion.div>
       
-      {/* Swipeable content */}
+      {/* Swipeable content - follows finger with no hard constraints */}
       <motion.div
         drag="x"
-        dragConstraints={{ left: -150, right: isInInbox && onSnooze ? 150 : 0 }}
-        dragElastic={0.08}
-        dragMomentum={false}
+        dragDirectionLock
+        dragConstraints={{ left: 0, right: 0 }} // No hard constraints - elastic handles resistance
+        dragElastic={{ left: 0.6, right: isInInbox && onSnooze ? 0.6 : 0.1 }}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
         style={{ 
