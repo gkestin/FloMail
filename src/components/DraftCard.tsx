@@ -6,7 +6,7 @@ import { Send, X, Loader2, Reply, Forward, Mail, Plus, Paperclip, Trash2, AlertT
 import { EmailDraft, DraftAttachment, EmailDraftType, EmailThread, EmailMessage } from '@/types';
 import { buildReplyQuote } from '@/lib/agent-tools';
 import { formatFileSize, getFileIcon as getFileIconType } from '@/lib/email-parsing';
-import { EmailHtmlViewer, isRichHtmlContent, stripBasicHtml } from './EmailHtmlViewer';
+import { EmailHtmlViewer, isHtmlContent, stripBasicHtml } from './EmailHtmlViewer';
 import Linkify from 'linkify-react';
 
 // Format date for message display
@@ -83,7 +83,7 @@ function ThreadMessagePreview({ message, isLast }: { message: EmailMessage; isLa
   // Get preview text - use snippet if available, otherwise strip HTML
   const previewText = message.snippet || 
     (message.bodyHtml ? stripBasicHtml(message.bodyHtml).slice(0, 150) : (message.body || '').slice(0, 150));
-  const hasRichHtml = message.bodyHtml && isRichHtmlContent(message.bodyHtml);
+  const hasHtml = message.bodyHtml && isHtmlContent(message.bodyHtml);
   
   return (
     <div 
@@ -144,8 +144,8 @@ function ThreadMessagePreview({ message, isLast }: { message: EmailMessage; isLa
                 )}
               </div>
               
-              {/* Email body - use HTML viewer for rich content, plain text with Linkify otherwise */}
-              {hasRichHtml ? (
+              {/* Email body - use HTML viewer for any HTML content (preserves links, formatting) */}
+              {hasHtml ? (
                 <EmailHtmlViewer
                   html={message.bodyHtml!}
                   plainText={message.body}
@@ -163,7 +163,7 @@ function ThreadMessagePreview({ message, isLast }: { message: EmailMessage; isLa
                       className: 'text-blue-400 hover:underline',
                     }}
                   >
-                    {message.bodyHtml ? stripBasicHtml(message.bodyHtml) : (message.body || '')}
+                    {message.body || ''}
                   </Linkify>
                 </div>
               )}

@@ -4,7 +4,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, FolderOpen, Clock, Shield, ShieldOff, Paperclip, Download, FileText, Image as ImageIcon, Film, Music, FileArchive, FileCode, File, X } from 'lucide-react';
 import { EmailThread, EmailMessage } from '@/types';
-import { EmailHtmlViewer, isRichHtmlContent, normalizeEmailPlainText, stripBasicHtml } from './EmailHtmlViewer';
+import { EmailHtmlViewer, isHtmlContent, normalizeEmailPlainText, stripBasicHtml } from './EmailHtmlViewer';
 import { UnsubscribeButton } from './UnsubscribeButton';
 import Linkify from 'linkify-react';
 
@@ -1553,8 +1553,9 @@ function MessageItem({
                 </div>
               )}
 
-              {/* Email body - HTML viewer for rich content, plain text otherwise */}
-              {message.bodyHtml && isRichHtmlContent(message.bodyHtml) ? (
+              {/* Email body - HTML viewer for any HTML content (preserves links, formatting) */}
+              {/* Plain text fallback only when no HTML available */}
+              {message.bodyHtml && isHtmlContent(message.bodyHtml) ? (
                 <div className={isDraft ? 'italic opacity-80' : ''}>
                   <EmailHtmlViewer
                     html={message.bodyHtml}
@@ -1566,8 +1567,7 @@ function MessageItem({
                 </div>
               ) : (
                 <EmailBodyWithQuotes 
-                  // Prefer deriving text from HTML to avoid artificial line breaks from plain text encoding
-                  content={message.bodyHtml ? stripBasicHtml(message.bodyHtml) : (message.body || '')}
+                  content={message.body || ''}
                   isDraft={isDraft}
                 />
               )}
