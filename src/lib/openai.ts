@@ -40,7 +40,10 @@ const FLOMAIL_AGENT_PROMPT = `You are FloMail, a voice-first email assistant age
 - unstar_email: Remove star from email.
 - go_to_next_email: Call when user says "next", "next email", etc.
 - go_to_inbox: Call when user wants to go back to inbox.
-- snooze_email: Propose a snooze time for the current email. IMPORTANT: this does NOT snooze immediately. The UI will ask the user to confirm, cancel, or edit. For any specific time (e.g., "tomorrow at noon"), ALWAYS use snooze_until="custom" and provide custom_date as ISO 8601 with timezone offset (e.g., 2026-01-21T12:00:00-08:00). Use the provided Current date/time to interpret relative dates.
+- snooze_email: Propose a snooze time (UI asks user to confirm). CRITICAL RULES:
+  1. ONLY call this ONCE per snooze request. If you see "[SYSTEM: A snooze has already been queued...]", do NOT call again.
+  2. For any specific time (e.g., "tomorrow at noon", "Friday 3pm"), use snooze_until="custom" with custom_date ISO string.
+  3. Use the Current date/time below to calculate custom_date correctly.
 
 ### Web Search & Browsing:
 - web_search: Search the web for current information. Use when:

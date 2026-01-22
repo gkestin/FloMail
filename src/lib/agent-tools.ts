@@ -92,18 +92,18 @@ export const AGENT_TOOLS: AgentTool[] = [
   },
   {
     name: 'snooze_email',
-    description: 'Propose a snooze time for the current email thread (pending user confirmation in UI). Use when user wants to snooze, remind later, or temporarily hide an email.',
+    description: 'Propose a snooze time for the current email (UI will ask user to confirm). ONLY call this ONCE per snooze request - if you already called it, do NOT call again.',
     parameters: {
       type: 'object',
       properties: {
         snooze_until: {
           type: 'string',
-          description: 'When to unsnooze. Use one of: "later_today" (6pm), "tomorrow" (8am), "this_weekend" (Saturday 8am), "next_week" (Monday 8am), or "custom" for specific times. If the user gives a specific time, ALWAYS use "custom".',
+          description: 'CRITICAL: "later_today"=6pm today, "tomorrow"=8am tomorrow, "this_weekend"=Saturday 8am, "next_week"=Monday 8am. For ANY specific time like "tomorrow at noon", "Friday 3pm", etc., you MUST use "custom" with custom_date.',
           enum: ['later_today', 'tomorrow', 'this_weekend', 'next_week', 'custom'],
         },
         custom_date: {
           type: 'string',
-          description: 'ISO 8601 date-time string with timezone offset for custom snooze time (e.g., "2026-01-21T12:00:00-08:00"). Required if snooze_until is "custom".',
+          description: 'REQUIRED when snooze_until is "custom". Full ISO 8601 datetime with timezone, e.g., "2026-01-22T12:00:00-08:00". Calculate from the Current date/time provided in system context.',
         },
       },
       required: ['snooze_until'],

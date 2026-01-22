@@ -1173,11 +1173,22 @@ export function ChatInterface({
     setStreamingMessageId(assistantMessageId);
 
     try {
-      // Get all messages for context (excluding cancelled ones and empty ones)
+      // Get all messages for context (excluding cancelled ones, empty ones, and pending snooze confirmations)
       // Anthropic requires all messages to have non-empty content
+      // IMPORTANT: Filter out snooze confirmation messages to prevent AI from calling snooze_email again
       const contextMessages = messages
-        .filter(m => !m.isCancelled && !m.isTranscribing && m.content && m.content.trim())
+        .filter(m => !m.isCancelled && !m.isTranscribing && m.content && m.content.trim() && !m.snoozeConfirmation)
         .map(m => ({ role: m.role, content: m.content }));
+      
+      // Check if there's a pending snooze confirmation - if so, tell the AI not to snooze again
+      const hasPendingSnooze = messages.some(m => m.snoozeConfirmation && !m.snoozeConfirmation.confirmed);
+      if (hasPendingSnooze) {
+        // Add a system note so AI knows snooze is already pending
+        contextMessages.push({ 
+          role: 'assistant' as const, 
+          content: '[SYSTEM: A snooze has already been queued and is awaiting user confirmation. Do NOT call snooze_email again.]' 
+        });
+      }
       
       // Add the current message (only if it has content)
       if (content && content.trim()) {
