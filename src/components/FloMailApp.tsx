@@ -8,7 +8,7 @@ import { LoginScreen } from './LoginScreen';
 import { InboxList, MailFolder } from './InboxList';
 import { ChatInterface } from './ChatInterface';
 import { EmailThread, EmailDraft, AIProvider, AIDraftingPreferences, DraftTone, DraftLength, SignOffStyle } from '@/types';
-import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock, ChevronDown, Settings, Plus, Pencil, Edit3 } from 'lucide-react';
+import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock, ChevronDown, Settings, Plus, Pencil, Edit3, Volume2 } from 'lucide-react';
 import { OPENAI_MODELS } from '@/lib/openai';
 import { CLAUDE_MODELS } from '@/lib/anthropic';
 import { sendEmail, archiveThread, getAttachment, createGmailDraft, updateGmailDraft, hasSnoozedLabel, fetchThread, fetchInbox } from '@/lib/gmail';
@@ -116,6 +116,32 @@ export function FloMailApp() {
   
   const [aiDraftingPreferences, setAiDraftingPreferences] = useState<AIDraftingPreferences>(defaultPreferences);
   const [showDraftingSettings, setShowDraftingSettings] = useState(false);
+  
+  // TTS Settings
+  const [showTTSSettings, setShowTTSSettings] = useState(false);
+  const [ttsSettings, setTtsSettings] = useState({
+    voice: 'nova',
+    speed: 1.0,
+    useNaturalVoice: true,
+  });
+  
+  // Load TTS settings from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('flomail_tts_settings');
+    if (saved) {
+      try {
+        setTtsSettings(prev => ({ ...prev, ...JSON.parse(saved) }));
+      } catch {}
+    }
+  }, []);
+  
+  const updateTTSSettings = useCallback((updates: Partial<typeof ttsSettings>) => {
+    setTtsSettings(prev => {
+      const updated = { ...prev, ...updates };
+      localStorage.setItem('flomail_tts_settings', JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
   
   // Load AI drafting preferences from localStorage
   useEffect(() => {
@@ -440,6 +466,18 @@ export function FloMailApp() {
     window.history.back();
   }, []);
 
+  // Go back to the current folder's list (preserves folder selection)
+  const handleBackToList = useCallback(() => {
+    setSelectedThread(null);
+    setCurrentDraft(null);
+    setCurrentView('inbox');
+    // DON'T reset currentMailFolder - preserve where user came from
+    // Clear search only if going back to a different folder
+    triggerRefresh(); // Signal InboxList to refresh
+    // Update URL without folder reset
+    window.history.pushState({}, '', currentMailFolder === 'inbox' ? '/' : `/?folder=${currentMailFolder}`);
+  }, [triggerRefresh, currentMailFolder]);
+  
   const handleGoToInbox = useCallback(() => {
     setSelectedThread(null);
     setCurrentDraft(null);
@@ -890,6 +928,55 @@ export function FloMailApp() {
     }
   }, [selectedThread, user, getAccessToken, handleNextEmail]);
 
+  // Handler for snooze from chat AI - takes a Date directly
+  const handleSnoozeFromChat = useCallback(async (snoozeUntil: Date) => {
+    if (!selectedThread || !user?.uid) return;
+    
+    try {
+      const token = await getAccessToken();
+      if (!token) throw new Error('Not authenticated');
+
+      // Get thread info for the snooze record
+      const lastMessage = selectedThread.messages[selectedThread.messages.length - 1];
+      const emailInfo = {
+        subject: selectedThread.subject || '(No subject)',
+        snippet: selectedThread.snippet || '',
+        senderName: lastMessage?.from?.name || lastMessage?.from?.email || 'Unknown',
+      };
+
+      // Call the snooze API
+      const response = await fetch('/api/snooze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'snooze',
+          threadId: selectedThread.id,
+          accessToken: token,
+          snoozeOption: 'custom',
+          customDate: snoozeUntil.toISOString(),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to snooze');
+      }
+
+      // Save to Firestore client-side
+      const { saveSnoozedEmail } = await import('@/lib/snooze-persistence');
+      await saveSnoozedEmail(user.uid, selectedThread.id, snoozeUntil, emailInfo);
+      
+      // Invalidate caches
+      emailCache.invalidateFolder('inbox');
+      emailCache.invalidateFolder('snoozed');
+      
+      // Navigate to next email after snooze
+      await handleNextEmail();
+    } catch (err) {
+      console.error('Failed to snooze from chat:', err);
+      throw err;
+    }
+  }, [selectedThread, user, getAccessToken, handleNextEmail]);
+
   // Loading state
   if (loading) {
     return (
@@ -1245,6 +1332,136 @@ export function FloMailApp() {
                 </AnimatePresence>
               </div>
               
+              {/* Text-to-Speech Settings */}
+              <div 
+                className="overflow-hidden"
+                style={{ borderBottom: '1px solid var(--border-subtle)' }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setShowTTSSettings(!showTTSSettings)}
+                  className="w-full flex items-center justify-between p-3"
+                >
+                  <div className="flex items-center gap-2">
+                    <Volume2 className="w-4 h-4" style={{ color: 'rgb(34, 197, 94)' }} />
+                    <span className="text-xs font-medium uppercase tracking-wide" style={{ color: 'rgb(34, 197, 94)' }}>Text-to-Speech</span>
+                  </div>
+                  <ChevronDown 
+                    className={`w-4 h-4 transition-transform ${showTTSSettings ? 'rotate-180' : ''}`} 
+                    style={{ color: 'rgb(34, 197, 94)' }} 
+                  />
+                </button>
+                
+                <AnimatePresence>
+                  {showTTSSettings && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2, ease: 'easeInOut' }}
+                      className="overflow-hidden"
+                    >
+                      <div className="px-3 pb-3 space-y-4">
+                        {/* Natural Voice Toggle */}
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                            Voice Quality
+                          </label>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => updateTTSSettings({ useNaturalVoice: true })}
+                              className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all"
+                              style={ttsSettings.useNaturalVoice ? {
+                                background: 'rgba(34, 197, 94, 0.2)',
+                                color: 'rgb(134, 239, 172)',
+                                border: '1px solid rgba(34, 197, 94, 0.5)'
+                              } : {
+                                background: 'var(--bg-interactive)',
+                                color: 'var(--text-secondary)',
+                                border: '1px solid transparent'
+                              }}
+                            >
+                              Natural (AI)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updateTTSSettings({ useNaturalVoice: false })}
+                              className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all"
+                              style={!ttsSettings.useNaturalVoice ? {
+                                background: 'rgba(34, 197, 94, 0.2)',
+                                color: 'rgb(134, 239, 172)',
+                                border: '1px solid rgba(34, 197, 94, 0.5)'
+                              } : {
+                                background: 'var(--bg-interactive)',
+                                color: 'var(--text-secondary)',
+                                border: '1px solid transparent'
+                              }}
+                            >
+                              System
+                            </button>
+                          </div>
+                        </div>
+                        
+                        {/* Voice Selection (only for Natural) */}
+                        {ttsSettings.useNaturalVoice && (
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                              Voice
+                            </label>
+                            <div className="relative">
+                              <select
+                                value={ttsSettings.voice}
+                                onChange={(e) => updateTTSSettings({ voice: e.target.value })}
+                                className="w-full px-2 py-1.5 rounded-lg text-xs appearance-none cursor-pointer focus:outline-none"
+                                style={{ 
+                                  background: 'var(--bg-interactive)', 
+                                  border: '1px solid var(--border-subtle)',
+                                  color: 'var(--text-primary)'
+                                }}
+                              >
+                                <option value="alloy">Alloy (Neutral)</option>
+                                <option value="echo">Echo (Male)</option>
+                                <option value="fable">Fable (Expressive)</option>
+                                <option value="onyx">Onyx (Deep Male)</option>
+                                <option value="nova">Nova (Female)</option>
+                                <option value="shimmer">Shimmer (Soft Female)</option>
+                              </select>
+                              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none" style={{ color: 'var(--text-muted)' }} />
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Speed Control */}
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                            Speed: {ttsSettings.speed.toFixed(1)}x
+                          </label>
+                          <input
+                            type="range"
+                            min="0.5"
+                            max="2.0"
+                            step="0.1"
+                            value={ttsSettings.speed}
+                            onChange={(e) => updateTTSSettings({ speed: parseFloat(e.target.value) })}
+                            className="w-full h-1.5 rounded-lg appearance-none cursor-pointer"
+                            style={{ 
+                              background: `linear-gradient(to right, rgb(34, 197, 94) 0%, rgb(34, 197, 94) ${((ttsSettings.speed - 0.5) / 1.5) * 100}%, var(--bg-interactive) ${((ttsSettings.speed - 0.5) / 1.5) * 100}%, var(--bg-interactive) 100%)`,
+                              accentColor: 'rgb(34, 197, 94)'
+                            }}
+                          />
+                          <div className="flex justify-between text-xs" style={{ color: 'var(--text-muted)' }}>
+                            <span>0.5x</span>
+                            <span>1.0x</span>
+                            <span>2.0x</span>
+                          </div>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
               <button
                 onClick={signOut}
                 className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors hover:opacity-80"
@@ -1290,7 +1507,7 @@ export function FloMailApp() {
                   <motion.button
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
-                    onClick={handleGoToInbox}
+                    onClick={handleBackToList}
                     className="flex items-center gap-1.5 px-2 py-1 rounded-lg cursor-pointer hover:bg-blue-500/10 transition-colors"
                     style={{ background: 'var(--bg-interactive)' }}
                     title={`Back to ${FOLDER_LABELS[currentMailFolder]}`}
@@ -1451,6 +1668,8 @@ export function FloMailApp() {
                 onMoveToInbox={handleMoveToInbox}
                 onStar={handleStar}
                 onUnstar={handleUnstar}
+                onSnooze={handleSnoozeFromChat}
+                onOpenSnoozePicker={() => setSnoozePickerOpen(true)}
                 onNextEmail={handleNextEmail}
                 onPreviousEmail={handlePreviousEmail}
                 onGoToInbox={handleGoToInbox}

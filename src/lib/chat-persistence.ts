@@ -56,6 +56,8 @@ export interface PersistedMessage {
     }>;
   };
   draftCancelled?: boolean;
+  draftSaved?: boolean;
+  draftSent?: boolean;
   
   // System message data
   isSystemMessage?: boolean;
@@ -101,6 +103,8 @@ export function toPersistedMessage(msg: {
   toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
   draft?: EmailDraft;
   draftCancelled?: boolean;
+  draftSaved?: boolean;
+  draftSent?: boolean;
   isSystemMessage?: boolean;
   systemType?: 'archived' | 'sent' | 'navigated' | 'context' | 'search';
   systemSnippet?: string;
@@ -164,6 +168,8 @@ export function toPersistedMessage(msg: {
   }
 
   if (msg.draftCancelled) persisted.draftCancelled = true;
+  if (msg.draftSaved) persisted.draftSaved = true;
+  if (msg.draftSent) persisted.draftSent = true;
   if (msg.isSystemMessage) persisted.isSystemMessage = true;
   if (msg.systemType) persisted.systemType = msg.systemType;
   if (msg.systemSnippet) persisted.systemSnippet = msg.systemSnippet;
@@ -186,6 +192,8 @@ export function fromPersistedMessage(persisted: PersistedMessage): {
   toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
   draft?: EmailDraft;
   draftCancelled?: boolean;
+  draftSaved?: boolean;
+  draftSent?: boolean;
   isSystemMessage?: boolean;
   systemType?: 'archived' | 'sent' | 'navigated' | 'context' | 'search';
   systemSnippet?: string;
@@ -229,6 +237,8 @@ export function fromPersistedMessage(persisted: PersistedMessage): {
   }
 
   if (persisted.draftCancelled) msg.draftCancelled = true;
+  if (persisted.draftSaved) msg.draftSaved = true;
+  if (persisted.draftSent) msg.draftSent = true;
   if (persisted.isSystemMessage) msg.isSystemMessage = true;
   if (persisted.systemType) msg.systemType = persisted.systemType;
   if (persisted.systemSnippet) msg.systemSnippet = persisted.systemSnippet;

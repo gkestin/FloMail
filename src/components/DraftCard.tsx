@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, X, Loader2, Reply, Forward, Mail, Plus, Paperclip, Trash2, AlertTriangle, ArrowLeftRight, Save, FileIcon as LucideFile, ImageIcon as LucideImage, FileText as LucideFileText, Film, Music, FileArchive, FileCode, FileSpreadsheet, Presentation, ChevronDown } from 'lucide-react';
+import { Send, X, Loader2, Reply, Forward, Mail, Plus, Paperclip, Trash2, AlertTriangle, ArrowLeftRight, Save, FileIcon as LucideFile, ImageIcon as LucideImage, FileText as LucideFileText, Film, Music, FileArchive, FileCode, FileSpreadsheet, Presentation, ChevronDown, Copy, Check, Volume2, VolumeX } from 'lucide-react';
 import { EmailDraft, DraftAttachment, EmailDraftType, EmailThread, EmailMessage } from '@/types';
 import { buildReplyQuote } from '@/lib/agent-tools';
 import { formatFileSize, getFileIcon as getFileIconType } from '@/lib/email-parsing';
@@ -39,6 +39,193 @@ function getAvatarColor(email: string): string {
   ];
   const hash = email.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
   return colors[hash % colors.length];
+}
+
+// Small copy button for draft body
+function DraftCopyButton({ content }: { content: string }) {
+  const [copied, setCopied] = useState(false);
+  
+  const handleCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
+  
+  return (
+    <button
+      onClick={handleCopy}
+      className="p-1.5 rounded-md transition-colors hover:bg-white/10"
+      style={{ color: 'var(--text-muted)' }}
+      title={copied ? 'Copied!' : 'Copy email body'}
+    >
+      {copied ? (
+        <Check className="w-3.5 h-3.5 text-green-400" />
+      ) : (
+        <Copy className="w-3.5 h-3.5" />
+      )}
+    </button>
+  );
+}
+
+// Singleton for speech synthesis tracking
+// Singleton audio reference for stopping
+let draftCurrentAudio: HTMLAudioElement | null = null;
+let draftSpeakingId: string | null = null;
+
+// TTS settings helpers (same as ChatInterface)
+interface TTSSettings {
+  voice: string;
+  speed: number;
+  useNaturalVoice: boolean;
+}
+
+function getDraftTTSSettings(): TTSSettings {
+  if (typeof window === 'undefined') return { voice: 'nova', speed: 1.0, useNaturalVoice: true };
+  try {
+    const stored = localStorage.getItem('flomail_tts_settings');
+    if (stored) return { voice: 'nova', speed: 1.0, useNaturalVoice: true, ...JSON.parse(stored) };
+  } catch {}
+  return { voice: 'nova', speed: 1.0, useNaturalVoice: true };
+}
+
+// Small speak button for draft body - uses OpenAI TTS like ChatInterface
+function DraftSpeakButton({ content, draftId }: { content: string; draftId?: string }) {
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const buttonId = draftId || 'draft-body';
+  
+  useEffect(() => {
+    const checkSpeaking = () => {
+      const isPlaying = draftCurrentAudio && !draftCurrentAudio.paused && !draftCurrentAudio.ended;
+      setIsSpeaking(draftSpeakingId === buttonId && !!isPlaying);
+    };
+    checkSpeaking();
+    const interval = setInterval(checkSpeaking, 200);
+    return () => clearInterval(interval);
+  }, [buttonId]);
+  
+  const speakWithBrowserFallback = useCallback((text: string, speed: number) => {
+    speechSynthesis.cancel();
+    
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = speed;
+    utterance.pitch = 1.0;
+    
+    utterance.onend = () => {
+      draftSpeakingId = null;
+      setIsSpeaking(false);
+    };
+    
+    utterance.onerror = () => {
+      draftSpeakingId = null;
+      setIsSpeaking(false);
+    };
+    
+    draftSpeakingId = buttonId;
+    setIsSpeaking(true);
+    speechSynthesis.speak(utterance);
+  }, [buttonId]);
+  
+  const handleSpeak = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    if (isSpeaking) {
+      if (draftCurrentAudio) {
+        draftCurrentAudio.pause();
+        draftCurrentAudio.currentTime = 0;
+        draftCurrentAudio = null;
+      }
+      speechSynthesis.cancel();
+      draftSpeakingId = null;
+      setIsSpeaking(false);
+      return;
+    }
+    
+    // Stop any previous audio
+    if (draftCurrentAudio) {
+      draftCurrentAudio.pause();
+      draftCurrentAudio.currentTime = 0;
+    }
+    speechSynthesis.cancel();
+    
+    const settings = getDraftTTSSettings();
+    
+    // If natural voice is disabled, use browser fallback
+    if (!settings.useNaturalVoice) {
+      speakWithBrowserFallback(content, settings.speed);
+      return;
+    }
+    
+    // Try OpenAI TTS API
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/ai/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: content,
+          voice: settings.voice,
+          speed: settings.speed,
+        }),
+      });
+      
+      if (!response.ok) {
+        throw new Error('TTS API failed');
+      }
+      
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+      
+      audio.onended = () => {
+        URL.revokeObjectURL(audioUrl);
+        draftCurrentAudio = null;
+        draftSpeakingId = null;
+        setIsSpeaking(false);
+      };
+      
+      audio.onerror = () => {
+        URL.revokeObjectURL(audioUrl);
+        draftCurrentAudio = null;
+        draftSpeakingId = null;
+        setIsSpeaking(false);
+        // Fallback to browser
+        speakWithBrowserFallback(content, settings.speed);
+      };
+      
+      draftCurrentAudio = audio;
+      draftSpeakingId = buttonId;
+      setIsSpeaking(true);
+      setIsLoading(false);
+      await audio.play();
+      
+    } catch (error) {
+      console.error('TTS error, falling back to browser:', error);
+      setIsLoading(false);
+      // Fallback to browser speech synthesis
+      speakWithBrowserFallback(content, settings.speed);
+    }
+  };
+  
+  return (
+    <button
+      onClick={handleSpeak}
+      className="p-1.5 rounded-md transition-colors hover:bg-white/10"
+      style={{ color: 'var(--text-muted)' }}
+      title={isSpeaking ? 'Stop speaking' : 'Read aloud'}
+    >
+      {isSpeaking ? (
+        <VolumeX className="w-3.5 h-3.5 text-amber-400" />
+      ) : (
+        <Volume2 className="w-3.5 h-3.5" />
+      )}
+    </button>
+  );
 }
 
 // Parse draft body to separate user's content from quoted reply content
@@ -701,6 +888,14 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
             }}
           />
 
+          {/* Copy and speak buttons for draft body - subtle, at bottom of body area */}
+          {displayedBody && displayedBody.trim() && !isStreaming && (
+            <div className="flex items-center gap-0.5 mt-2 opacity-50 hover:opacity-80 transition-opacity">
+              <DraftCopyButton content={displayedBody} />
+              <DraftSpeakButton content={displayedBody} draftId={editedDraft.id} />
+            </div>
+          )}
+
           {/* Quoted content / Thread context - show for replies when thread has messages or body has quoted content */}
           {editedDraft.type === 'reply' && (thread?.messages?.length || hasQuotedContent || editedDraft.quotedContent) && (
             <>
@@ -757,23 +952,60 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
             </>
           )}
           
-          {/* Forward: show forwarded content inline (not collapsible) */}
-          {editedDraft.quotedContent && editedDraft.type === 'forward' && (
-            <div className="mt-4 pt-3 border-t border-orange-500/20">
-              <div className="text-xs text-orange-400/70 mb-2">Forwarded message below:</div>
-              <div className="pl-3 border-l-2 border-orange-500/30">
-                <textarea
-                  ref={quotedRef}
-                  value={editedDraft.quotedContent}
-                  onChange={(e) => {
-                    hasUserEditsRef.current = true;
-                    setEditedDraft({ ...editedDraft, quotedContent: e.target.value });
-                  }}
-                  disabled={isSending}
-                  className="w-full bg-transparent text-slate-400 text-sm leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0 overflow-hidden"
-                />
-              </div>
-            </div>
+          {/* Forward: collapsible forwarded content (same UX as replies) */}
+          {editedDraft.type === 'forward' && (thread?.messages?.length || editedDraft.quotedContent) && (
+            <>
+              <button
+                onClick={() => setShowQuoted(!showQuoted)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm mt-4 transition-all duration-200 cursor-pointer ${showQuoted ? 'bg-orange-600/40 text-orange-200' : 'bg-orange-700/20 text-orange-400 hover:bg-orange-600/30 hover:text-orange-200'}`}
+              >
+                <Forward className="w-3.5 h-3.5" />
+                <span className="text-xs opacity-90">
+                  {thread?.messages && thread.messages.length > 0 
+                    ? `${thread.messages.length} forwarded ${thread.messages.length === 1 ? 'message' : 'messages'}`
+                    : 'Forwarded content'}
+                </span>
+              </button>
+
+              {showQuoted && (
+                <div className="mt-3">
+                  {/* Prefer thread messages for proper HTML rendering */}
+                  {thread?.messages && thread.messages.length > 0 ? (
+                    <div 
+                      className="rounded-lg p-3 max-h-[400px] overflow-y-auto"
+                      style={{ 
+                        background: 'rgba(249, 115, 22, 0.05)', 
+                        border: '1px solid rgba(249, 115, 22, 0.2)' 
+                      }}
+                    >
+                      {/* Show messages in chronological order (oldest first) */}
+                      {thread.messages.map((msg, idx) => (
+                        <ThreadMessagePreview 
+                          key={msg.id} 
+                          message={msg}
+                          isLast={idx === thread.messages.length - 1}
+                        />
+                      ))}
+                    </div>
+                  ) : editedDraft.quotedContent ? (
+                    /* Fallback to plain text ONLY if no thread messages available */
+                    <div className="pl-3 border-l-2 border-orange-500/30">
+                      <textarea
+                        ref={quotedRef}
+                        value={editedDraft.quotedContent}
+                        onChange={(e) => {
+                          hasUserEditsRef.current = true;
+                          setEditedDraft({ ...editedDraft, quotedContent: e.target.value });
+                        }}
+                        disabled={isSending}
+                        className="w-full bg-transparent text-orange-300/70 leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0"
+                        style={{ fontSize: '16px' }}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </>
           )}
         </div>
 

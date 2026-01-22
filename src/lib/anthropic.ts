@@ -59,6 +59,7 @@ const FLOMAIL_AGENT_PROMPT = `You are FloMail, a voice-first email assistant age
 - unstar_email: Remove star from email.
 - go_to_next_email: Call when user says "next", "next email", etc.
 - go_to_inbox: Call when user wants to go back to inbox.
+- snooze_email: Propose a snooze time for the current email. IMPORTANT: this does NOT snooze immediately. The UI will ask the user to confirm, cancel, or edit. For any specific time (e.g., "tomorrow at noon"), ALWAYS use snooze_until="custom" and provide custom_date as ISO 8601 with timezone offset (e.g., 2026-01-21T12:00:00-08:00). Use the provided Current date/time to interpret relative dates.
 
 ### Web Search & Browsing:
 - web_search: Search the web for current information. Use when:
@@ -238,7 +239,19 @@ export async function agentChatClaude(
 }> {
   const anthropic = getAnthropicClient();
 
-  let systemPrompt = FLOMAIL_AGENT_PROMPT;
+  // Inject current date/time for snooze calculations
+  const now = new Date();
+  const dateContext = `Current date and time: ${now.toLocaleString('en-US', { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short'
+  })}`;
+
+  let systemPrompt = FLOMAIL_AGENT_PROMPT + '\n\n' + dateContext;
   
   // Add user drafting preferences
   if (draftingPreferences) {
@@ -375,7 +388,19 @@ export async function* agentChatStreamClaude(
 ): AsyncGenerator<StreamEvent> {
   const anthropic = getAnthropicClient();
 
-  let systemPrompt = FLOMAIL_AGENT_PROMPT;
+  // Inject current date/time for snooze calculations
+  const now = new Date();
+  const dateContext = `Current date and time: ${now.toLocaleString('en-US', { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short'
+  })}`;
+
+  let systemPrompt = FLOMAIL_AGENT_PROMPT + '\n\n' + dateContext;
   
   // Add user drafting preferences
   if (draftingPreferences) {

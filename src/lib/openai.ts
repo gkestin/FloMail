@@ -40,6 +40,7 @@ const FLOMAIL_AGENT_PROMPT = `You are FloMail, a voice-first email assistant age
 - unstar_email: Remove star from email.
 - go_to_next_email: Call when user says "next", "next email", etc.
 - go_to_inbox: Call when user wants to go back to inbox.
+- snooze_email: Propose a snooze time for the current email. IMPORTANT: this does NOT snooze immediately. The UI will ask the user to confirm, cancel, or edit. For any specific time (e.g., "tomorrow at noon"), ALWAYS use snooze_until="custom" and provide custom_date as ISO 8601 with timezone offset (e.g., 2026-01-21T12:00:00-08:00). Use the provided Current date/time to interpret relative dates.
 
 ### Web Search & Browsing:
 - web_search: Search the web for current information. Use when:
@@ -219,8 +220,20 @@ export async function agentChat(
 }> {
   const openai = getOpenAIClient();
 
+  // Inject current date/time for snooze calculations
+  const now = new Date();
+  const dateContext = `Current date and time: ${now.toLocaleString('en-US', { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short'
+  })}`;
+
   const systemMessages: OpenAI.ChatCompletionMessageParam[] = [
-    { role: 'system', content: FLOMAIL_AGENT_PROMPT },
+    { role: 'system', content: FLOMAIL_AGENT_PROMPT + '\n\n' + dateContext },
   ];
   
   // Add user drafting preferences
@@ -347,8 +360,20 @@ export async function* agentChatStream(
 ): AsyncGenerator<StreamEvent> {
   const openai = getOpenAIClient();
 
+  // Inject current date/time for snooze calculations
+  const now = new Date();
+  const dateContext = `Current date and time: ${now.toLocaleString('en-US', { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short'
+  })}`;
+
   const systemMessages: OpenAI.ChatCompletionMessageParam[] = [
-    { role: 'system', content: FLOMAIL_AGENT_PROMPT },
+    { role: 'system', content: FLOMAIL_AGENT_PROMPT + '\n\n' + dateContext },
   ];
   
   // Add user drafting preferences
@@ -516,4 +541,40 @@ export async function transcribeAudio(audioBlob: Blob): Promise<string> {
   });
 
   return response.text;
+}
+
+// Available TTS voices
+export const TTS_VOICES = {
+  'alloy': 'Alloy (Neutral)',
+  'echo': 'Echo (Male)',
+  'fable': 'Fable (Expressive)',
+  'onyx': 'Onyx (Deep Male)',
+  'nova': 'Nova (Female)',
+  'shimmer': 'Shimmer (Soft Female)',
+} as const;
+
+export type TTSVoice = keyof typeof TTS_VOICES;
+
+// Text-to-speech using OpenAI TTS
+export async function textToSpeech(
+  text: string, 
+  voice: TTSVoice = 'nova',
+  speed: number = 1.0
+): Promise<ArrayBuffer> {
+  const openai = getOpenAIClient();
+
+  // Clamp speed to valid range (0.25 to 4.0)
+  const clampedSpeed = Math.max(0.25, Math.min(4.0, speed));
+
+  const response = await openai.audio.speech.create({
+    model: 'tts-1', // Use tts-1-hd for higher quality if needed
+    voice: voice,
+    input: text,
+    speed: clampedSpeed,
+    response_format: 'mp3',
+  });
+
+  // Get the audio data as ArrayBuffer
+  const arrayBuffer = await response.arrayBuffer();
+  return arrayBuffer;
 }

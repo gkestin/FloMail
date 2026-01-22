@@ -24,7 +24,7 @@ import {
 } from 'lucide-react';
 import { EmailThread } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
-import { fetchInbox, archiveThread, markAsRead, listGmailDrafts, GmailDraftInfo, getThreadsWithDrafts, fetchThread, moveToInbox, getSnoozedThreads, SNOOZE_LABEL_NAME, clearUnsnoozedLabel } from '@/lib/gmail';
+import { fetchInbox, archiveThread, markAsRead, listGmailDrafts, GmailDraftInfo, getThreadsWithDrafts, fetchThread, moveToInbox, getSnoozedThreads, SNOOZE_LABEL_NAME, UNSNOOZED_LABEL_NAME, clearUnsnoozedLabel, hasSnoozedLabel, hasUnsnoozedLabel } from '@/lib/gmail';
 import { getSnoozedEmails, SnoozedEmail, formatSnoozeTime, SnoozeOption, getRecentlyUnsnoozed, RecentlyUnsnoozedEmail } from '@/lib/snooze-persistence';
 import { SnoozePicker } from './SnoozePicker';
 import { emailCache } from '@/lib/email-cache';
@@ -97,6 +97,27 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
   const isSearchActive = searchQuery.trim().length > 0;
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
+  // Pull-to-refresh state
+  const [pullDistance, setPullDistance] = useState(0);
+  const [isPulling, setIsPulling] = useState(false);
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const listContainerRef = useRef<HTMLDivElement>(null);
+  const pullStartY = useRef(0);
+  const PULL_THRESHOLD = 80; // Distance needed to trigger refresh
+  
+  // Collapse animation state for swipe actions
+  const [collapsingThreads, setCollapsingThreads] = useState<Record<string, { height: number; type: 'archive' | 'snooze' }>>({});
+  const collapsingThreadsRef = useRef(collapsingThreads);
+  const rowHeightsRef = useRef<Record<string, number>>({});
+  const [pendingSnoozeHeights, setPendingSnoozeHeights] = useState<Record<string, number>>({});
+  const pendingSnoozeHeightsRef = useRef(pendingSnoozeHeights);
+  
+  // Last refresh tracking for stale indicator
+  const [lastRefreshTime, setLastRefreshTime] = useState<Date>(new Date());
+  const [isStale, setIsStale] = useState(false);
+  const STALE_THRESHOLD = 10 * 60 * 1000; // 10 minutes in milliseconds
+  const AUTO_REFRESH_INTERVAL = 3 * 60 * 1000; // 3 minutes - background refresh
+  
   // Always skip entrance animations - they cause visual glitches and delays
   // Keeping this as a constant true instead of removing to minimize code changes
   const skipAnimation = true;
@@ -107,6 +128,14 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
       setCurrentFolder(defaultFolder);
     }
   }, [defaultFolder]); // eslint-disable-line react-hooks/exhaustive-deps
+  
+  useEffect(() => {
+    collapsingThreadsRef.current = collapsingThreads;
+  }, [collapsingThreads]);
+  
+  useEffect(() => {
+    pendingSnoozeHeightsRef.current = pendingSnoozeHeights;
+  }, [pendingSnoozeHeights]);
 
   const loadFolder = useCallback(async (folder: MailFolder, forceRefresh = false) => {
     try {
@@ -121,6 +150,10 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
           setDrafts(cachedData.drafts || []);
           setThreadsWithDrafts(cachedData.threadsWithDrafts || new Set());
           setNextPageToken(cachedData.nextPageToken); // Restore pagination token!
+          // Restore snoozed emails data if present (for snoozed folder)
+          if (cachedData.snoozedEmails) {
+            setSnoozedEmailsData(cachedData.snoozedEmails);
+          }
           setLoading(false);
           setRefreshing(false);
           return;
@@ -133,6 +166,10 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
           setDrafts(staleData.drafts || []);
           setThreadsWithDrafts(staleData.threadsWithDrafts || new Set());
           setNextPageToken(staleData.nextPageToken); // Restore pagination token!
+          // Restore snoozed emails data if present (for snoozed folder)
+          if (staleData.snoozedEmails) {
+            setSnoozedEmailsData(staleData.snoozedEmails);
+          }
           setLoading(false);
           setRefreshing(true); // Show refresh indicator for background update
         } else {
@@ -216,12 +253,203 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
     } finally {
       setLoading(false);
       setRefreshing(false);
+      setLastRefreshTime(new Date());
+      setIsStale(false);
     }
   }, [getAccessToken]);
+
+  // Pull-to-refresh handlers (must be after loadFolder definition)
+  const handlePullStart = useCallback((e: React.TouchEvent) => {
+    const container = listContainerRef.current;
+    if (!container || container.scrollTop > 5 || isPullRefreshing) return;
+    
+    pullStartY.current = e.touches[0].clientY;
+    setIsPulling(true);
+  }, [isPullRefreshing]);
+  
+  const handlePullMove = useCallback((e: React.TouchEvent) => {
+    if (!isPulling || isPullRefreshing) return;
+    
+    const container = listContainerRef.current;
+    if (!container || container.scrollTop > 5) {
+      setIsPulling(false);
+      setPullDistance(0);
+      return;
+    }
+    
+    const deltaY = e.touches[0].clientY - pullStartY.current;
+    if (deltaY > 0) {
+      // Apply resistance as pull increases
+      const resistance = Math.min(deltaY * 0.5, 120);
+      setPullDistance(resistance);
+    }
+  }, [isPulling, isPullRefreshing]);
+  
+  const handlePullEnd = useCallback(async () => {
+    if (!isPulling) return;
+    
+    if (pullDistance >= PULL_THRESHOLD && !isPullRefreshing) {
+      // Trigger refresh
+      setIsPullRefreshing(true);
+      setPullDistance(PULL_THRESHOLD); // Keep at threshold during refresh
+      
+      try {
+        await loadFolder(currentFolder, true);
+      } finally {
+        setIsPullRefreshing(false);
+        setPullDistance(0);
+      }
+    } else {
+      setPullDistance(0);
+    }
+    
+    setIsPulling(false);
+  }, [isPulling, pullDistance, isPullRefreshing, loadFolder, currentFolder]);
+  
+  // Desktop scroll wheel handler for pull-to-refresh
+  // Only triggers when user is already at top and deliberately scrolls up more
+  const wheelAccumulatorRef = useRef(0);
+  const wheelTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pullEligibleRef = useRef(false);
+  const topIdleTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const TOP_IDLE_DELAY = 80; // ms of no wheel activity at top before pull activates
+  
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    const container = listContainerRef.current;
+    if (!container || isPullRefreshing) return;
+    
+    const isAtTop = container.scrollTop <= 0;
+    
+    if (!isAtTop) {
+      pullEligibleRef.current = false;
+      if (topIdleTimerRef.current) {
+        clearTimeout(topIdleTimerRef.current);
+      }
+      wheelAccumulatorRef.current = 0;
+      if (!isPullRefreshing) {
+        setPullDistance(0);
+      }
+      return;
+    }
+    
+    // If we just reached top, wait for a brief pause before enabling pull-to-refresh.
+    // This avoids triggering during momentum scroll.
+    if (!pullEligibleRef.current) {
+      if (topIdleTimerRef.current) {
+        clearTimeout(topIdleTimerRef.current);
+      }
+      topIdleTimerRef.current = setTimeout(() => {
+        pullEligibleRef.current = true;
+      }, TOP_IDLE_DELAY);
+      return;
+    }
+    
+    // Now we're definitely at top and intentionally scrolling up
+    if (e.deltaY < 0) {
+      // Accumulate upward scroll
+      wheelAccumulatorRef.current -= e.deltaY;
+      
+      // Show pull indicator based on accumulated scroll
+      const pullAmount = Math.min(wheelAccumulatorRef.current * 0.25, 100);
+      setPullDistance(pullAmount);
+      
+      // Clear existing timeout
+      if (wheelTimeoutRef.current) {
+        clearTimeout(wheelTimeoutRef.current);
+      }
+      
+      // After user stops scrolling, either refresh or reset
+      wheelTimeoutRef.current = setTimeout(async () => {
+        if (wheelAccumulatorRef.current > PULL_THRESHOLD * 2.5 && !isPullRefreshing) {
+          // Trigger refresh
+          setIsPullRefreshing(true);
+          setPullDistance(PULL_THRESHOLD);
+          
+          try {
+            await loadFolder(currentFolder, true);
+          } finally {
+            setIsPullRefreshing(false);
+            setPullDistance(0);
+            pullEligibleRef.current = false;
+          }
+        } else {
+          setPullDistance(0);
+          pullEligibleRef.current = false;
+        }
+        wheelAccumulatorRef.current = 0;
+      }, 200);
+    } else {
+      // Scrolling down while at top shouldn't trigger refresh
+      wheelAccumulatorRef.current = 0;
+      if (!isPullRefreshing) {
+        setPullDistance(0);
+      }
+      pullEligibleRef.current = false;
+    }
+  }, [isPullRefreshing, loadFolder, currentFolder]);
 
   useEffect(() => {
     loadFolder(currentFolder);
   }, [currentFolder, loadFolder]);
+  
+  // Stale data checking - every minute, check if data is older than 10 minutes
+  useEffect(() => {
+    const checkStale = () => {
+      const now = Date.now();
+      const lastRefresh = lastRefreshTime.getTime();
+      setIsStale(now - lastRefresh > STALE_THRESHOLD);
+    };
+    
+    const interval = setInterval(checkStale, 60 * 1000); // Check every minute
+    return () => clearInterval(interval);
+  }, [lastRefreshTime, STALE_THRESHOLD]);
+  
+  // Auto-refresh in background - every 3 minutes, silently refresh if visible and not loading
+  useEffect(() => {
+    const autoRefresh = async () => {
+      // Only auto-refresh if page is visible and not already loading/refreshing
+      if (document.visibilityState === 'visible' && !loading && !refreshing && !isPullRefreshing) {
+        try {
+          const token = await getAccessToken();
+          if (!token) return;
+          
+          // Silently fetch new data without showing loading state
+          const config = FOLDER_CONFIG[currentFolder];
+          if (config.isDrafts || config.isSnoozed) return; // Skip special folders
+          
+          const { threads: freshThreads } = await fetchInbox(token, {
+            labelIds: config.labelIds,
+            query: config.query,
+          });
+          
+          // Only update if we got results and threads have changed
+          if (freshThreads.length > 0) {
+            const currentIds = threads.map(t => t.id).join(',');
+            const newIds = freshThreads.map(t => t.id).join(',');
+            
+            if (currentIds !== newIds) {
+              setThreads(freshThreads);
+              emailCache.setFolderData(currentFolder, {
+                threads: freshThreads,
+                drafts,
+                threadsWithDrafts,
+                nextPageToken: undefined,
+              });
+            }
+          }
+          
+          setLastRefreshTime(new Date());
+          setIsStale(false);
+        } catch (err) {
+          // Silent failure for auto-refresh
+          console.error('Auto-refresh failed:', err);
+        }
+      }
+    };
+    
+    const interval = setInterval(autoRefresh, AUTO_REFRESH_INTERVAL);
+    return () => clearInterval(interval);
+  }, [getAccessToken, currentFolder, loading, refreshing, isPullRefreshing, threads, drafts, threadsWithDrafts, AUTO_REFRESH_INTERVAL]);
 
   // Search function - uses Gmail's powerful query syntax
   const performSearch = useCallback(async (query: string) => {
@@ -358,6 +586,10 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
         setThreads(staleData.threads);
         setDrafts(staleData.drafts || []);
         setThreadsWithDrafts(staleData.threadsWithDrafts || new Set());
+        // Restore snoozed emails data if present (for snoozed folder)
+        if (staleData.snoozedEmails) {
+          setSnoozedEmailsData(staleData.snoozedEmails);
+        }
         setLoading(false);
         
         // If data is stale (not fresh cache), set refreshing for background update
@@ -379,6 +611,29 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
       onFolderChange?.(folder);
     }
   };
+  
+  const rememberRowHeight = useCallback((threadId: string, height: number) => {
+    if (height > 0) {
+      rowHeightsRef.current[threadId] = height;
+    }
+  }, []);
+  
+  const startCollapse = useCallback((threadId: string, type: 'archive' | 'snooze', heightOverride?: number) => {
+    setCollapsingThreads((prev) => {
+      if (prev[threadId]) return prev;
+      const height = heightOverride ?? rowHeightsRef.current[threadId] ?? 80;
+      return { ...prev, [threadId]: { height, type } };
+    });
+  }, []);
+  
+  const finishCollapse = useCallback((threadId: string) => {
+    setCollapsingThreads((prev) => {
+      if (!prev[threadId]) return prev;
+      const { [threadId]: _, ...rest } = prev;
+      return rest;
+    });
+    setThreads((prev) => prev.filter((t) => t.id !== threadId));
+  }, []);
 
   const handleArchive = async (e: React.MouseEvent, threadId: string, threadSubject?: string) => {
     e.stopPropagation();
@@ -390,15 +645,17 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
       const thread = threads.find(t => t.id === threadId);
       const subject = threadSubject || thread?.subject || '(No subject)';
       
-      // Archive immediately
+      // Archive immediately (API call)
       await archiveThread(token, threadId);
       
-      // Remove from UI immediately
-      setThreads((prev) => prev.filter((t) => t.id !== threadId));
-      
-      // Update cache: remove from current folder, invalidate all mail (archived emails appear there)
+      // Update cache: remove from current folder, invalidate all mail
       emailCache.removeThreadFromFolder(currentFolder, threadId);
       emailCache.invalidateFolder('all');
+      
+      // Ensure collapse animation starts even for non-swipe archive actions
+      if (!collapsingThreadsRef.current[threadId]) {
+        startCollapse(threadId, 'archive');
+      }
       
       // Add floating undo button
       const undoId = `undo-${Date.now()}`;
@@ -509,6 +766,10 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
       // Mark this thread's snooze as cancelled so SwipeableEmailRow can reset
       if (snoozeTargetThread) {
         setSnoozeCancelledId(snoozeTargetThread.id);
+        setPendingSnoozeHeights((prev) => {
+          const { [snoozeTargetThread.id]: _, ...rest } = prev;
+          return rest;
+        });
       }
       setSnoozePickerOpen(false);
       setSnoozeTargetThread(null);
@@ -567,10 +828,20 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
             ? { ...t, labels: [...(t.labels || []).filter(l => l !== 'INBOX'), SNOOZE_LABEL_NAME] }
             : t
         ));
+        // Clear any pending swipe height
+        setPendingSnoozeHeights((prev) => {
+          const { [snoozeTargetThread.id]: _, ...rest } = prev;
+          return rest;
+        });
       } else {
         // In Inbox or other folders: remove from current view
-        setThreads((prev) => prev.filter((t) => t.id !== snoozeTargetThread.id));
+        const pendingHeight = pendingSnoozeHeightsRef.current[snoozeTargetThread.id];
+        startCollapse(snoozeTargetThread.id, 'snooze', pendingHeight);
         emailCache.removeThreadFromFolder(currentFolder, snoozeTargetThread.id);
+        setPendingSnoozeHeights((prev) => {
+          const { [snoozeTargetThread.id]: _, ...rest } = prev;
+          return rest;
+        });
       }
       
       // Invalidate snoozed folder cache
@@ -585,6 +856,10 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
       // On error, treat like cancel - reset the row
       if (snoozeTargetThread) {
         setSnoozeCancelledId(snoozeTargetThread.id);
+        setPendingSnoozeHeights((prev) => {
+          const { [snoozeTargetThread.id]: _, ...rest } = prev;
+          return rest;
+        });
       }
     } finally {
       setSnoozeLoading(false);
@@ -765,7 +1040,66 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
       )}
 
       {/* Email List */}
-      <div className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-primary)' }}>
+      <div 
+        ref={listContainerRef}
+        className="flex-1 overflow-y-auto" 
+        style={{ background: 'var(--bg-primary)' }}
+        onTouchStart={handlePullStart}
+        onTouchMove={handlePullMove}
+        onTouchEnd={handlePullEnd}
+        onWheel={handleWheel}
+      >
+        {/* Pull-to-refresh indicator */}
+        <AnimatePresence>
+          {(pullDistance > 0 || isPullRefreshing) && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ 
+                height: isPullRefreshing ? 50 : pullDistance, 
+                opacity: pullDistance > 20 || isPullRefreshing ? 1 : 0.5 
+              }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: isPullRefreshing ? 0.2 : 0 }}
+              className="flex items-center justify-center overflow-hidden"
+              style={{ background: 'var(--bg-secondary)' }}
+            >
+              <motion.div
+                animate={{ rotate: isPullRefreshing ? 360 : (pullDistance / PULL_THRESHOLD) * 180 }}
+                transition={isPullRefreshing ? { duration: 1, repeat: Infinity, ease: 'linear' } : { duration: 0 }}
+              >
+                <RefreshCw 
+                  className={`w-5 h-5 ${pullDistance >= PULL_THRESHOLD || isPullRefreshing ? 'text-blue-400' : ''}`}
+                  style={{ color: pullDistance >= PULL_THRESHOLD || isPullRefreshing ? undefined : 'var(--text-muted)' }}
+                />
+              </motion.div>
+              {isPullRefreshing && (
+                <span className="ml-2 text-xs" style={{ color: 'var(--text-muted)' }}>Refreshing...</span>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+        
+        {/* Stale data banner - shows when data is older than 10 minutes */}
+        <AnimatePresence>
+          {isStale && !loading && !refreshing && !isPullRefreshing && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="px-3 py-2 text-center overflow-hidden"
+              style={{ background: 'rgba(251, 191, 36, 0.1)', borderBottom: '1px solid rgba(251, 191, 36, 0.2)' }}
+            >
+              <button
+                onClick={() => loadFolder(currentFolder, true)}
+                className="text-xs hover:underline"
+                style={{ color: 'rgba(251, 191, 36, 0.8)' }}
+              >
+                Last refreshed {Math.round((Date.now() - lastRefreshTime.getTime()) / 60000)} min ago • Pull down to refresh
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        
         {/* Search Results */}
         {isSearchActive ? (
           searchResults.length === 0 && !isSearching ? (
@@ -827,6 +1161,18 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
                   );
                 }
                 
+                const collapseInfo = collapsingThreads[thread.id];
+                if (collapseInfo) {
+                  return (
+                    <CollapseRow
+                      key={thread.id}
+                      height={collapseInfo.height}
+                      color={collapseInfo.type === 'archive' ? 'rgb(34, 197, 94)' : 'rgb(245, 158, 11)'}
+                      onComplete={() => finishCollapse(thread.id)}
+                    />
+                  );
+                }
+                
                 return (
                   <SwipeableEmailRow
                     key={thread.id}
@@ -845,6 +1191,11 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
                     onArchive={(e) => handleArchive(e, thread.id)}
                     onMoveToInbox={(e) => handleMoveToInbox(e, thread.id)}
                     onSnooze={(e) => handleOpenSnoozePicker(e, thread)}
+                    onCollapseStart={(height, type) => startCollapse(thread.id, type, height)}
+                    onSnoozePendingHeight={(height) => {
+                      setPendingSnoozeHeights((prev) => ({ ...prev, [thread.id]: height }));
+                    }}
+                    onMeasureHeight={(height) => rememberRowHeight(thread.id, height)}
                     getSenderNames={getSenderNames}
                     formatDate={formatDate}
                     labelBadge={searchLabelBadge}
@@ -959,6 +1310,18 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
                 }
               }
               
+              const collapseInfo = collapsingThreads[thread.id];
+              if (collapseInfo) {
+                return (
+                  <CollapseRow
+                    key={thread.id}
+                    height={collapseInfo.height}
+                    color={collapseInfo.type === 'archive' ? 'rgb(34, 197, 94)' : 'rgb(245, 158, 11)'}
+                    onComplete={() => finishCollapse(thread.id)}
+                  />
+                );
+              }
+              
               return (
                 <SwipeableEmailRow
                   key={thread.id}
@@ -976,6 +1339,11 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
                   onArchive={(e) => handleArchive(e, thread.id)}
                   onMoveToInbox={(e) => handleMoveToInbox(e, thread.id)}
                   onSnooze={(e) => handleOpenSnoozePicker(e, thread)}
+                  onCollapseStart={(height, type) => startCollapse(thread.id, type, height)}
+                  onSnoozePendingHeight={(height) => {
+                    setPendingSnoozeHeights((prev) => ({ ...prev, [thread.id]: height }));
+                  }}
+                  onMeasureHeight={(height) => rememberRowHeight(thread.id, height)}
                   getSenderNames={getSenderNames}
                   formatDate={formatDate}
                   labelBadge={labelBadge}
@@ -1089,6 +1457,27 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
   );
 }
 
+function CollapseRow({
+  height,
+  color,
+  onComplete,
+}: {
+  height: number;
+  color: string;
+  onComplete: () => void;
+}) {
+  return (
+    <motion.div
+      initial={{ height }}
+      animate={{ height: 0, marginBottom: 0, paddingTop: 0, paddingBottom: 0 }}
+      transition={{ duration: 0.2, ease: 'easeOut' }}
+      className="overflow-hidden"
+      style={{ background: color }}
+      onAnimationComplete={onComplete}
+    />
+  );
+}
+
 // Swipeable email row component
 interface SwipeableEmailRowProps {
   thread: EmailThread;
@@ -1105,6 +1494,9 @@ interface SwipeableEmailRowProps {
   onArchive: (e: React.MouseEvent) => void;
   onMoveToInbox?: (e: React.MouseEvent) => void; // For moving archived emails back to inbox
   onSnooze?: (e: React.MouseEvent) => void; // For snoozing emails
+  onCollapseStart?: (height: number, type: 'archive' | 'snooze') => void;
+  onSnoozePendingHeight?: (height: number) => void;
+  onMeasureHeight?: (height: number) => void;
   getSenderNames: (thread: EmailThread) => string;
   formatDate: (date: string) => string;
   labelBadge?: React.ReactNode; // Optional label badge for search results
@@ -1125,12 +1517,15 @@ function SwipeableEmailRow({
   onArchive,
   onMoveToInbox,
   onSnooze,
+  onCollapseStart,
+  onSnoozePendingHeight,
+  onMeasureHeight,
   getSenderNames,
   formatDate,
   labelBadge,
 }: SwipeableEmailRowProps) {
   const x = useMotionValue(0);
-  const [swipeState, setSwipeState] = useState<'idle' | 'archived' | 'snoozed' | 'snooze-pending'>('idle');
+  const [swipeState, setSwipeState] = useState<'idle' | 'snooze-pending'>('idle');
   const hasDragged = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
   
@@ -1144,6 +1539,12 @@ function SwipeableEmailRow({
       animate(x, 0, { type: 'spring', stiffness: 300, damping: 25 });
     }
   }, [snoozeCancelled, swipeState, x]);
+  
+  useEffect(() => {
+    if (containerRef.current) {
+      onMeasureHeight?.(containerRef.current.offsetHeight);
+    }
+  }, [onMeasureHeight, thread.id]);
   
   // Get container width for calculations
   const getContainerWidth = () => containerRef.current?.offsetWidth || 400;
@@ -1172,7 +1573,8 @@ function SwipeableEmailRow({
       // Animate slide off screen to the left, then archive
       const containerWidth = getContainerWidth();
       animate(x, -containerWidth - 20, { type: 'tween', duration: 0.15, ease: 'easeOut' }).then(() => {
-        setSwipeState('archived');
+        const height = containerRef.current?.offsetHeight || 80;
+        onCollapseStart?.(height, 'archive');
         onArchive({ stopPropagation: () => {} } as React.MouseEvent);
       });
     } else if (shouldSnooze) {
@@ -1180,6 +1582,8 @@ function SwipeableEmailRow({
       const containerWidth = getContainerWidth();
       animate(x, containerWidth + 20, { type: 'tween', duration: 0.15, ease: 'easeOut' }).then(() => {
         setSwipeState('snooze-pending');
+        const height = containerRef.current?.offsetHeight || 80;
+        onSnoozePendingHeight?.(height);
         onSnooze?.({ stopPropagation: () => {} } as React.MouseEvent);
       });
     } else {
@@ -1203,18 +1607,6 @@ function SwipeableEmailRow({
       onSelect();
     }
   };
-
-  // Archived state - animate row collapse smoothly
-  if (swipeState === 'archived') {
-    return (
-      <motion.div
-        initial={{ opacity: 1, height: 'auto' }}
-        animate={{ opacity: 0, height: 0, marginBottom: 0, paddingTop: 0, paddingBottom: 0 }}
-        transition={{ duration: 0.2, ease: 'easeOut' }}
-        className="overflow-hidden"
-      />
-    );
-  }
   
   // Snooze pending - keep off screen but don't collapse (waiting for picker result)
   // The snoozeCancelled prop will reset this state
@@ -1342,14 +1734,24 @@ function SwipeableEmailRow({
                     Draft
                   </span>
                 )}
+                {/* Labels appear after sender, left-justified (like Draft badge) */}
+                {labelBadge}
               </div>
               
               {/* Right side metadata */}
               <div className="flex items-center gap-1.5 flex-shrink-0">
-                <span className={`text-xs ${!thread.isRead ? 'font-medium' : ''}`} style={{ color: 'var(--text-muted)' }}>
-                  {formatDate(thread.lastMessageDate)}
-                </span>
-                {labelBadge}
+                {/* In snoozed folder, show snooze time instead of date */}
+                {isSnoozed && snoozeUntil ? (
+                  <span className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded" 
+                    style={{ background: 'rgba(251, 191, 36, 0.15)', color: 'rgb(251, 191, 36)' }}>
+                    <Clock className="w-3 h-3" />
+                    {snoozeUntil}
+                  </span>
+                ) : (
+                  <span className={`text-xs ${!thread.isRead ? 'font-medium' : ''}`} style={{ color: 'var(--text-muted)' }}>
+                    {formatDate(thread.lastMessageDate)}
+                  </span>
+                )}
               </div>
             </div>
             
@@ -1368,6 +1770,22 @@ function SwipeableEmailRow({
                   <Paperclip className="w-3 h-3" />
                 </span>
               )}
+              {/* FloMail Snoozed label - only show when NOT in snoozed folder view */}
+              {hasSnoozedLabel(thread) && !isSnoozed && (
+                <span className="flex-shrink-0 flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs"
+                  style={{ background: 'rgba(251, 191, 36, 0.15)', color: 'rgb(251, 191, 36)' }}>
+                  <Clock className="w-3 h-3" />
+                  <span>Snoozed</span>
+                </span>
+              )}
+              {/* FloMail Unsnoozed label (just returned from snooze) */}
+              {hasUnsnoozedLabel(thread) && (
+                <span className="flex-shrink-0 flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs"
+                  style={{ background: 'rgba(34, 197, 94, 0.15)', color: 'rgb(34, 197, 94)' }}>
+                  <Bell className="w-3 h-3" />
+                  <span>Unsnoozed</span>
+                </span>
+              )}
             </div>
             
             {/* Row 3: Snippet preview */}
@@ -1376,15 +1794,6 @@ function SwipeableEmailRow({
             </p>
           </div>
 
-          {/* Snooze indicator (for snoozed folder) */}
-          {isSnoozed && snoozeUntil && (
-            <div className="flex items-center gap-1 text-xs px-2 py-1 rounded-lg" 
-              style={{ background: 'rgba(251, 191, 36, 0.15)', color: 'rgb(251, 191, 36)' }}>
-              <Clock className="w-3 h-3" />
-              <span>{snoozeUntil}</span>
-            </div>
-          )}
-          
           {/* Action buttons - hidden on mobile (use swipe gestures) */}
           <div className="hidden sm:flex items-center gap-1 self-center">
             {/* Snooze button (for inbox emails) */}

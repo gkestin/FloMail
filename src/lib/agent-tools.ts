@@ -91,6 +91,25 @@ export const AGENT_TOOLS: AgentTool[] = [
     },
   },
   {
+    name: 'snooze_email',
+    description: 'Propose a snooze time for the current email thread (pending user confirmation in UI). Use when user wants to snooze, remind later, or temporarily hide an email.',
+    parameters: {
+      type: 'object',
+      properties: {
+        snooze_until: {
+          type: 'string',
+          description: 'When to unsnooze. Use one of: "later_today" (6pm), "tomorrow" (8am), "this_weekend" (Saturday 8am), "next_week" (Monday 8am), or "custom" for specific times. If the user gives a specific time, ALWAYS use "custom".',
+          enum: ['later_today', 'tomorrow', 'this_weekend', 'next_week', 'custom'],
+        },
+        custom_date: {
+          type: 'string',
+          description: 'ISO 8601 date-time string with timezone offset for custom snooze time (e.g., "2026-01-21T12:00:00-08:00"). Required if snooze_until is "custom".',
+        },
+      },
+      required: ['snooze_until'],
+    },
+  },
+  {
     name: 'star_email',
     description: 'Star the current email thread. Use when user wants to star, mark as important, or flag the email.',
     parameters: {

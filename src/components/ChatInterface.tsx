@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Loader2, Sparkles, ChevronDown, ChevronRight, ChevronLeft, X, Edit2, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp, EyeOff, Search, Globe, ExternalLink, CheckCircle, XCircle, Save, Ghost, Copy, Check, Clock, Trash2 } from 'lucide-react';
+import { Send, Loader2, Sparkles, ChevronDown, ChevronRight, ChevronLeft, X, Edit2, Edit3, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp, EyeOff, Search, Globe, ExternalLink, CheckCircle, XCircle, Save, Ghost, Copy, Check, Clock, Trash2, Volume2, VolumeX } from 'lucide-react';
 import { DraftCard } from './DraftCard';
 import { ThreadPreview } from './ThreadPreview';
 import { WaveformVisualizer } from './WaveformVisualizer';
@@ -32,34 +32,34 @@ function CompletedDraftPreview({
   const hasCc = draft.cc && draft.cc.length > 0;
   const hasBcc = draft.bcc && draft.bcc.length > 0;
   
-  // Different styling for each status
+  // Different styling for each status - improved contrast for visibility
   const statusConfig = {
     cancelled: {
       icon: X,
       label: 'Cancelled draft',
-      borderColor: 'border-slate-700/30',
-      bgColor: 'bg-slate-800/40',
-      iconColor: 'text-slate-500',
-      labelColor: 'text-slate-400',
-      opacity: 'opacity-50',
+      borderColor: 'border-slate-600/40',
+      bgColor: 'bg-slate-700/30',
+      iconColor: 'text-slate-400',
+      labelColor: 'text-slate-300',
+      opacity: 'opacity-75',
     },
     saved: {
       icon: Save,
       label: 'Saved draft',
-      borderColor: 'border-blue-500/30',
-      bgColor: 'bg-blue-900/20',
+      borderColor: 'border-blue-500/40',
+      bgColor: 'bg-blue-900/25',
       iconColor: 'text-blue-400',
       labelColor: 'text-blue-300',
-      opacity: 'opacity-70',
+      opacity: 'opacity-80',
     },
     sent: {
       icon: Send,
       label: 'Sent',
-      borderColor: 'border-green-500/30',
-      bgColor: 'bg-green-900/20',
+      borderColor: 'border-green-500/40',
+      bgColor: 'bg-green-900/25',
       iconColor: 'text-green-400',
       labelColor: 'text-green-300',
-      opacity: 'opacity-70',
+      opacity: 'opacity-80',
     },
   };
   
@@ -123,7 +123,7 @@ function CompletedDraftPreview({
 }
 
 // Copy button for AI responses
-function CopyButton({ content }: { content: string }) {
+function CopyButton({ content, className = '' }: { content: string; className?: string }) {
   const [copied, setCopied] = useState(false);
   
   const handleCopy = async () => {
@@ -139,14 +139,182 @@ function CopyButton({ content }: { content: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="absolute -right-8 top-1 p-1 rounded opacity-0 group-hover/assistant:opacity-60 hover:!opacity-100 transition-opacity"
+      className={`p-1 rounded transition-opacity ${className}`}
       style={{ color: 'var(--text-muted)' }}
-      title={copied ? 'Copied!' : 'Copy response'}
+      title={copied ? 'Copied!' : 'Copy'}
     >
       {copied ? (
         <Check className="w-3.5 h-3.5 text-green-400" />
       ) : (
         <Copy className="w-3.5 h-3.5" />
+      )}
+    </button>
+  );
+}
+
+// TTS settings type and helpers
+interface TTSSettings {
+  voice: string;
+  speed: number;
+  useNaturalVoice: boolean;
+}
+
+const DEFAULT_TTS_SETTINGS: TTSSettings = {
+  voice: 'nova',
+  speed: 1.0,
+  useNaturalVoice: true,
+};
+
+function getTTSSettings(): TTSSettings {
+  if (typeof window === 'undefined') return DEFAULT_TTS_SETTINGS;
+  try {
+    const stored = localStorage.getItem('flomail_tts_settings');
+    if (stored) return { ...DEFAULT_TTS_SETTINGS, ...JSON.parse(stored) };
+  } catch {}
+  return DEFAULT_TTS_SETTINGS;
+}
+
+export function saveTTSSettings(settings: Partial<TTSSettings>) {
+  if (typeof window === 'undefined') return;
+  const current = getTTSSettings();
+  localStorage.setItem('flomail_tts_settings', JSON.stringify({ ...current, ...settings }));
+}
+
+// Singleton audio reference for stopping
+let currentAudio: HTMLAudioElement | null = null;
+let currentSpeakingId: string | null = null;
+
+function SpeakButton({ content, id, className = '' }: { content: string; id: string; className?: string }) {
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  
+  // Check if this button's content is currently being spoken
+  useEffect(() => {
+    const checkSpeaking = () => {
+      const isPlaying = currentAudio && !currentAudio.paused && !currentAudio.ended;
+      setIsSpeaking(currentSpeakingId === id && !!isPlaying);
+    };
+    
+    checkSpeaking();
+    const interval = setInterval(checkSpeaking, 200);
+    return () => clearInterval(interval);
+  }, [id]);
+  
+  const speakWithBrowserFallback = useCallback((text: string, speed: number) => {
+    // Stop any current speech
+    speechSynthesis.cancel();
+    
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = speed;
+    utterance.pitch = 1.0;
+    
+    utterance.onend = () => {
+      currentSpeakingId = null;
+      setIsSpeaking(false);
+    };
+    
+    utterance.onerror = () => {
+      currentSpeakingId = null;
+      setIsSpeaking(false);
+    };
+    
+    currentSpeakingId = id;
+    setIsSpeaking(true);
+    speechSynthesis.speak(utterance);
+  }, [id]);
+  
+  const handleSpeak = async () => {
+    // If currently speaking, stop
+    if (isSpeaking) {
+      if (currentAudio) {
+        currentAudio.pause();
+        currentAudio.currentTime = 0;
+        currentAudio = null;
+      }
+      speechSynthesis.cancel();
+      currentSpeakingId = null;
+      setIsSpeaking(false);
+      return;
+    }
+    
+    // Stop any previous audio
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio.currentTime = 0;
+    }
+    speechSynthesis.cancel();
+    
+    const settings = getTTSSettings();
+    
+    // If natural voice is disabled, use browser fallback
+    if (!settings.useNaturalVoice) {
+      speakWithBrowserFallback(content, settings.speed);
+      return;
+    }
+    
+    // Try OpenAI TTS API
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/ai/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: content,
+          voice: settings.voice,
+          speed: settings.speed,
+        }),
+      });
+      
+      if (!response.ok) {
+        throw new Error('TTS API failed');
+      }
+      
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+      
+      audio.onended = () => {
+        URL.revokeObjectURL(audioUrl);
+        currentAudio = null;
+        currentSpeakingId = null;
+        setIsSpeaking(false);
+      };
+      
+      audio.onerror = () => {
+        URL.revokeObjectURL(audioUrl);
+        currentAudio = null;
+        currentSpeakingId = null;
+        setIsSpeaking(false);
+        // Fallback to browser
+        speakWithBrowserFallback(content, settings.speed);
+      };
+      
+      currentAudio = audio;
+      currentSpeakingId = id;
+      setIsSpeaking(true);
+      setIsLoading(false);
+      await audio.play();
+      
+    } catch (error) {
+      console.error('TTS error, falling back to browser:', error);
+      setIsLoading(false);
+      // Fallback to browser speech synthesis
+      speakWithBrowserFallback(content, settings.speed);
+    }
+  };
+  
+  return (
+    <button
+      onClick={handleSpeak}
+      disabled={isLoading}
+      className={`p-1 rounded transition-opacity ${className} ${isLoading ? 'animate-pulse' : ''}`}
+      style={{ color: 'var(--text-muted)' }}
+      title={isSpeaking ? 'Stop speaking' : isLoading ? 'Loading...' : 'Read aloud'}
+    >
+      {isSpeaking ? (
+        <VolumeX className="w-3.5 h-3.5 text-amber-400" />
+      ) : (
+        <Volume2 className="w-3.5 h-3.5" />
       )}
     </button>
   );
@@ -171,6 +339,8 @@ interface ChatInterfaceProps {
   onMoveToInbox?: () => void;
   onStar?: () => void;
   onUnstar?: () => void;
+  onSnooze?: (snoozeUntil: Date) => Promise<void>; // Snooze email until specified time
+  onOpenSnoozePicker?: () => void; // Open snooze picker modal for editing
   onNextEmail?: () => void;
   onPreviousEmail?: () => void;
   onGoToInbox?: () => void;
@@ -205,6 +375,11 @@ interface UIMessage extends ChatMessage {
   actionButtonsHandled?: boolean; // Set to true once user clicks a button
   // Search results
   searchResults?: SearchResult[];
+  // Snooze confirmation
+  snoozeConfirmation?: {
+    date: string; // ISO date string
+    confirmed: boolean; // Whether user confirmed
+  };
 }
 
 export function ChatInterface({
@@ -222,6 +397,8 @@ export function ChatInterface({
   onMoveToInbox,
   onStar,
   onUnstar,
+  onSnooze,
+  onOpenSnoozePicker,
   onNextEmail,
   onPreviousEmail,
   onGoToInbox,
@@ -244,6 +421,14 @@ export function ChatInterface({
   // Chat persistence state
   const [isIncognito, setIsIncognito] = useState(false);
   const [isLoadingChat, setIsLoadingChat] = useState(false);
+  
+  // Undo send state - delayed send with undo option
+  const [pendingSend, setPendingSend] = useState<{
+    draft: EmailDraft;
+    timeoutId: NodeJS.Timeout;
+    timestamp: number;
+  } | null>(null);
+  const pendingSendRef = useRef<typeof pendingSend>(null);
   
   // Track if message region is fully expanded (for mobile action buttons)
   const [isMessageFullyExpanded, setIsMessageFullyExpanded] = useState(false);
@@ -291,6 +476,7 @@ export function ChatInterface({
   const baseCountRef = useRef(baseRevealedCount);
   useEffect(() => { revealedCountRef.current = revealedMessageCount; }, [revealedMessageCount]);
   useEffect(() => { baseCountRef.current = baseRevealedCount; }, [baseRevealedCount]);
+  useEffect(() => { pendingSendRef.current = pendingSend; }, [pendingSend]);
   
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const isPullingRef = useRef(false);
@@ -386,7 +572,8 @@ export function ChatInterface({
         const uiMessages: UIMessage[] = persistedMessages.map(pm => fromPersistedMessage(pm) as UIMessage);
         
         // Check if there's an unsent draft from chat history
-        const lastDraftMsg = [...uiMessages].reverse().find(m => m.draft && !m.draftCancelled);
+        // A draft is only "active" if not cancelled, not saved to Gmail, and not sent
+        const lastDraftMsg = [...uiMessages].reverse().find(m => m.draft && !m.draftCancelled && !m.draftSaved && !m.draftSent);
         let draftToRestore: EmailDraft | null = lastDraftMsg?.draft || null;
         
         // Also check Gmail for an existing draft for this thread
@@ -843,7 +1030,7 @@ export function ChatInterface({
   }, [archiveWithNotification, onRegisterArchiveHandler]);
 
   // Handle tool calls from the agent
-  const handleToolCalls = useCallback((toolCalls: ToolCall[], existingDraft?: EmailDraft | null) => {
+  const handleToolCalls = useCallback(async (toolCalls: ToolCall[], existingDraft?: EmailDraft | null) => {
     for (const toolCall of toolCalls) {
       switch (toolCall.name) {
         case 'prepare_draft':
@@ -893,6 +1080,67 @@ export function ChatInterface({
           }]);
           onUnstar?.();
           break;
+        case 'snooze_email':
+          if (onSnooze) {
+            const snoozeUntilArg = toolCall.arguments.snooze_until as string;
+            const customDate = toolCall.arguments.custom_date as string | undefined;
+            
+            // Calculate the snooze date
+            let snoozeDate: Date;
+            const now = new Date();
+            
+            switch (snoozeUntilArg) {
+              case 'later_today':
+                snoozeDate = new Date(now);
+                snoozeDate.setHours(18, 0, 0, 0);
+                if (snoozeDate <= now) snoozeDate.setDate(snoozeDate.getDate() + 1);
+                break;
+              case 'tomorrow':
+                snoozeDate = new Date(now);
+                snoozeDate.setDate(snoozeDate.getDate() + 1);
+                snoozeDate.setHours(8, 0, 0, 0);
+                break;
+              case 'this_weekend':
+                snoozeDate = new Date(now);
+                const daysUntilSaturday = (6 - snoozeDate.getDay() + 7) % 7 || 7;
+                snoozeDate.setDate(snoozeDate.getDate() + daysUntilSaturday);
+                snoozeDate.setHours(8, 0, 0, 0);
+                break;
+              case 'next_week':
+                snoozeDate = new Date(now);
+                const daysUntilMonday = (8 - snoozeDate.getDay()) % 7 || 7;
+                snoozeDate.setDate(snoozeDate.getDate() + daysUntilMonday);
+                snoozeDate.setHours(8, 0, 0, 0);
+                break;
+              case 'custom':
+                snoozeDate = customDate ? new Date(customDate) : new Date(now.getTime() + 24 * 60 * 60 * 1000);
+                break;
+              default:
+                snoozeDate = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+            }
+            
+            // Format the snooze time for display
+            const formatSnooze = (d: Date) => {
+              const opts: Intl.DateTimeFormatOptions = { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+              return d.toLocaleString('en-US', opts);
+            };
+            
+            // Show confirmation message with action buttons instead of immediately snoozing
+            const confirmId = `snooze-confirm-${Date.now()}`;
+            setMessages(prev => [...prev, {
+              id: confirmId,
+              role: 'assistant' as const,
+              content: `⏰ Pending snooze until ${formatSnooze(snoozeDate)} (awaiting confirmation)`,
+              timestamp: new Date(),
+              isSystemMessage: true,
+              systemType: 'context' as const,
+              snoozeConfirmation: {
+                date: snoozeDate.toISOString(),
+                confirmed: false,
+              },
+            }]);
+          }
+          break;
         case 'go_to_next_email':
           onNextEmail?.();
           break;
@@ -909,7 +1157,7 @@ export function ChatInterface({
           break;
       }
     }
-  }, [thread, onDraftCreated, archiveWithNotification, onMoveToInbox, onStar, onUnstar, onNextEmail, onGoToInbox]);
+  }, [thread, onDraftCreated, archiveWithNotification, onMoveToInbox, onStar, onUnstar, onSnooze, onNextEmail, onGoToInbox]);
 
   // Send message to AI with streaming
   const sendToAI = useCallback(async (messageId: string, content: string) => {
@@ -1435,13 +1683,12 @@ export function ChatInterface({
     sendMessage(input);
   };
 
-  const handleSendDraft = async (updatedDraft: EmailDraft) => {
-    if (!updatedDraft || !onSendEmail) return;
+  // Execute the actual send (called after delay or on navigation away)
+  const executeSend = useCallback(async (draft: EmailDraft) => {
+    if (!onSendEmail) return;
     
-    setIsSending(true);
     try {
-      await onSendEmail(updatedDraft);
-      setCurrentDraft(null);
+      await onSendEmail(draft);
       
       // Mark the draft message as sent (so it shows differently in UI)
       setMessages(prev => prev.map(m => 
@@ -1450,7 +1697,7 @@ export function ChatInterface({
           : m
       ));
       
-      const recipient = updatedDraft.to[0] || 'recipient';
+      const recipient = draft.to[0] || 'recipient';
       const confirmMessageId = Date.now().toString();
       const confirmMessage: UIMessage = {
         id: confirmMessageId,
@@ -1472,10 +1719,86 @@ export function ChatInterface({
         timestamp: new Date(),
       };
       setMessages(prev => [...prev, errorMessage]);
-    } finally {
-      setIsSending(false);
     }
+  }, [onSendEmail]);
+  
+  // Undo the pending send
+  const handleUndoSend = useCallback(() => {
+    if (!pendingSend) return;
+    
+    // Clear the timeout
+    clearTimeout(pendingSend.timeoutId);
+    
+    // Restore the draft
+    setCurrentDraft(pendingSend.draft);
+    
+    // Un-mark the draft as sent in messages
+    setMessages(prev => prev.map(m => 
+      m.draft && m.draftSent
+        ? { ...m, draftSent: false }
+        : m
+    ));
+    
+    // Clear pending send state
+    setPendingSend(null);
+    setIsSending(false);
+  }, [pendingSend]);
+  
+  const handleSendDraft = async (updatedDraft: EmailDraft) => {
+    if (!updatedDraft || !onSendEmail) return;
+    
+    setIsSending(true);
+    setCurrentDraft(null);
+    
+    // Optimistically mark draft as sent (but don't actually send yet)
+    setMessages(prev => prev.map(m => 
+      m.draft && !m.draftCancelled && !m.draftSent
+        ? { ...m, draftSent: true }
+        : m
+    ));
+    
+    // Set up delayed send (5 seconds)
+    const UNDO_DELAY = 5000;
+    const timeoutId = setTimeout(async () => {
+      await executeSend(updatedDraft);
+      setPendingSend(null);
+      setIsSending(false);
+    }, UNDO_DELAY);
+    
+    setPendingSend({
+      draft: updatedDraft,
+      timeoutId,
+      timestamp: Date.now(),
+    });
   };
+  
+  // Handle navigation away - complete any pending send immediately
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (pendingSendRef.current) {
+        // Clear the timeout and send immediately (synchronously not possible, but try)
+        clearTimeout(pendingSendRef.current.timeoutId);
+        // Note: async operation won't complete, but the browser will try
+        executeSend(pendingSendRef.current.draft);
+      }
+    };
+    
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [executeSend]);
+  
+  // Also complete pending send when thread changes (navigating to different email)
+  useEffect(() => {
+    return () => {
+      // Cleanup: if there's a pending send when component unmounts or thread changes, send it
+      if (pendingSendRef.current) {
+        clearTimeout(pendingSendRef.current.timeoutId);
+        executeSend(pendingSendRef.current.draft);
+        // Clear refs
+        pendingSendRef.current = null;
+      }
+    };
+  }, [thread?.id, executeSend]);
 
   const handleSaveDraft = async (updatedDraft: EmailDraft) => {
     if (!updatedDraft || !onSaveDraft) return;
@@ -1545,6 +1868,62 @@ export function ChatInterface({
     onGoToInbox?.();
   }, [onGoToInbox]);
 
+  // Handle snooze confirmation
+  const handleSnoozeConfirm = useCallback(async (messageId: string, snoozeDate: Date) => {
+    if (!onSnooze) return;
+    
+    // Mark the message as confirmed
+    setMessages(prev => prev.map(m => 
+      m.id === messageId && m.snoozeConfirmation 
+        ? { ...m, snoozeConfirmation: { ...m.snoozeConfirmation, confirmed: true } } 
+        : m
+    ));
+    
+    const formatSnooze = (d: Date) => {
+      const opts: Intl.DateTimeFormatOptions = { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+      return d.toLocaleString('en-US', opts);
+    };
+    
+    try {
+      await onSnooze(snoozeDate);
+      setMessages(prev => [...prev, {
+        id: `action-${Date.now()}`,
+        role: 'assistant' as const,
+        content: `✓ Snoozed until ${formatSnooze(snoozeDate)}`,
+        timestamp: new Date(),
+        isSystemMessage: true,
+        systemType: 'navigated' as const,
+      }]);
+    } catch (err) {
+      console.error('Snooze failed:', err);
+      setMessages(prev => [...prev, {
+        id: `action-${Date.now()}`,
+        role: 'assistant' as const,
+        content: '⚠️ Failed to snooze. Please try again.',
+        timestamp: new Date(),
+      }]);
+    }
+  }, [onSnooze]);
+
+  // Handle snooze edit (opens snooze picker)
+  // NOTE: We do NOT mark the message as confirmed here - the picker closing
+  // should NOT hide the buttons. Only a successful snooze or explicit cancel should hide them.
+  const handleSnoozeEdit = useCallback((_messageId: string, _currentDate: Date) => {
+    // Open snooze picker - this is handled by parent component
+    // The buttons remain visible if user closes the picker without selecting
+    onOpenSnoozePicker?.();
+  }, [onOpenSnoozePicker]);
+
+  // Handle snooze cancel
+  const handleSnoozeCancel = useCallback((messageId: string) => {
+    // Mark the message as handled
+    setMessages(prev => prev.map(m => 
+      m.id === messageId && m.snoozeConfirmation 
+        ? { ...m, snoozeConfirmation: { ...m.snoozeConfirmation, confirmed: true }, content: '↩️ Snooze cancelled' } 
+        : m
+    ));
+  }, []);
+
   const handleDiscardDraft = async (draftToDiscard: EmailDraft) => {
     setIsDeleting(true);
     
@@ -1555,9 +1934,12 @@ export function ChatInterface({
       }
       
       setCurrentDraft(null);
-      // Mark any draft in messages as cancelled (keeps it in history but collapsed)
+      // Mark only the ACTIVE (non-cancelled/saved/sent) draft as cancelled
+      // Previously cancelled drafts should remain untouched with their draft data preserved
       setMessages(prev => prev.map(m => 
-        m.draft ? { ...m, draftCancelled: true, draft: undefined } : m
+        m.draft && !m.draftCancelled && !m.draftSaved && !m.draftSent 
+          ? { ...m, draftCancelled: true } 
+          : m
       ));
       
       // Add brief confirmation
@@ -1725,14 +2107,14 @@ export function ChatInterface({
           marginTop: '-1px', // Pull up to cover separator line
         } : {}}
       >
-        {/* Inner padding wrapper */}
-        <div className="p-4 space-y-4 min-h-full" style={isIncognito ? { paddingTop: '1rem' } : {}}>
+        {/* Inner padding wrapper - uses flex to allow child to fill height */}
+        <div className="p-4 flex flex-col min-h-full" style={isIncognito ? { paddingTop: '1rem' } : {}}>
         {messages.length === 0 && !isRecording && !isLoadingChat && (
-          <div className="relative flex flex-col items-center justify-center h-full text-center px-4">
-            {/* Incognito toggle in top-right corner of welcome area */}
+          <div className="relative flex flex-col flex-1">
+            {/* Incognito toggle - absolute top left */}
             <button
               onClick={() => setIsIncognito(!isIncognito)}
-              className="absolute top-0 right-0 p-2 rounded-lg transition-all group"
+              className="absolute top-4 left-4 p-2 rounded-lg transition-all group z-10"
               style={isIncognito ? {
                 background: 'rgba(139, 92, 246, 0.2)',
                 border: '1px solid rgba(139, 92, 246, 0.4)',
@@ -1742,154 +2124,168 @@ export function ChatInterface({
               }}
               title={isIncognito ? 'Incognito mode ON' : 'Enable incognito mode'}
             >
-              {/* Ghost icon for incognito */}
               <Ghost className={`w-5 h-5 ${isIncognito ? 'text-purple-400' : 'text-slate-500 group-hover:text-slate-400'}`} />
-              {/* Tooltip */}
-              <span className="absolute top-full right-0 mt-1 px-2 py-1 text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10"
-                style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}>
-                {isIncognito ? 'Incognito ON' : 'Go incognito'}
-              </span>
             </button>
             
-            {/* Central icon - blue sparkles normally, ghost when incognito */}
-            <div className={`w-14 h-14 rounded-full flex items-center justify-center mb-4 ${isIncognito ? 'bg-gradient-to-br from-purple-500/30 to-violet-500/20' : 'bg-gradient-to-br from-blue-500/20 to-cyan-500/20'}`}>
-              {isIncognito ? (
-                <Ghost className="w-7 h-7 text-purple-400" />
-              ) : (
-                <Sparkles className="w-7 h-7 text-blue-400" />
-              )}
-            </div>
-            
-            {/* Title and description */}
-            <h3 className="text-lg font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
-              {thread ? 'Ready to Help' : 'New Message'}
-            </h3>
-            <p className="text-sm max-w-xs mb-4" style={{ color: 'var(--text-secondary)' }}>
-              {thread
-                ? 'Tap the mic or type. Say "summarize", "draft reply", or anything!'
-                : 'Use voice or type to compose. Say "write to John about..." or "draft new message to..."'}
-            </p>
-            
-            {/* Subtle incognito indicator - just a small text line */}
-            {isIncognito && (
-              <div className="flex items-center gap-2 mb-3 px-3 py-1.5 rounded-full"
-                style={{ background: 'rgba(139, 92, 246, 0.15)', border: '1px solid rgba(139, 92, 246, 0.25)' }}>
-                <Ghost className="w-3.5 h-3.5 text-purple-400" />
-                <span className="text-xs text-purple-300">Incognito mode</span>
-                <button
-                  onClick={() => setIsIncognito(false)}
-                  className="p-0.5 rounded hover:bg-purple-500/30 transition-colors"
-                  title="Exit incognito"
-                >
-                  <X className="w-3 h-3 text-purple-400" />
-                </button>
+            {/* Chat suggestion bubbles - absolute top right, styled as chat messages with plus icon */}
+            {thread && (
+              <div className="absolute top-4 right-2 sm:right-4 flex flex-col gap-3 items-end z-10">
+                {['Summarize', 'Draft reply'].map((suggestion) => (
+                  <motion.button
+                    key={suggestion}
+                    whileHover={{ scale: 1.03, x: -3 }}
+                    whileTap={{ scale: 0.97 }}
+                    onClick={() => sendMessage(suggestion)}
+                    className="relative flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition-all"
+                    style={{ 
+                      background: 'rgba(59, 130, 246, 0.1)',
+                      color: 'rgba(147, 197, 253, 0.95)',
+                      borderRadius: '18px 18px 6px 18px',
+                      border: '1px dashed rgba(59, 130, 246, 0.4)',
+                    }}
+                  >
+                    <span className="text-blue-400/70 text-lg font-light">+</span>
+                    <span>{suggestion}</span>
+                  </motion.button>
+                ))}
               </div>
             )}
             
-            {/* Action buttons - always visible regardless of incognito */}
-            {thread ? (
-              <div className="flex flex-col items-center gap-4 w-full max-w-xs">
-                {/* AI-powered actions - chat bubble style */}
-                <div className="flex flex-wrap gap-2 justify-center">
-                  {['Summarize', 'Draft reply'].map((suggestion) => (
-                    <button
+            {/* Prev/Next buttons - absolutely positioned on left/right, vertically centered */}
+            {thread && (
+              <>
+                {/* Prev button - left edge, full height clickable area */}
+                <motion.button
+                  whileHover={{ x: -3, opacity: 1 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => onPreviousEmail?.()}
+                  className="absolute left-0 top-1/4 bottom-1/4 w-12 sm:w-16 flex flex-col items-center justify-center gap-1 transition-all opacity-50 hover:opacity-100 z-10"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  <ChevronLeft className="w-6 h-10 sm:w-8 sm:h-14 stroke-[1.5]" />
+                  <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-medium">Prev</span>
+                </motion.button>
+                
+                {/* Next button - right edge, full height clickable area */}
+                <motion.button
+                  whileHover={{ x: 3, opacity: 1 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => onNextEmail?.()}
+                  className="absolute right-0 top-1/4 bottom-1/4 w-12 sm:w-16 flex flex-col items-center justify-center gap-1 transition-all opacity-50 hover:opacity-100 z-10"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  <ChevronRight className="w-6 h-10 sm:w-8 sm:h-14 stroke-[1.5]" />
+                  <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-medium">Next</span>
+                </motion.button>
+              </>
+            )}
+            
+            {/* Center section - Mic button, vertically centered in the space */}
+            <div className="flex-1 flex flex-col items-center justify-center px-16">
+              {/* Incognito indicator when active */}
+              {isIncognito && (
+                <div className="flex items-center gap-2 mb-6 px-3 py-1.5 rounded-full"
+                  style={{ background: 'rgba(139, 92, 246, 0.15)', border: '1px solid rgba(139, 92, 246, 0.25)' }}>
+                  <Ghost className="w-3.5 h-3.5 text-purple-400" />
+                  <span className="text-xs text-purple-300">Incognito mode</span>
+                  <button
+                    onClick={() => setIsIncognito(false)}
+                    className="p-0.5 rounded hover:bg-purple-500/30 transition-colors"
+                    title="Exit incognito"
+                  >
+                    <X className="w-3 h-3 text-purple-400" />
+                  </button>
+                </div>
+              )}
+              
+              {/* Large microphone button with gradient edges - responsive size */}
+              <motion.button
+                whileHover={{ scale: 1.08 }}
+                whileTap={{ scale: 0.92 }}
+                onClick={startRecording}
+                disabled={isLoading}
+                className="relative w-36 h-36 sm:w-44 sm:h-44 lg:w-52 lg:h-52 flex items-center justify-center disabled:opacity-50 transition-all"
+                title="Start voice chat"
+              >
+                {/* Outermost soft glow */}
+                <div 
+                  className="absolute inset-0 rounded-full opacity-40 blur-2xl"
+                  style={{ background: 'radial-gradient(circle, rgba(168, 85, 247, 0.7) 0%, rgba(6, 182, 212, 0.4) 40%, transparent 65%)' }}
+                />
+                {/* Gradient that fades to transparent at edges */}
+                <div 
+                  className="absolute inset-3 rounded-full"
+                  style={{ background: 'radial-gradient(circle, rgba(168, 85, 247, 0.75) 15%, rgba(139, 92, 246, 0.5) 45%, rgba(6, 182, 212, 0.2) 70%, transparent 95%)' }}
+                />
+                {/* Inner core - more solid */}
+                <div 
+                  className="absolute inset-8 sm:inset-10 lg:inset-12 rounded-full"
+                  style={{ background: 'radial-gradient(circle, rgba(168, 85, 247, 0.95) 0%, rgba(139, 92, 246, 0.8) 60%, rgba(168, 85, 247, 0.4) 100%)' }}
+                />
+                <Mic className="w-12 h-12 sm:w-14 sm:h-14 lg:w-16 lg:h-16 text-white relative z-10 drop-shadow-lg" />
+              </motion.button>
+              
+              {/* Instructions - more magical styling */}
+              <div className="mt-8 text-center max-w-[280px]">
+                <p className="text-sm mb-1" style={{ 
+                  color: 'var(--text-secondary)',
+                  background: 'linear-gradient(90deg, rgba(168, 85, 247, 0.8), rgba(6, 182, 212, 0.8))',
+                  WebkitBackgroundClip: 'text',
+                  WebkitTextFillColor: 'transparent',
+                  backgroundClip: 'text',
+                }}>
+                  {thread ? 'Start a conversation' : 'Compose a new message'}
+                </p>
+                <p className="text-xs opacity-60" style={{ color: 'var(--text-muted)' }}>
+                  {thread 
+                    ? 'Tap the mic, type below, or try a chat starter →'
+                    : 'Speak or type to get started'}
+                </p>
+              </div>
+            </div>
+            
+            {/* Archive button - positioned above input area */}
+            {thread && (
+              <div className="flex justify-center pb-4">
+                <motion.button
+                  whileHover={{ scale: 1.03 }}
+                  whileTap={{ scale: 0.97 }}
+                  onClick={() => archiveWithNotification()}
+                  className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-medium transition-all"
+                  style={{ 
+                    background: 'rgba(59, 130, 246, 0.1)', 
+                    color: 'rgba(147, 197, 253, 0.85)',
+                    border: '1px solid rgba(59, 130, 246, 0.2)'
+                  }}
+                >
+                  <Archive className="w-4 h-4" />
+                  Archive
+                </motion.button>
+              </div>
+            )}
+            
+            {/* Compose mode - for new messages (no thread) */}
+            {!thread && (
+              <div className="flex flex-col items-center gap-3 pb-4">
+                <div className="flex flex-wrap gap-2 justify-center px-4">
+                  {['Write a quick email to...', 'Draft meeting invite...'].map((suggestion) => (
+                    <motion.button
                       key={suggestion}
+                      whileHover={{ scale: 1.03 }}
+                      whileTap={{ scale: 0.97 }}
                       onClick={() => sendMessage(suggestion)}
-                      className="px-4 py-2.5 rounded-full text-sm font-medium transition-all hover:scale-[1.02] active:scale-[0.98]"
+                      className="relative px-4 py-2 text-sm font-medium transition-all"
                       style={{ 
-                        background: 'var(--bg-interactive)', 
+                        background: 'rgba(139, 92, 246, 0.08)',
                         color: 'var(--text-secondary)',
-                        border: '1px solid var(--border-subtle)'
+                        borderRadius: '16px 16px 4px 16px',
+                        border: '1px dashed rgba(139, 92, 246, 0.3)',
                       }}
                     >
                       {suggestion}
-                    </button>
+                    </motion.button>
                   ))}
                 </div>
-                
-                {/* Navigation/Action buttons - distinct button style */}
-                <div className="flex items-center gap-1.5">
-                  <motion.button
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    onClick={() => onPreviousEmail?.()}
-                    className="flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
-                    style={{ 
-                      background: 'var(--bg-elevated)', 
-                      color: 'var(--text-secondary)',
-                      border: '1px solid var(--border-subtle)'
-                    }}
-                  >
-                    <ChevronLeft className="w-4 h-4" />
-                    Prev
-                  </motion.button>
-                  <motion.button
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    onClick={() => archiveWithNotification()}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-                    style={{ 
-                      background: 'rgba(59, 130, 246, 0.15)', 
-                      color: 'rgb(147, 197, 253)',
-                      border: '1px solid rgba(59, 130, 246, 0.3)'
-                    }}
-                  >
-                    <Archive className="w-4 h-4" />
-                    Archive
-                  </motion.button>
-                  <motion.button
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    onClick={() => onNextEmail?.()}
-                    className="flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
-                    style={{ 
-                      background: 'var(--bg-elevated)', 
-                      color: 'var(--text-secondary)',
-                      border: '1px solid var(--border-subtle)'
-                    }}
-                  >
-                    Next
-                    <ChevronRight className="w-4 h-4" />
-                  </motion.button>
-                </div>
-                
-                {/* Large mic button - soft gradient, inviting */}
-                <motion.button
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                  onClick={startRecording}
-                  disabled={isLoading}
-                  className="relative w-20 h-20 rounded-full flex items-center justify-center mt-2 disabled:opacity-50 transition-all overflow-hidden"
-                  title="Start voice chat"
-                >
-                  {/* Soft radial gradient background */}
-                  <div className="absolute inset-0 bg-gradient-to-br from-purple-500/80 via-purple-600/60 to-cyan-500/40" />
-                  <div className="absolute inset-0 bg-gradient-radial from-white/10 via-transparent to-transparent" />
-                  {/* Subtle glow effect */}
-                  <div 
-                    className="absolute -inset-1 rounded-full opacity-40 blur-md"
-                    style={{ background: 'linear-gradient(135deg, rgba(168, 85, 247, 0.6), rgba(6, 182, 212, 0.4))' }}
-                  />
-                  <Mic className="w-8 h-8 text-white relative z-10" />
-                </motion.button>
-              </div>
-            ) : (
-              <div className="flex flex-wrap gap-2 justify-center">
-                {/* Compose mode - quick actions for new message */}
-                {['Write a quick email to...', 'Draft meeting invite...'].map((suggestion) => (
-                  <button
-                    key={suggestion}
-                    onClick={() => sendMessage(suggestion)}
-                    className="px-4 py-2.5 rounded-full text-sm font-medium transition-colors"
-                    style={{ 
-                      background: 'var(--bg-interactive)', 
-                      color: 'var(--text-secondary)',
-                      border: '1px solid var(--border-subtle)'
-                    }}
-                  >
-                    {suggestion}
-                  </button>
-                ))}
               </div>
             )}
           </div>
@@ -1980,8 +2376,51 @@ export function ChatInterface({
                   : 'items-start'
             }`}
           >
-            {/* System/Action message - horizontal divider with centered badge */}
-            {message.isSystemMessage && (
+            {/* Snooze confirmation - special pending style with integrated buttons */}
+            {message.isSystemMessage && message.snoozeConfirmation && !message.snoozeConfirmation.confirmed && (
+              <div className="w-full flex flex-col items-center py-2">
+                <div className="flex flex-col items-center gap-3 px-4 py-3 rounded-xl border-2 border-dashed border-orange-500/40 bg-orange-500/10">
+                  {/* Message content */}
+                  <div className="flex items-center gap-2 text-orange-300">
+                    <Clock className="w-4 h-4" />
+                    <span className="text-sm font-medium">{message.content}</span>
+                  </div>
+                  {/* Action buttons - integrated in same container */}
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    <motion.button
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={() => handleSnoozeConfirm(message.id, new Date(message.snoozeConfirmation!.date))}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg bg-orange-500/30 text-orange-200 border border-orange-500/40 hover:bg-orange-500/40 transition-colors text-sm font-medium"
+                    >
+                      <CheckCircle className="w-4 h-4" />
+                      Confirm
+                    </motion.button>
+                    <motion.button
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={() => handleSnoozeEdit(message.id, new Date(message.snoozeConfirmation!.date))}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-700/50 text-slate-300 border border-slate-600/30 hover:bg-slate-700 transition-colors text-sm font-medium"
+                    >
+                      <Edit3 className="w-4 h-4" />
+                      Change
+                    </motion.button>
+                    <motion.button
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={() => handleSnoozeCancel(message.id)}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-700/50 text-slate-300 border border-slate-600/30 hover:bg-slate-700 transition-colors text-sm font-medium"
+                    >
+                      <X className="w-4 h-4" />
+                      Cancel
+                    </motion.button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* System/Action message - horizontal divider with centered badge (not for pending snooze) */}
+            {message.isSystemMessage && !(message.snoozeConfirmation && !message.snoozeConfirmation.confirmed) && (
               <div className="w-full flex items-center gap-2 py-2 group overflow-hidden">
                 {/* Left line - min width ensures visibility on narrow screens */}
                 <div className={`flex-1 min-w-12 h-px ${
@@ -2099,6 +2538,7 @@ export function ChatInterface({
                 </motion.button>
               </div>
             )}
+            
 
             {/* User message with edit/cancel controls */}
             {!message.isSystemMessage && message.role === 'user' && (
@@ -2205,14 +2645,25 @@ export function ChatInterface({
               </div>
             )}
 
-            {/* Assistant message - no bubble, just text with subtle copy button */}
-            {!message.isSystemMessage && message.role === 'assistant' && message.content?.trim() && (
-              <div className="max-w-[85%] px-1 py-2 group/assistant relative">
+            {/* Assistant message - no bubble, just text with copy/speak buttons */}
+            {!message.isSystemMessage && message.role === 'assistant' && message.content?.trim() && !message.isStreaming && (
+              <div className="max-w-[85%] px-1 py-2 group/assistant">
                 <p className="text-sm whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--text-primary)' }}>
                   {message.content}
                 </p>
-                {/* Subtle copy button - appears on hover */}
-                <CopyButton content={message.content} />
+                {/* Copy and speak buttons - always visible on mobile, hover on desktop */}
+                <div className="flex items-center gap-0.5 mt-1.5 opacity-50 sm:opacity-0 sm:group-hover/assistant:opacity-60 transition-opacity">
+                  <CopyButton content={message.content} className="hover:!opacity-100" />
+                  <SpeakButton content={message.content} id={message.id} className="hover:!opacity-100" />
+                </div>
+              </div>
+            )}
+            {/* Streaming assistant message - no buttons yet */}
+            {!message.isSystemMessage && message.role === 'assistant' && message.content?.trim() && message.isStreaming && (
+              <div className="max-w-[85%] px-1 py-2">
+                <p className="text-sm whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+                  {message.content}
+                </p>
               </div>
             )}
 
@@ -2325,6 +2776,53 @@ export function ChatInterface({
         <div ref={messagesEndRef} />
         </div>{/* End inner padding wrapper */}
       </div>
+
+      {/* Undo Send Banner - styled like inbox archive undo */}
+      <AnimatePresence>
+        {pendingSend && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 10 }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+            className="px-3 pb-2 pt-1"
+            style={{ 
+              background: 'linear-gradient(to top, var(--bg-primary) 70%, transparent)',
+            }}
+          >
+            <motion.div 
+              className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl"
+              style={{ 
+                background: 'var(--bg-elevated)', 
+                border: '1px solid var(--border-subtle)',
+                boxShadow: '0 2px 12px rgba(0,0,0,0.15)',
+              }}
+            >
+              {/* Left side: Message */}
+              <div className="flex items-center gap-2 min-w-0">
+                <Send className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--text-muted)' }} />
+                <span className="text-sm truncate" style={{ color: 'var(--text-secondary)' }}>
+                  Sending to {pendingSend.draft.to[0] || 'recipient'}...
+                </span>
+              </div>
+              
+              {/* Right side: Undo button */}
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={handleUndoSend}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors"
+                style={{ 
+                  background: 'var(--bg-interactive)',
+                  color: 'var(--text-accent-blue)'
+                }}
+              >
+                <span className="text-sm font-medium">Undo</span>
+              </motion.button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Input Area */}
       <div className="p-4" style={{ background: 'var(--bg-sidebar)', borderTop: '1px solid var(--border-subtle)' }}>

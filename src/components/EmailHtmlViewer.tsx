@@ -215,7 +215,16 @@ export function EmailHtmlViewer({
     html, body { overflow: hidden; } /* No internal scrolling - parent container handles scroll */
     img { max-width: 100%; height: auto; }
     table { border-collapse: collapse; max-width: 100%; }
-    a { color: ${linkColor}; }
+    a { 
+      color: ${linkColor}; 
+      cursor: pointer;
+      touch-action: manipulation; /* Removes 300ms tap delay */
+      -webkit-tap-highlight-color: rgba(96, 165, 250, 0.3);
+      text-decoration: underline;
+    }
+    a:active {
+      opacity: 0.7;
+    }
     /* Hide tracking pixels */
     img[width="1"], img[height="1"] { display: none !important; }
     /* Root wrapper allows fit-to-width scaling when content is wider than viewport */
@@ -390,7 +399,7 @@ export function EmailHtmlViewer({
       <iframe
         ref={iframeRef}
         title="Email Content"
-        sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-scripts"
+        sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-scripts allow-top-navigation-by-user-activation"
         style={{
           width: '100%',
           height: `${iframeHeight}px`,
