@@ -427,8 +427,11 @@ export function ChatInterface({
     draft: EmailDraft;
     timeoutId: NodeJS.Timeout;
     timestamp: number;
+    confirmMessageId: string; // ID of the "Sending to..." message to update
   } | null>(null);
   const pendingSendRef = useRef<typeof pendingSend>(null);
+  // Ref to hold executeSend to avoid effect dependencies causing double-sends
+  const executeSendRef = useRef<((draft: EmailDraft, confirmMessageId?: string) => Promise<void>) | null>(null);
   
   // Track if message region is fully expanded (for mobile action buttons)
   const [isMessageFullyExpanded, setIsMessageFullyExpanded] = useState(false);
@@ -1695,8 +1698,10 @@ export function ChatInterface({
   };
 
   // Execute the actual send (called after delay or on navigation away)
-  const executeSend = useCallback(async (draft: EmailDraft) => {
+  const executeSend = useCallback(async (draft: EmailDraft, confirmMessageId?: string) => {
     if (!onSendEmail) return;
+    
+    const recipient = draft.to[0] || 'recipient';
     
     try {
       await onSendEmail(draft);
@@ -1708,30 +1713,51 @@ export function ChatInterface({
           : m
       ));
       
-      const recipient = draft.to[0] || 'recipient';
-      const confirmMessageId = Date.now().toString();
-      const confirmMessage: UIMessage = {
-        id: confirmMessageId,
-        role: 'assistant',
-        content: `✓ Sent to ${recipient}`,
-        timestamp: new Date(),
-        isSystemMessage: true,
-        systemType: 'sent',
-        hasActionButtons: true,
-        actionButtonsHandled: false,
-      };
-      setMessages(prev => [...prev, confirmMessage]);
+      // Update the existing "Sending..." message to "✓ Sent" (if we have the ID)
+      // or create a new one (for navigation-triggered sends where we might not have it)
+      if (confirmMessageId) {
+        setMessages(prev => prev.map(m => 
+          m.id === confirmMessageId
+            ? { ...m, content: `✓ Sent to ${recipient}` }
+            : m
+        ));
+      } else {
+        // Fallback: create a new confirmation message
+        const newConfirmMessage: UIMessage = {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: `✓ Sent to ${recipient}`,
+          timestamp: new Date(),
+          isSystemMessage: true,
+          systemType: 'sent',
+          hasActionButtons: true,
+          actionButtonsHandled: false,
+        };
+        setMessages(prev => [...prev, newConfirmMessage]);
+      }
     } catch (error) {
       console.error('Send error:', error);
-      const errorMessage: UIMessage = {
-        id: Date.now().toString(),
-        role: 'assistant',
-        content: '⚠️ Send failed. Try again?',
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      // Update the "Sending..." message to show error, or create error message
+      if (confirmMessageId) {
+        setMessages(prev => prev.map(m => 
+          m.id === confirmMessageId
+            ? { ...m, content: '⚠️ Send failed. Try again?', hasActionButtons: false }
+            : m
+        ));
+      } else {
+        const errorMessage: UIMessage = {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: '⚠️ Send failed. Try again?',
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, errorMessage]);
+      }
     }
   }, [onSendEmail]);
+  
+  // Keep executeSendRef in sync (used in cleanup effects to avoid dependency issues)
+  useEffect(() => { executeSendRef.current = executeSend; }, [executeSend]);
   
   // Undo the pending send
   const handleUndoSend = useCallback(() => {
@@ -1743,12 +1769,15 @@ export function ChatInterface({
     // Restore the draft
     setCurrentDraft(pendingSend.draft);
     
-    // Un-mark the draft as sent in messages
-    setMessages(prev => prev.map(m => 
-      m.draft && m.draftSent
-        ? { ...m, draftSent: false }
-        : m
-    ));
+    // Un-mark the draft as sent in messages AND remove the confirmation message
+    setMessages(prev => prev
+      .filter(m => m.id !== pendingSend.confirmMessageId) // Remove "Sending to..." message
+      .map(m => 
+        m.draft && m.draftSent
+          ? { ...m, draftSent: false }
+          : m
+      )
+    );
     
     // Clear pending send state
     setPendingSend(null);
@@ -1768,48 +1797,69 @@ export function ChatInterface({
         : m
     ));
     
+    // Immediately add a "sending" confirmation message with action buttons
+    // This shows the user they can archive/navigate while waiting for undo to expire
+    const recipient = updatedDraft.to[0] || 'recipient';
+    const confirmMessageId = `sending-${Date.now()}`;
+    const pendingConfirmMessage: UIMessage = {
+      id: confirmMessageId,
+      role: 'assistant',
+      content: `Sending to ${recipient}...`,
+      timestamp: new Date(),
+      isSystemMessage: true,
+      systemType: 'sent',
+      hasActionButtons: true,
+      actionButtonsHandled: false,
+    };
+    setMessages(prev => [...prev, pendingConfirmMessage]);
+    
     // Set up delayed send (5 seconds)
     const UNDO_DELAY = 5000;
     const timeoutId = setTimeout(async () => {
-      await executeSend(updatedDraft);
+      // IMPORTANT: Clear pending state BEFORE executing send to prevent double-send
+      // If we clear after, state changes during the async send (e.g., selectedThread update)
+      // can cause effect cleanups that see pendingSendRef still set and trigger another send
       setPendingSend(null);
+      pendingSendRef.current = null;
       setIsSending(false);
+      await executeSend(updatedDraft, confirmMessageId);
     }, UNDO_DELAY);
     
     setPendingSend({
       draft: updatedDraft,
       timeoutId,
       timestamp: Date.now(),
+      confirmMessageId, // Track the confirmation message so we can update/remove it
     });
   };
   
   // Handle navigation away - complete any pending send immediately
   useEffect(() => {
     const handleBeforeUnload = () => {
-      if (pendingSendRef.current) {
+      if (pendingSendRef.current && executeSendRef.current) {
         // Clear the timeout and send immediately (synchronously not possible, but try)
         clearTimeout(pendingSendRef.current.timeoutId);
         // Note: async operation won't complete, but the browser will try
-        executeSend(pendingSendRef.current.draft);
+        executeSendRef.current(pendingSendRef.current.draft, pendingSendRef.current.confirmMessageId);
       }
     };
     
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [executeSend]);
+  }, []); // No dependencies - uses refs to avoid stale closures
   
   // Also complete pending send when thread changes (navigating to different email)
   useEffect(() => {
     return () => {
       // Cleanup: if there's a pending send when component unmounts or thread changes, send it
-      if (pendingSendRef.current) {
+      if (pendingSendRef.current && executeSendRef.current) {
         clearTimeout(pendingSendRef.current.timeoutId);
-        executeSend(pendingSendRef.current.draft);
+        executeSendRef.current(pendingSendRef.current.draft, pendingSendRef.current.confirmMessageId);
         // Clear refs
         pendingSendRef.current = null;
       }
     };
-  }, [thread?.id, executeSend]);
+  }, [thread?.id]); // Only trigger on thread change, not on executeSend recreation
 
   const handleSaveDraft = async (updatedDraft: EmailDraft) => {
     if (!updatedDraft || !onSaveDraft) return;
