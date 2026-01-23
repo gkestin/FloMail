@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Loader2, Sparkles, ChevronDown, ChevronRight, ChevronLeft, X, Edit2, Edit3, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp, EyeOff, Search, Globe, ExternalLink, CheckCircle, XCircle, Save, Ghost, Copy, Check, Clock, Trash2, Volume2, VolumeX } from 'lucide-react';
+import { Send, Loader2, Sparkles, ChevronDown, ChevronRight, ChevronLeft, X, Edit2, Edit3, RotateCcw, Mic, Square, Archive, Eye, Inbox, ArrowUp, EyeOff, Search, Globe, ExternalLink, CheckCircle, XCircle, Save, Ghost, Copy, Check, Clock, Trash2 } from 'lucide-react';
 import { DraftCard } from './DraftCard';
 import { ThreadPreview } from './ThreadPreview';
 import { WaveformVisualizer } from './WaveformVisualizer';
@@ -17,6 +17,7 @@ import {
   PersistedMessage 
 } from '@/lib/chat-persistence';
 import { getDraftForThread, FullGmailDraft } from '@/lib/gmail';
+import { TTSController, stopAllTTS } from './TTSController';
 
 // Collapsed view for completed drafts (cancelled, saved, or sent)
 function CompletedDraftPreview({ 
@@ -152,172 +153,14 @@ function CopyButton({ content, className = '' }: { content: string; className?: 
   );
 }
 
-// TTS settings type and helpers
-interface TTSSettings {
-  voice: string;
-  speed: number;
-  useNaturalVoice: boolean;
-}
-
-const DEFAULT_TTS_SETTINGS: TTSSettings = {
-  voice: 'nova',
-  speed: 1.0,
-  useNaturalVoice: true,
-};
-
-function getTTSSettings(): TTSSettings {
-  if (typeof window === 'undefined') return DEFAULT_TTS_SETTINGS;
+// TTS settings helper export (used by settings panel)
+export function saveTTSSettings(settings: Partial<{ voice: string; speed: number; useNaturalVoice: boolean }>) {
+  if (typeof window === 'undefined') return;
   try {
     const stored = localStorage.getItem('flomail_tts_settings');
-    if (stored) return { ...DEFAULT_TTS_SETTINGS, ...JSON.parse(stored) };
+    const current = stored ? JSON.parse(stored) : { voice: 'nova', speed: 1.0, useNaturalVoice: true };
+    localStorage.setItem('flomail_tts_settings', JSON.stringify({ ...current, ...settings }));
   } catch {}
-  return DEFAULT_TTS_SETTINGS;
-}
-
-export function saveTTSSettings(settings: Partial<TTSSettings>) {
-  if (typeof window === 'undefined') return;
-  const current = getTTSSettings();
-  localStorage.setItem('flomail_tts_settings', JSON.stringify({ ...current, ...settings }));
-}
-
-// Singleton audio reference for stopping
-let currentAudio: HTMLAudioElement | null = null;
-let currentSpeakingId: string | null = null;
-
-function SpeakButton({ content, id, className = '' }: { content: string; id: string; className?: string }) {
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  
-  // Check if this button's content is currently being spoken
-  useEffect(() => {
-    const checkSpeaking = () => {
-      const isPlaying = currentAudio && !currentAudio.paused && !currentAudio.ended;
-      setIsSpeaking(currentSpeakingId === id && !!isPlaying);
-    };
-    
-    checkSpeaking();
-    const interval = setInterval(checkSpeaking, 200);
-    return () => clearInterval(interval);
-  }, [id]);
-  
-  const speakWithBrowserFallback = useCallback((text: string, speed: number) => {
-    // Stop any current speech
-    speechSynthesis.cancel();
-    
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = speed;
-    utterance.pitch = 1.0;
-    
-    utterance.onend = () => {
-      currentSpeakingId = null;
-      setIsSpeaking(false);
-    };
-    
-    utterance.onerror = () => {
-      currentSpeakingId = null;
-      setIsSpeaking(false);
-    };
-    
-    currentSpeakingId = id;
-    setIsSpeaking(true);
-    speechSynthesis.speak(utterance);
-  }, [id]);
-  
-  const handleSpeak = async () => {
-    // If currently speaking, stop
-    if (isSpeaking) {
-      if (currentAudio) {
-        currentAudio.pause();
-        currentAudio.currentTime = 0;
-        currentAudio = null;
-      }
-      speechSynthesis.cancel();
-      currentSpeakingId = null;
-      setIsSpeaking(false);
-      return;
-    }
-    
-    // Stop any previous audio
-    if (currentAudio) {
-      currentAudio.pause();
-      currentAudio.currentTime = 0;
-    }
-    speechSynthesis.cancel();
-    
-    const settings = getTTSSettings();
-    
-    // If natural voice is disabled, use browser fallback
-    if (!settings.useNaturalVoice) {
-      speakWithBrowserFallback(content, settings.speed);
-      return;
-    }
-    
-    // Try OpenAI TTS API
-    setIsLoading(true);
-    try {
-      const response = await fetch('/api/ai/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: content,
-          voice: settings.voice,
-          speed: settings.speed,
-        }),
-      });
-      
-      if (!response.ok) {
-        throw new Error('TTS API failed');
-      }
-      
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(audioUrl);
-      
-      audio.onended = () => {
-        URL.revokeObjectURL(audioUrl);
-        currentAudio = null;
-        currentSpeakingId = null;
-        setIsSpeaking(false);
-      };
-      
-      audio.onerror = () => {
-        URL.revokeObjectURL(audioUrl);
-        currentAudio = null;
-        currentSpeakingId = null;
-        setIsSpeaking(false);
-        // Fallback to browser
-        speakWithBrowserFallback(content, settings.speed);
-      };
-      
-      currentAudio = audio;
-      currentSpeakingId = id;
-      setIsSpeaking(true);
-      setIsLoading(false);
-      await audio.play();
-      
-    } catch (error) {
-      console.error('TTS error, falling back to browser:', error);
-      setIsLoading(false);
-      // Fallback to browser speech synthesis
-      speakWithBrowserFallback(content, settings.speed);
-    }
-  };
-  
-  return (
-    <button
-      onClick={handleSpeak}
-      disabled={isLoading}
-      className={`p-1 rounded transition-opacity ${className} ${isLoading ? 'animate-pulse' : ''}`}
-      style={{ color: 'var(--text-muted)' }}
-      title={isSpeaking ? 'Stop speaking' : isLoading ? 'Loading...' : 'Read aloud'}
-    >
-      {isSpeaking ? (
-        <VolumeX className="w-3.5 h-3.5 text-amber-400" />
-      ) : (
-        <Volume2 className="w-3.5 h-3.5" />
-      )}
-    </button>
-  );
 }
 
 // Import folder type
@@ -2715,7 +2558,7 @@ export function ChatInterface({
                 {/* Copy and speak buttons - always visible on mobile, hover on desktop */}
                 <div className="flex items-center gap-0.5 mt-1.5 opacity-50 sm:opacity-0 sm:group-hover/assistant:opacity-60 transition-opacity">
                   <CopyButton content={message.content} className="hover:!opacity-100" />
-                  <SpeakButton content={message.content} id={message.id} className="hover:!opacity-100" />
+                  <TTSController content={message.content} id={message.id} className="hover:!opacity-100" />
                 </div>
               </div>
             )}

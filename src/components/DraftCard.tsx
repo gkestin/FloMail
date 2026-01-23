@@ -2,7 +2,8 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, X, Loader2, Reply, Forward, Mail, Plus, Paperclip, Trash2, AlertTriangle, ArrowLeftRight, Save, FileIcon as LucideFile, ImageIcon as LucideImage, FileText as LucideFileText, Film, Music, FileArchive, FileCode, FileSpreadsheet, Presentation, ChevronDown, Copy, Check, Volume2, VolumeX } from 'lucide-react';
+import { Send, X, Loader2, Reply, Forward, Mail, Plus, Paperclip, Trash2, AlertTriangle, ArrowLeftRight, Save, FileIcon as LucideFile, ImageIcon as LucideImage, FileText as LucideFileText, Film, Music, FileArchive, FileCode, FileSpreadsheet, Presentation, ChevronDown, Copy, Check } from 'lucide-react';
+import { TTSController } from './TTSController';
 import { EmailDraft, DraftAttachment, EmailDraftType, EmailThread, EmailMessage } from '@/types';
 import { buildReplyQuote } from '@/lib/agent-tools';
 import { formatFileSize, getFileIcon as getFileIconType } from '@/lib/email-parsing';
@@ -72,161 +73,6 @@ function DraftCopyButton({ content }: { content: string }) {
   );
 }
 
-// Singleton for speech synthesis tracking
-// Singleton audio reference for stopping
-let draftCurrentAudio: HTMLAudioElement | null = null;
-let draftSpeakingId: string | null = null;
-
-// TTS settings helpers (same as ChatInterface)
-interface TTSSettings {
-  voice: string;
-  speed: number;
-  useNaturalVoice: boolean;
-}
-
-function getDraftTTSSettings(): TTSSettings {
-  if (typeof window === 'undefined') return { voice: 'nova', speed: 1.0, useNaturalVoice: true };
-  try {
-    const stored = localStorage.getItem('flomail_tts_settings');
-    if (stored) return { voice: 'nova', speed: 1.0, useNaturalVoice: true, ...JSON.parse(stored) };
-  } catch {}
-  return { voice: 'nova', speed: 1.0, useNaturalVoice: true };
-}
-
-// Small speak button for draft body - uses OpenAI TTS like ChatInterface
-function DraftSpeakButton({ content, draftId }: { content: string; draftId?: string }) {
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const buttonId = draftId || 'draft-body';
-  
-  useEffect(() => {
-    const checkSpeaking = () => {
-      const isPlaying = draftCurrentAudio && !draftCurrentAudio.paused && !draftCurrentAudio.ended;
-      setIsSpeaking(draftSpeakingId === buttonId && !!isPlaying);
-    };
-    checkSpeaking();
-    const interval = setInterval(checkSpeaking, 200);
-    return () => clearInterval(interval);
-  }, [buttonId]);
-  
-  const speakWithBrowserFallback = useCallback((text: string, speed: number) => {
-    speechSynthesis.cancel();
-    
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = speed;
-    utterance.pitch = 1.0;
-    
-    utterance.onend = () => {
-      draftSpeakingId = null;
-      setIsSpeaking(false);
-    };
-    
-    utterance.onerror = () => {
-      draftSpeakingId = null;
-      setIsSpeaking(false);
-    };
-    
-    draftSpeakingId = buttonId;
-    setIsSpeaking(true);
-    speechSynthesis.speak(utterance);
-  }, [buttonId]);
-  
-  const handleSpeak = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    
-    if (isSpeaking) {
-      if (draftCurrentAudio) {
-        draftCurrentAudio.pause();
-        draftCurrentAudio.currentTime = 0;
-        draftCurrentAudio = null;
-      }
-      speechSynthesis.cancel();
-      draftSpeakingId = null;
-      setIsSpeaking(false);
-      return;
-    }
-    
-    // Stop any previous audio
-    if (draftCurrentAudio) {
-      draftCurrentAudio.pause();
-      draftCurrentAudio.currentTime = 0;
-    }
-    speechSynthesis.cancel();
-    
-    const settings = getDraftTTSSettings();
-    
-    // If natural voice is disabled, use browser fallback
-    if (!settings.useNaturalVoice) {
-      speakWithBrowserFallback(content, settings.speed);
-      return;
-    }
-    
-    // Try OpenAI TTS API
-    setIsLoading(true);
-    try {
-      const response = await fetch('/api/ai/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: content,
-          voice: settings.voice,
-          speed: settings.speed,
-        }),
-      });
-      
-      if (!response.ok) {
-        throw new Error('TTS API failed');
-      }
-      
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(audioUrl);
-      
-      audio.onended = () => {
-        URL.revokeObjectURL(audioUrl);
-        draftCurrentAudio = null;
-        draftSpeakingId = null;
-        setIsSpeaking(false);
-      };
-      
-      audio.onerror = () => {
-        URL.revokeObjectURL(audioUrl);
-        draftCurrentAudio = null;
-        draftSpeakingId = null;
-        setIsSpeaking(false);
-        // Fallback to browser
-        speakWithBrowserFallback(content, settings.speed);
-      };
-      
-      draftCurrentAudio = audio;
-      draftSpeakingId = buttonId;
-      setIsSpeaking(true);
-      setIsLoading(false);
-      await audio.play();
-      
-    } catch (error) {
-      console.error('TTS error, falling back to browser:', error);
-      setIsLoading(false);
-      // Fallback to browser speech synthesis
-      speakWithBrowserFallback(content, settings.speed);
-    }
-  };
-  
-  return (
-    <button
-      onClick={handleSpeak}
-      className="p-1.5 rounded-md transition-colors hover:bg-white/10"
-      style={{ color: 'var(--text-muted)' }}
-      title={isSpeaking ? 'Stop speaking' : 'Read aloud'}
-    >
-      {isSpeaking ? (
-        <VolumeX className="w-3.5 h-3.5 text-amber-400" />
-      ) : (
-        <Volume2 className="w-3.5 h-3.5" />
-      )}
-    </button>
-  );
-}
 
 // Parse draft body to separate user's content from quoted reply content
 // Returns the user's new text (before the "On ... wrote:" line) and whether there's quoted content
@@ -892,7 +738,7 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
           {displayedBody && displayedBody.trim() && !isStreaming && (
             <div className="flex items-center gap-0.5 mt-2 opacity-50 hover:opacity-80 transition-opacity">
               <DraftCopyButton content={displayedBody} />
-              <DraftSpeakButton content={displayedBody} draftId={editedDraft.id} />
+              <TTSController content={displayedBody} id={editedDraft.id || 'draft-body'} />
             </div>
           )}
 
