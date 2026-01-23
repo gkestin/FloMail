@@ -202,6 +202,7 @@ interface UIMessage extends ChatMessage {
   toolCalls?: ToolCall[];
   draft?: EmailDraft;
   isTranscribing?: boolean;
+  transcriptionError?: boolean;
   isEditing?: boolean;
   isCancelled?: boolean;
   isStreaming?: boolean; // Content is still being streamed
@@ -284,6 +285,7 @@ export function ChatInterface({
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [analyserNode, setAnalyserNode] = useState<AnalyserNode | null>(null);
   const [pendingMessageId, setPendingMessageId] = useState<string | null>(null);
+  const transcriptionBlobsRef = useRef<Map<string, Blob>>(new Map());
   
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -816,7 +818,7 @@ export function ChatInterface({
         
         // Filter out transient states before saving
         const persistableMessages: PersistedMessage[] = messagesToSave
-          .filter(m => !m.isTranscribing && !m.isEditing && !m.isCancelled && !m.isStreaming)
+          .filter(m => !m.isTranscribing && !m.transcriptionError && !m.isEditing && !m.isCancelled && !m.isStreaming)
           .map(m => toPersistedMessage(m));
         
         await saveThreadChat(user.uid, capturedThreadId, persistableMessages);
@@ -1023,7 +1025,7 @@ export function ChatInterface({
       // Anthropic requires all messages to have non-empty content
       // IMPORTANT: Filter out snooze confirmation messages to prevent AI from calling snooze_email again
       const contextMessages = messages
-        .filter(m => !m.isCancelled && !m.isTranscribing && m.content && m.content.trim() && !m.snoozeConfirmation)
+        .filter(m => !m.isCancelled && !m.isTranscribing && !m.transcriptionError && m.content && m.content.trim() && !m.snoozeConfirmation)
         .map(m => ({ role: m.role, content: m.content }));
       
       // Check if there's a pending snooze confirmation - if so, tell the AI not to snooze again
@@ -1360,6 +1362,7 @@ export function ChatInterface({
           // Create pending message immediately
           const messageId = Date.now().toString();
           setPendingMessageId(messageId);
+          transcriptionBlobsRef.current.set(messageId, blob);
           
           const pendingMessage: UIMessage = {
             id: messageId,
@@ -1367,6 +1370,7 @@ export function ChatInterface({
             content: '',
             timestamp: new Date(),
             isTranscribing: true,
+            transcriptionError: false,
           };
           setMessages(prev => [...prev, pendingMessage]);
 
@@ -1387,9 +1391,10 @@ export function ChatInterface({
             // Update message with transcribed text
             setMessages(prev => prev.map(m => 
               m.id === messageId 
-                ? { ...m, content: text, isTranscribing: false }
+                ? { ...m, content: text, isTranscribing: false, transcriptionError: false }
                 : m
             ));
+            transcriptionBlobsRef.current.delete(messageId);
             
             // Auto-send to AI
             await sendToAI(messageId, text);
@@ -1398,7 +1403,7 @@ export function ChatInterface({
             // Update message to show error
             setMessages(prev => prev.map(m => 
               m.id === messageId 
-                ? { ...m, content: 'Failed to transcribe. Tap to retry.', isTranscribing: false }
+                ? { ...m, content: 'Failed to transcribe. Tap to retry.', isTranscribing: false, transcriptionError: true }
                 : m
             ));
           } finally {
@@ -1491,11 +1496,64 @@ export function ChatInterface({
   // Cancel pending message
   const cancelMessage = useCallback((messageId: string) => {
     setMessages(prev => prev.filter(m => m.id !== messageId));
+    transcriptionBlobsRef.current.delete(messageId);
     if (isLoading) {
       abortControllerRef.current?.abort();
       setIsLoading(false);
     }
   }, [isLoading]);
+
+  // Retry transcription for a failed voice message
+  const retryTranscription = useCallback(async (messageId: string) => {
+    const blob = transcriptionBlobsRef.current.get(messageId);
+    if (!blob) {
+      setMessages(prev => prev.map(m =>
+        m.id === messageId
+          ? { ...m, content: 'Audio missing. Please record again.', transcriptionError: true, isTranscribing: false }
+          : m
+      ));
+      return;
+    }
+
+    setPendingMessageId(messageId);
+    setMessages(prev => prev.map(m =>
+      m.id === messageId
+        ? { ...m, content: '', isTranscribing: true, transcriptionError: false }
+        : m
+    ));
+
+    try {
+      const formData = new FormData();
+      formData.append('audio', blob, 'recording.webm');
+
+      const response = await fetch('/api/ai/transcribe', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) throw new Error('Transcription failed');
+
+      const { text } = await response.json();
+
+      setMessages(prev => prev.map(m =>
+        m.id === messageId
+          ? { ...m, content: text, isTranscribing: false, transcriptionError: false }
+          : m
+      ));
+      transcriptionBlobsRef.current.delete(messageId);
+
+      await sendToAI(messageId, text);
+    } catch (error) {
+      console.error('Transcription error:', error);
+      setMessages(prev => prev.map(m =>
+        m.id === messageId
+          ? { ...m, content: 'Failed to transcribe. Tap to retry.', isTranscribing: false, transcriptionError: true }
+          : m
+      ));
+    } finally {
+      setPendingMessageId(null);
+    }
+  }, [sendToAI]);
 
   // Edit message
   const startEditing = useCallback((messageId: string, content: string) => {
@@ -2502,10 +2560,19 @@ export function ChatInterface({
                   // Normal display - user messages get gray bubble
                   <>
                     <div 
-                      className="rounded-2xl px-4 py-3"
+                      className={`rounded-2xl px-4 py-3 ${message.transcriptionError ? 'cursor-pointer' : ''}`}
+                      onClick={() => {
+                        if (message.transcriptionError) {
+                          retryTranscription(message.id);
+                        }
+                      }}
                       style={message.isTranscribing ? {
                         background: 'var(--bg-interactive)',
                         border: '1px solid var(--border-default)'
+                      } : message.transcriptionError ? {
+                        background: 'rgba(239, 68, 68, 0.08)',
+                        border: '1px dashed rgba(239, 68, 68, 0.35)',
+                        color: 'var(--text-primary)'
                       } : {
                         background: 'var(--bg-elevated)',
                         color: 'var(--text-primary)'
@@ -2522,7 +2589,7 @@ export function ChatInterface({
                     </div>
                     
                     {/* Action buttons - only show edit on hover for completed messages */}
-                    {!message.isTranscribing && !isLoading && (
+                    {!message.isTranscribing && !message.transcriptionError && !isLoading && (
                       <div className="absolute -left-12 top-1/2 -translate-y-1/2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button
                           onClick={() => startEditing(message.id, message.content)}
