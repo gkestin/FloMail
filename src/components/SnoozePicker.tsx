@@ -111,7 +111,7 @@ const QUICK_SNOOZE_OPTIONS: {
 export function SnoozePicker({ isOpen, onClose, onSelect, isLoading = false }: SnoozePickerProps) {
   const [showCustom, setShowCustom] = useState(false);
   const [customDate, setCustomDate] = useState('');
-  const [customTime, setCustomTime] = useState('09:00');
+  const [customTime, setCustomTime] = useState('13:00');
   const [lastSnooze, setLastSnooze] = useState<{ option: SnoozeOption; customDate?: string } | null>(null);
 
   // Load last snooze option on mount
@@ -295,8 +295,8 @@ export function SnoozePicker({ isOpen, onClose, onSelect, isLoading = false }: S
               </div>
             ) : (
               /* Custom date/time picker */
-              <div className="p-4 space-y-4">
-                <div>
+              <div className="p-4 space-y-4" style={{ overflow: 'hidden' }}>
+                <div style={{ width: '100%', overflow: 'hidden' }}>
                   <label className="block text-sm mb-1.5" style={{ color: 'var(--text-secondary)' }}>
                     Date
                   </label>
@@ -306,17 +306,21 @@ export function SnoozePicker({ isOpen, onClose, onSelect, isLoading = false }: S
                     onChange={(e) => setCustomDate(e.target.value)}
                     min={today}
                     className="w-full px-3 py-2 rounded-lg focus:outline-none focus:ring-2"
-                    style={{ 
-                      background: 'var(--bg-interactive)', 
+                    style={{
+                      background: 'var(--bg-interactive)',
                       color: 'var(--text-primary)',
                       border: '1px solid var(--border-default)',
+                      width: '100%',
                       maxWidth: '100%',
                       boxSizing: 'border-box',
+                      WebkitAppearance: 'none',
+                      MozAppearance: 'none',
+                      appearance: 'none',
                     }}
                   />
                 </div>
-                
-                <div>
+
+                <div style={{ width: '100%', overflow: 'hidden' }}>
                   <label className="block text-sm mb-1.5" style={{ color: 'var(--text-secondary)' }}>
                     Time
                   </label>
@@ -325,12 +329,16 @@ export function SnoozePicker({ isOpen, onClose, onSelect, isLoading = false }: S
                     value={customTime}
                     onChange={(e) => setCustomTime(e.target.value)}
                     className="w-full px-3 py-2 rounded-lg focus:outline-none focus:ring-2"
-                    style={{ 
-                      background: 'var(--bg-interactive)', 
+                    style={{
+                      background: 'var(--bg-interactive)',
                       color: 'var(--text-primary)',
                       border: '1px solid var(--border-default)',
+                      width: '100%',
                       maxWidth: '100%',
                       boxSizing: 'border-box',
+                      WebkitAppearance: 'none',
+                      MozAppearance: 'none',
+                      appearance: 'none',
                     }}
                   />
                 </div>

@@ -532,7 +532,12 @@ export function ChatInterface({
   // Horizontal swipe state
   const horizontalAccumulatedDelta = useRef(0);
   const hasNavigatedThisGesture = useRef(false);
-  
+
+  // Track when we reach the top to prevent momentum scroll from opening message region
+  const reachedTopTimeRef = useRef(0);
+  const scrollMomentumDelayRef = useRef<NodeJS.Timeout | null>(null);
+  const isScrollingEligibleRef = useRef(false);
+
   useEffect(() => {
     if (thread) {
       totalMessagesRef.current = thread.messages.length;
@@ -664,18 +669,18 @@ export function ChatInterface({
     const handleWheel = (e: WheelEvent) => {
       const current = revealedCountRef.current;
       const total = totalMessagesRef.current;
-      
+
       // ===========================================
       // HORIZONTAL SCROLL → Navigate between threads
       // ===========================================
       // Swipe LEFT (deltaX > 0) → NEXT thread
       // Swipe RIGHT (deltaX < 0) → PREVIOUS thread
       const horizontalThreshold = 100;
-      
+
       if (Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.5) {
         // Predominantly horizontal scroll
         horizontalAccumulatedDelta.current += e.deltaX;
-        
+
         if (!hasNavigatedThisGesture.current) {
           if (horizontalAccumulatedDelta.current > horizontalThreshold) {
             // Swipe LEFT → NEXT
@@ -689,17 +694,17 @@ export function ChatInterface({
             horizontalAccumulatedDelta.current = 0;
           }
         }
-        
+
         // Reset navigation gesture after short delay
         if (gestureEndTimeout.current) clearTimeout(gestureEndTimeout.current);
         gestureEndTimeout.current = setTimeout(() => {
           hasNavigatedThisGesture.current = false;
           horizontalAccumulatedDelta.current = 0;
         }, 150);
-        
+
         return; // Don't process vertical scroll when horizontal
       }
-      
+
       // ===========================================
       // VERTICAL SCROLL → Reveal/collapse messages
       // ===========================================
@@ -709,15 +714,33 @@ export function ChatInterface({
         handleScrollReveal(0);
         return; // Exit, allow normal scroll to continue
       }
-      
+
       // Check scroll position
       const atTop = container.scrollTop <= 5;
-      
+
+      // Track when we reach the top
+      if (atTop && !isScrollingEligibleRef.current) {
+        // Just reached top - start delay timer
+        if (scrollMomentumDelayRef.current) {
+          clearTimeout(scrollMomentumDelayRef.current);
+        }
+        scrollMomentumDelayRef.current = setTimeout(() => {
+          isScrollingEligibleRef.current = true;
+        }, 50); // 50ms delay to avoid momentum scroll
+      } else if (!atTop) {
+        // Not at top - reset eligibility
+        isScrollingEligibleRef.current = false;
+        if (scrollMomentumDelayRef.current) {
+          clearTimeout(scrollMomentumDelayRef.current);
+          scrollMomentumDelayRef.current = null;
+        }
+      }
+
       // Scroll UP (deltaY < 0) at top = reveal ONE message
-      // Only require atTop - atBottom check was causing issues when ThreadPreview expands
-      if (e.deltaY < 0 && atTop) {
+      // But only if we've been at the top for at least 50ms
+      if (e.deltaY < 0 && atTop && isScrollingEligibleRef.current) {
         accumulatedDelta += Math.abs(e.deltaY);
-        
+
         if (!hasActedThisGesture.current && accumulatedDelta > revealThreshold) {
           // Priority order:
           // 1) If collapsed → open (reveal 1)
@@ -734,7 +757,7 @@ export function ChatInterface({
             hasActedThisGesture.current = true;
           }
         }
-        
+
         e.preventDefault();
         resetGesture();
       }
@@ -751,6 +774,7 @@ export function ChatInterface({
       container.removeEventListener('touchend', handleTouchEnd);
       container.removeEventListener('wheel', handleWheel);
       if (gestureEndTimeout.current) clearTimeout(gestureEndTimeout.current);
+      if (scrollMomentumDelayRef.current) clearTimeout(scrollMomentumDelayRef.current);
     };
   }, []); // Empty deps - uses refs for all state
 
@@ -2880,8 +2904,8 @@ export function ChatInterface({
                 whileTap={{ scale: 0.95 }}
                 onClick={onArchive}
                 disabled={!onArchive}
-                className="flex items-center gap-2 px-6 py-3 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 transition-colors disabled:opacity-50"
-                style={{ color: 'rgb(52, 211, 153)' }}
+                className="flex items-center gap-2 px-6 py-3 rounded-xl bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 transition-colors disabled:opacity-50"
+                style={{ color: 'rgb(147, 197, 253)' }}
               >
                 <Archive className="w-5 h-5" />
                 <span className="text-sm font-medium">Archive</span>

@@ -981,3 +981,7 @@ const clean = DOMPurify.sanitize(dirtyHtml, {
 
 *Last Updated: 2026-01-24*
 *Claude.md - Comprehensive context for AI assistants working on FloMail*
+
+## Commiting to Github
+
+When you commit to github, you SHOULD NOT SAY Co-Authored by Claude!

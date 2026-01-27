@@ -1167,7 +1167,7 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
                     <CollapseRow
                       key={thread.id}
                       height={collapseInfo.height}
-                      color={collapseInfo.type === 'archive' ? 'rgb(34, 197, 94)' : 'rgb(245, 158, 11)'}
+                      color={collapseInfo.type === 'archive' ? 'rgb(59, 130, 246)' : 'rgb(245, 158, 11)'}
                       onComplete={() => finishCollapse(thread.id)}
                     />
                   );
@@ -1316,7 +1316,7 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
                   <CollapseRow
                     key={thread.id}
                     height={collapseInfo.height}
-                    color={collapseInfo.type === 'archive' ? 'rgb(34, 197, 94)' : 'rgb(245, 158, 11)'}
+                    color={collapseInfo.type === 'archive' ? 'rgb(59, 130, 246)' : 'rgb(245, 158, 11)'}
                     onComplete={() => finishCollapse(thread.id)}
                   />
                 );
@@ -1823,7 +1823,7 @@ function SwipeableEmailRow({
                   // Archive immediately - floating undo button will appear
                   onArchive(e);
                 }}
-                className="p-2 rounded-lg transition-colors hover:bg-green-500/20 hover:text-green-400"
+                className="p-2 rounded-lg transition-colors hover:bg-blue-500/20 hover:text-blue-400"
                 style={{ background: 'var(--bg-interactive)', color: 'var(--text-muted)' }}
                 title="Archive"
               >

@@ -1233,86 +1233,97 @@ export function ThreadPreview({
               </div>
                 
                 {/* Collapse zone - positioned absolutely at bottom, handles click AND scroll-up */}
-                <AnimatePresence>
-                  {hasMoreBelow && (
-                    <motion.div
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      transition={{ duration: 0.15 }}
-                      className="absolute bottom-0 left-0 right-0 z-10"
-                      style={{ marginBottom: 0 }}
-                    >
-                      {/* Clickable/scrollable collapse zone - more visible bluish gradient */}
-                      <div
-                        onClick={() => {
-                          // Collapse the message region
-                          if (isPullToRevealMode && onScrollReveal) {
-                            onScrollReveal(0);
-                          } else {
-                            setLocalIsExpanded(false);
-                          }
-                        }}
-                        onWheel={(e) => {
-                          // Scroll UP (negative deltaY on desktop, positive on natural scroll) = collapse
-                          // We want scroll-up gesture to collapse, which is deltaY > 0 on most systems
-                          if (e.deltaY > 0) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            if (isPullToRevealMode && onScrollReveal) {
-                              onScrollReveal(0);
-                            } else {
-                              setLocalIsExpanded(false);
-                            }
-                          }
-                        }}
-                        onTouchStart={(e) => {
-                          const touch = e.touches[0];
-                          (e.currentTarget as HTMLElement).dataset.touchStartY = String(touch.clientY);
-                        }}
-                        onTouchMove={(e) => {
-                          const startY = parseFloat((e.currentTarget as HTMLElement).dataset.touchStartY || '0');
-                          const currentY = e.touches[0].clientY;
-                          const deltaY = currentY - startY;
-                          // Swipe up (negative delta) = collapse
-                          if (deltaY < -30) {
-                            if (isPullToRevealMode && onScrollReveal) {
-                              onScrollReveal(0);
-                            } else {
-                              setLocalIsExpanded(false);
-                            }
-                          }
-                        }}
-                        className="w-full cursor-pointer group flex items-end justify-center pb-0"
-                        style={{ 
+                <div className="absolute bottom-0 left-0 right-0 z-10" style={{ marginBottom: 0 }}>
+                  {/* Gradient - only shown when there's more content below */}
+                  <AnimatePresence>
+                    {hasMoreBelow && (
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.15 }}
+                        className="absolute bottom-0 left-0 right-0"
+                        style={{
                           height: '2.5rem',
                           background: 'linear-gradient(to top, rgba(30, 58, 138, 0.85) 0%, rgba(37, 99, 235, 0.5) 40%, transparent 100%)',
+                          pointerEvents: 'none'
                         }}
-                      >
-                        {/* Semicircle collapse handle - connected to bottom edge */}
-                        <div 
-                          className="relative flex items-center justify-center transition-all group-hover:scale-105"
-                          title="Scroll or tap to collapse"
-                          style={{
-                            width: '56px',
-                            height: '28px',
-                            borderTopLeftRadius: '28px',
-                            borderTopRightRadius: '28px',
-                            background: 'linear-gradient(to bottom, rgba(59, 130, 246, 0.35), rgba(59, 130, 246, 0.5))',
-                            boxShadow: '0 -2px 12px rgba(59, 130, 246, 0.3), inset 0 1px 0 rgba(147, 197, 253, 0.3)',
-                            marginBottom: '-1px', // Connect to bottom edge
-                          }}
-                        >
-                          <ChevronUp 
-                            className="w-5 h-5 transition-transform group-hover:-translate-y-0.5" 
-                            style={{ color: 'rgba(147, 197, 253, 1)' }} 
-                            strokeWidth={2.5}
-                          />
-                        </div>
-                      </div>
+                      />
+                    )}
+                  </AnimatePresence>
+
+                  {/* Clickable/scrollable collapse zone with semicircle - always visible */}
+                  <div
+                    onClick={() => {
+                      // Collapse the message region
+                      if (isPullToRevealMode && onScrollReveal) {
+                        onScrollReveal(0);
+                      } else {
+                        setLocalIsExpanded(false);
+                      }
+                    }}
+                    onWheel={(e) => {
+                      // Scroll UP (negative deltaY on desktop, positive on natural scroll) = collapse
+                      // We want scroll-up gesture to collapse, which is deltaY > 0 on most systems
+                      if (e.deltaY > 0) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (isPullToRevealMode && onScrollReveal) {
+                          onScrollReveal(0);
+                        } else {
+                          setLocalIsExpanded(false);
+                        }
+                      }
+                    }}
+                    onTouchStart={(e) => {
+                      const touch = e.touches[0];
+                      (e.currentTarget as HTMLElement).dataset.touchStartY = String(touch.clientY);
+                    }}
+                    onTouchMove={(e) => {
+                      const startY = parseFloat((e.currentTarget as HTMLElement).dataset.touchStartY || '0');
+                      const currentY = e.touches[0].clientY;
+                      const deltaY = currentY - startY;
+                      // Swipe up (negative delta) = collapse
+                      if (deltaY < -30) {
+                        if (isPullToRevealMode && onScrollReveal) {
+                          onScrollReveal(0);
+                        } else {
+                          setLocalIsExpanded(false);
+                        }
+                      }
+                    }}
+                    className="w-full cursor-pointer group flex items-end justify-center pb-0 relative"
+                    style={{
+                      height: hasMoreBelow ? '2.5rem' : '1.75rem', // Smaller when at bottom
+                    }}
+                  >
+                    {/* Semicircle collapse handle - always visible but smaller when at bottom */}
+                    <motion.div
+                      animate={{
+                        scale: hasMoreBelow ? 1 : 0.85,
+                        opacity: hasMoreBelow ? 1 : 0.9
+                      }}
+                      transition={{ duration: 0.2 }}
+                      className="relative flex items-center justify-center transition-all group-hover:scale-105"
+                      title="Scroll or tap to collapse"
+                      style={{
+                        width: '56px',
+                        height: '28px',
+                        borderTopLeftRadius: '28px',
+                        borderTopRightRadius: '28px',
+                        background: 'linear-gradient(to bottom, rgba(59, 130, 246, 0.35), rgba(59, 130, 246, 0.5))',
+                        boxShadow: '0 -2px 12px rgba(59, 130, 246, 0.3), inset 0 1px 0 rgba(147, 197, 253, 0.3)',
+                        marginBottom: '-1px', // Connect to bottom edge
+                      }}
+                    >
+                      <ChevronUp
+                        className="w-5 h-5 transition-transform group-hover:-translate-y-0.5"
+                        style={{ color: 'rgba(147, 197, 253, 1)' }}
+                        strokeWidth={2.5}
+                      />
                     </motion.div>
-                  )}
-                </AnimatePresence>
+                  </div>
+                </div>
               </div>{/* End wrapper */}
             </motion.div>
           )}

@@ -11,11 +11,12 @@ import { EmailThread, EmailDraft, AIProvider, AIDraftingPreferences, DraftTone, 
 import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock, ChevronDown, Settings, Plus, Pencil, Edit3, Volume2 } from 'lucide-react';
 import { OPENAI_MODELS } from '@/lib/openai';
 import { CLAUDE_MODELS } from '@/lib/anthropic';
-import { sendEmail, archiveThread, getAttachment, createGmailDraft, updateGmailDraft, hasSnoozedLabel, fetchThread, fetchInbox } from '@/lib/gmail';
+import { sendEmail, archiveThread, getAttachment, createGmailDraft, updateGmailDraft, hasSnoozedLabel, fetchThread, fetchInbox, markAsRead } from '@/lib/gmail';
 import { emailCache } from '@/lib/email-cache';
 import { DraftAttachment } from '@/types';
 import { SnoozePicker } from './SnoozePicker';
 import { SnoozeOption } from '@/lib/snooze-persistence';
+import { getUserSettings, saveUserSettings, subscribeToUserSettings, migrateSettingsFromLocalStorage, TTSSettings } from '@/lib/user-settings-persistence';
 
 import { User as UserType } from '@/types';
 
@@ -82,12 +83,14 @@ export function FloMailApp() {
   const [aiProvider, setAiProvider] = useState<AIProvider>('anthropic');
   const [aiModel, setAiModel] = useState<string>('claude-sonnet-4-20250514');
   const availableModels = aiProvider === 'openai' ? OPENAI_MODELS : CLAUDE_MODELS;
-  
-  // Update model when provider changes
+
+  // Update model when provider changes (only if settings haven't been loaded from Firestore yet)
   useEffect(() => {
-    const defaultModel = aiProvider === 'openai' ? 'gpt-4.1' : 'claude-sonnet-4-20250514';
-    setAiModel(defaultModel);
-  }, [aiProvider]);
+    if (!settingsLoaded) {
+      const defaultModel = aiProvider === 'openai' ? 'gpt-4.1' : 'claude-sonnet-4-20250514';
+      setAiModel(defaultModel);
+    }
+  }, [aiProvider, settingsLoaded]);
   
   // AI Drafting Preferences
   const defaultPreferences: AIDraftingPreferences = {
@@ -119,63 +122,87 @@ export function FloMailApp() {
   
   // TTS Settings
   const [showTTSSettings, setShowTTSSettings] = useState(false);
-  const [ttsSettings, setTtsSettings] = useState({
+  const [ttsSettings, setTtsSettings] = useState<TTSSettings>({
     voice: 'nova',
     speed: 1.0,
     useNaturalVoice: true,
   });
-  
-  // Load TTS settings from localStorage
+
+  // Track if settings have been loaded from Firestore
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+
+  // Load and subscribe to user settings from Firestore
   useEffect(() => {
-    const saved = localStorage.getItem('flomail_tts_settings');
-    if (saved) {
-      try {
-        setTtsSettings(prev => ({ ...prev, ...JSON.parse(saved) }));
-      } catch {}
+    if (!user?.uid) return;
+
+    let unsubscribe: (() => void) | undefined;
+
+    // First, migrate any existing localStorage settings to Firestore
+    migrateSettingsFromLocalStorage(user.uid).then(() => {
+      // Then load settings from Firestore
+      getUserSettings(user.uid).then(settings => {
+        setAiProvider(settings.aiProvider);
+        setAiModel(settings.aiModel);
+        setAiDraftingPreferences({ ...defaultPreferences, ...settings.aiDraftingPreferences });
+        setTtsSettings(settings.ttsSettings);
+        setSettingsLoaded(true);
+
+        // Subscribe to real-time updates
+        unsubscribe = subscribeToUserSettings(user.uid, (updatedSettings) => {
+          setAiProvider(updatedSettings.aiProvider);
+          setAiModel(updatedSettings.aiModel);
+          setAiDraftingPreferences({ ...defaultPreferences, ...updatedSettings.aiDraftingPreferences });
+          setTtsSettings(updatedSettings.ttsSettings);
+        });
+      });
+    });
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.uid]);
+
+  // Initialize user name from display name if not set
+  useEffect(() => {
+    if (settingsLoaded && user?.displayName && !aiDraftingPreferences.userName && user.uid) {
+      const updates = { userName: user.displayName };
+      setAiDraftingPreferences(prev => ({ ...prev, ...updates }));
+      saveUserSettings(user.uid, { aiDraftingPreferences: { ...aiDraftingPreferences, ...updates } });
     }
-  }, []);
-  
-  const updateTTSSettings = useCallback((updates: Partial<typeof ttsSettings>) => {
+  }, [settingsLoaded, user?.displayName, user?.uid, aiDraftingPreferences]);
+
+  // Save TTS settings to Firestore
+  const updateTTSSettings = useCallback((updates: Partial<TTSSettings>) => {
+    if (!user?.uid) return;
+
     setTtsSettings(prev => {
       const updated = { ...prev, ...updates };
+      // Save to Firestore
+      saveUserSettings(user.uid, { ttsSettings: updated }).catch(error => {
+        console.error('Failed to save TTS settings:', error);
+      });
+      // Also update localStorage for backward compatibility with TTSController
       localStorage.setItem('flomail_tts_settings', JSON.stringify(updated));
       return updated;
     });
-  }, []);
-  
-  // Load AI drafting preferences from localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem('flomail-drafting-preferences');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        // Migrate old 'tone' (single) to new 'tones' (array) format
-        if (parsed.tone && !parsed.tones) {
-          parsed.tones = [parsed.tone];
-          delete parsed.tone;
-        }
-        // Remove deprecated fields
-        delete parsed.userRole;
-        delete parsed.userOrganization;
-        setAiDraftingPreferences({ ...defaultPreferences, ...parsed });
-      } catch {
-        // Invalid JSON, ignore
-      }
-    } else if (user?.displayName) {
-      // Initialize with user's display name
-      setAiDraftingPreferences(prev => ({ ...prev, userName: user.displayName || '' }));
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.displayName]);
-  
-  // Save AI drafting preferences to localStorage
+  }, [user?.uid]);
+
+  // Save AI drafting preferences to Firestore
   const updateDraftingPreferences = useCallback((updates: Partial<AIDraftingPreferences>) => {
+    if (!user?.uid) return;
+
     setAiDraftingPreferences(prev => {
       const updated = { ...prev, ...updates };
+      // Save to Firestore
+      saveUserSettings(user.uid, { aiDraftingPreferences: updated }).catch(error => {
+        console.error('Failed to save drafting preferences:', error);
+      });
+      // Also update localStorage for backward compatibility
       localStorage.setItem('flomail-drafting-preferences', JSON.stringify(updated));
       return updated;
     });
-  }, []);
+  }, [user?.uid]);
   const currentThreadIndexRef = useRef(0);
   const archiveHandlerRef = useRef<(() => void) | null>(null);
   const isUpdatingFromUrl = useRef(false); // Prevent URL update loops
@@ -677,6 +704,12 @@ export function FloMailApp() {
         try {
           const fullThread = await fetchThread(token, nextThread.id);
           if (fullThread) {
+            // Mark as read if it's unread
+            if (!fullThread.isRead) {
+              await markAsRead(token, fullThread.id);
+              // Update the thread to reflect read status
+              fullThread.isRead = true;
+            }
             setSelectedThread(fullThread);
           } else {
             setSelectedThread(nextThread); // Fallback to cached
@@ -753,7 +786,7 @@ export function FloMailApp() {
   const handleNextEmail = useCallback(async () => {
     // Use folder-specific threads for navigation (fall back to allThreads if empty)
     const navThreads = folderThreads.length > 0 ? folderThreads : allThreads;
-    
+
     if (navThreads.length === 0) {
       setSelectedThread(null);
       setCurrentDraft(null);
@@ -764,7 +797,7 @@ export function FloMailApp() {
     // Simply go to next index in the list
     const currentIndex = currentThreadIndexRef.current;
     const nextIndex = currentIndex + 1;
-    
+
     // If we're at the last loaded thread and there are more to load
     if (nextIndex >= navThreads.length) {
       const hasMore = hasMoreRef.current?.() ?? false;
@@ -787,6 +820,12 @@ export function FloMailApp() {
                   try {
                     const fullThread = await fetchThread(token, newThread.id);
                     if (fullThread) {
+                      // Mark as read if it's unread
+                      if (!fullThread.isRead) {
+                        await markAsRead(token, fullThread.id);
+                        // Update the thread to reflect read status
+                        fullThread.isRead = true;
+                      }
                       setSelectedThread(fullThread);
                       return;
                     }
@@ -804,20 +843,26 @@ export function FloMailApp() {
       // No more to load, stay at last
       return;
     }
-    
+
     const nextThread = navThreads[nextIndex];
-    
+
     if (nextThread && nextThread.id !== selectedThread?.id) {
       setCurrentDraft(null);
       currentThreadIndexRef.current = nextIndex;
       setCurrentView('chat');
-      
+
       // Fetch full thread data (navThreads might only have metadata)
       try {
         const token = await getAccessToken();
         if (token) {
           const fullThread = await fetchThread(token, nextThread.id);
           if (fullThread) {
+            // Mark as read if it's unread
+            if (!fullThread.isRead) {
+              await markAsRead(token, fullThread.id);
+              // Update the thread to reflect read status
+              fullThread.isRead = true;
+            }
             setSelectedThread(fullThread);
             return;
           }
@@ -833,27 +878,33 @@ export function FloMailApp() {
   const handlePreviousEmail = useCallback(async () => {
     // Use folder-specific threads for navigation (fall back to allThreads if empty)
     const navThreads = folderThreads.length > 0 ? folderThreads : allThreads;
-    
+
     const prevIndex = currentThreadIndexRef.current - 1;
-    
+
     if (prevIndex < 0 || navThreads.length === 0) {
       // No previous emails in this folder, stay where we are
       return;
     }
 
     const prevThread = navThreads[prevIndex];
-    
+
     if (prevThread) {
       setCurrentDraft(null);
       currentThreadIndexRef.current = prevIndex;
       setCurrentView('chat');
-      
+
       // Fetch full thread data (navThreads might only have metadata)
       try {
         const token = await getAccessToken();
         if (token) {
           const fullThread = await fetchThread(token, prevThread.id);
           if (fullThread) {
+            // Mark as read if it's unread
+            if (!fullThread.isRead) {
+              await markAsRead(token, fullThread.id);
+              // Update the thread to reflect read status
+              fullThread.isRead = true;
+            }
             setSelectedThread(fullThread);
             return;
           }
@@ -1043,7 +1094,12 @@ export function FloMailApp() {
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    onClick={() => setAiProvider('anthropic')}
+                    onClick={() => {
+                      setAiProvider('anthropic');
+                      if (user?.uid) {
+                        saveUserSettings(user.uid, { aiProvider: 'anthropic' });
+                      }
+                    }}
                     className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all"
                     style={aiProvider === 'anthropic' ? {
                       background: 'rgba(168, 85, 247, 0.2)',
@@ -1059,7 +1115,12 @@ export function FloMailApp() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setAiProvider('openai')}
+                    onClick={() => {
+                      setAiProvider('openai');
+                      if (user?.uid) {
+                        saveUserSettings(user.uid, { aiProvider: 'openai' });
+                      }
+                    }}
                     className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all"
                     style={aiProvider === 'openai' ? {
                       background: 'rgba(6, 182, 212, 0.2)',
@@ -1078,7 +1139,12 @@ export function FloMailApp() {
                 <div className="relative">
                   <select
                     value={aiModel}
-                    onChange={(e) => setAiModel(e.target.value)}
+                    onChange={(e) => {
+                      setAiModel(e.target.value);
+                      if (user?.uid) {
+                        saveUserSettings(user.uid, { aiModel: e.target.value });
+                      }
+                    }}
                     className="w-full px-3 py-2 rounded-lg text-sm appearance-none cursor-pointer focus:outline-none"
                     style={{ 
                       background: 'var(--bg-interactive)', 
