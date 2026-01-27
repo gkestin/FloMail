@@ -251,6 +251,8 @@ export function ChatInterface({
   const { user, getAccessToken } = useAuth();
   
   const [messages, setMessages] = useState<UIMessage[]>([]);
+  const [collapsedMessages, setCollapsedMessages] = useState<UIMessage[]>([]);
+  const [showCollapsedMessages, setShowCollapsedMessages] = useState(false);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState<string>('Thinking...');
@@ -355,6 +357,8 @@ export function ChatInterface({
     if (!thread?.id || !user?.uid) {
       // No thread or user - clear messages
       setMessages([]);
+      setCollapsedMessages([]);
+      setShowCollapsedMessages(false);
       previousThreadIdRef.current = null;
       messagesThreadIdRef.current = null;
       return;
@@ -389,6 +393,8 @@ export function ChatInterface({
     // This prevents any race conditions with persisting
     messagesThreadIdRef.current = null; // Clear thread association before loading
     setMessages([]);
+    setCollapsedMessages([]);
+    setShowCollapsedMessages(false);
     setCurrentDraft(null);
     
     // In incognito mode, just clear messages (already done above)
@@ -407,17 +413,32 @@ export function ChatInterface({
         }
         
         // Load both persisted chat history and check for existing Gmail draft
-        const [persistedMessages, accessToken] = await Promise.all([
+        const [chatData, accessToken] = await Promise.all([
           loadThreadChat(user.uid, currentId),
           getAccessToken(),
         ]);
-        
+
         // Double-check again after async operation
         if (previousThreadIdRef.current !== currentId) {
           return;
         }
-        
-        const uiMessages: UIMessage[] = persistedMessages.map(pm => fromPersistedMessage(pm) as UIMessage);
+
+        // Check if there are new messages since last chat
+        const lastEmailMessageId = thread.messages[thread.messages.length - 1]?.id;
+        const hasNewEmailSinceChat = chatData.lastEmailMessageId &&
+                                     chatData.lastEmailMessageId !== lastEmailMessageId;
+
+        let uiMessages: UIMessage[] = chatData.messages.map(pm => fromPersistedMessage(pm) as UIMessage);
+
+        // If there are new emails, collapse old messages
+        if (hasNewEmailSinceChat && uiMessages.length > 0) {
+          // Store the full chat history separately
+          setCollapsedMessages(uiMessages);
+          setShowCollapsedMessages(false);
+
+          // Only show a placeholder for collapsed messages
+          uiMessages = [];
+        }
         
         // Check if there's an unsent draft from chat history
         // A draft is only "active" if not cancelled, not saved to Gmail, and not sent
@@ -809,7 +830,7 @@ export function ChatInterface({
   // Persist chat to Firestore (debounced)
   const persistTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
-  const persistChat = useCallback((messagesToSave: UIMessage[], threadIdToSave: string) => {
+  const persistChat = useCallback((messagesToSave: UIMessage[], threadIdToSave: string, emailThread?: EmailThread) => {
     // Don't save in incognito mode
     if (isIncognito || !threadIdToSave || !user?.uid) return;
     
@@ -844,13 +865,18 @@ export function ChatInterface({
         const persistableMessages: PersistedMessage[] = messagesToSave
           .filter(m => !m.isTranscribing && !m.transcriptionError && !m.isEditing && !m.isCancelled && !m.isStreaming)
           .map(m => toPersistedMessage(m));
-        
-        await saveThreadChat(user.uid, capturedThreadId, persistableMessages);
+
+        // Get the last email message ID from the current thread
+        const lastEmailMessage = emailThread?.messages[emailThread.messages.length - 1];
+        const lastEmailMessageId = lastEmailMessage?.id;
+        const lastEmailMessageDate = lastEmailMessage?.date;
+
+        await saveThreadChat(user.uid, capturedThreadId, persistableMessages, lastEmailMessageId, lastEmailMessageDate);
       } catch (error) {
         console.error('Failed to persist chat:', error);
       }
     }, 1000); // Save 1 second after last change
-  }, [isIncognito, user?.uid]);
+  }, [isIncognito, user?.uid, thread]);
   
   // Auto-persist when messages change (after initial load)
   const hasLoadedRef = useRef(false);
@@ -874,8 +900,8 @@ export function ChatInterface({
     }
     
     // Persist the current messages with the associated thread ID
-    persistChat(messages, currentMessagesThreadId);
-  }, [messages, isLoadingChat, persistChat]);
+    persistChat(messages, currentMessagesThreadId, thread);
+  }, [messages, isLoadingChat, persistChat, thread]);
 
   // Archive with notification - used by both agent and direct button press
   const archiveWithNotification = useCallback(() => {
@@ -1055,7 +1081,9 @@ export function ChatInterface({
       // Get all messages for context (excluding cancelled ones, empty ones, and pending snooze confirmations)
       // Anthropic requires all messages to have non-empty content
       // IMPORTANT: Filter out snooze confirmation messages to prevent AI from calling snooze_email again
-      const contextMessages = messages
+      // Only include messages if collapsed messages are shown or there are no collapsed messages
+      const messagesToInclude = showCollapsedMessages || collapsedMessages.length === 0 ? messages : messages;
+      const contextMessages = messagesToInclude
         .filter(m => !m.isCancelled && !m.isTranscribing && !m.transcriptionError && m.content && m.content.trim() && !m.snoozeConfirmation)
         .map(m => ({ role: m.role, content: m.content }));
       
@@ -1314,7 +1342,7 @@ export function ChatInterface({
       setStreamingMessageId(null);
       abortControllerRef.current = null;
     }
-  }, [messages, thread, folder, provider, model, handleToolCalls, onDraftCreated, currentDraft, getAccessToken]);
+  }, [messages, thread, folder, provider, model, handleToolCalls, onDraftCreated, currentDraft, getAccessToken, showCollapsedMessages, collapsedMessages.length]);
 
   // Send a text message
   const sendMessage = useCallback(async (content: string) => {
@@ -2353,6 +2381,33 @@ export function ChatInterface({
               <span className="text-xs group-hover:text-red-400" style={{ color: 'var(--text-muted)' }}>Clear</span>
             </motion.button>
           </div>
+        )}
+
+        {/* Collapsed messages button */}
+        {collapsedMessages.length > 0 && !showCollapsedMessages && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex justify-center mb-4"
+          >
+            <button
+              onClick={() => {
+                setShowCollapsedMessages(true);
+                // Prepend collapsed messages to current messages
+                setMessages(prev => [...collapsedMessages, ...prev]);
+                setCollapsedMessages([]);
+              }}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-colors"
+              style={{
+                background: 'rgba(147, 197, 253, 0.08)',
+                border: '1px solid rgba(147, 197, 253, 0.15)',
+                color: 'rgba(147, 197, 253, 0.7)'
+              }}
+            >
+              <Clock className="w-4 h-4" />
+              Load previous messages from {new Date(collapsedMessages[collapsedMessages.length - 1].timestamp).toLocaleDateString()}
+            </button>
+          </motion.div>
         )}
 
         {messages.map((message, index) => (

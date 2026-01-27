@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, FolderOpen, Clock, Shield, ShieldOff, Paperclip, Download, FileText, Image as ImageIcon, Film, Music, FileArchive, FileCode, File, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, FolderOpen, Clock, Shield, ShieldOff, Paperclip, Download, FileText, Image as ImageIcon, Film, Music, FileArchive, FileCode, File, X, Copy, Check } from 'lucide-react';
 import { EmailThread, EmailMessage } from '@/types';
 import { EmailHtmlViewer, isHtmlContent, normalizeEmailPlainText, stripBasicHtml } from './EmailHtmlViewer';
 import { UnsubscribeButton } from './UnsubscribeButton';
@@ -12,6 +12,37 @@ import { Attachment } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import { getAttachment } from '@/lib/gmail';
 import { formatFileSize } from '@/lib/email-parsing';
+import { TTSController } from './TTSController';
+
+// Copy button for email messages
+function CopyButton({ content, className = '' }: { content: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleCopy}
+      className={`p-1.5 rounded transition-all hover:bg-white/10 ${className}`}
+      style={{ color: 'var(--text-muted)' }}
+      title={copied ? 'Copied!' : 'Copy message'}
+    >
+      {copied ? (
+        <Check className="w-4 h-4 text-green-400" />
+      ) : (
+        <Copy className="w-4 h-4" />
+      )}
+    </button>
+  );
+}
 
 // Get appropriate icon for attachment type
 function getAttachmentIcon(mimeType: string): React.ElementType {
@@ -1582,7 +1613,17 @@ function MessageItem({
                   isDraft={isDraft}
                 />
               )}
-              
+
+              {/* Copy and TTS buttons for the message */}
+              <div className="flex items-center gap-2 mt-3">
+                <CopyButton content={message.body || ''} />
+                <TTSController
+                  content={message.body || ''}
+                  id={`email-${message.id}`}
+                  compact={true}
+                />
+              </div>
+
               {/* Attachments section */}
               {message.attachments && message.attachments.length > 0 && (
                 <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border-subtle)' }}>

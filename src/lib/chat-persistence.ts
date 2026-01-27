@@ -267,22 +267,30 @@ function getChatDocRef(userId: string, threadId: string) {
  * Load chat history for a thread
  */
 export async function loadThreadChat(
-  userId: string, 
+  userId: string,
   threadId: string
-): Promise<PersistedMessage[]> {
+): Promise<{
+  messages: PersistedMessage[];
+  lastEmailMessageId?: string;
+  lastEmailMessageDate?: string;
+}> {
   try {
     const docRef = getChatDocRef(userId, threadId);
     const docSnap = await getDoc(docRef);
-    
+
     if (docSnap.exists()) {
       const data = docSnap.data() as ThreadChatDocument;
-      return data.messages || [];
+      return {
+        messages: data.messages || [],
+        lastEmailMessageId: data.lastEmailMessageId,
+        lastEmailMessageDate: data.lastEmailMessageDate,
+      };
     }
-    
-    return [];
+
+    return { messages: [] };
   } catch (error) {
     console.error('Failed to load thread chat:', error);
-    return [];
+    return { messages: [] };
   }
 }
 
@@ -292,24 +300,28 @@ export async function loadThreadChat(
 export async function saveThreadChat(
   userId: string,
   threadId: string,
-  messages: PersistedMessage[]
+  messages: PersistedMessage[],
+  lastEmailMessageId?: string,
+  lastEmailMessageDate?: string
 ): Promise<void> {
   try {
     const docRef = getChatDocRef(userId, threadId);
-    
+
     // Get preview from last non-system message
     const lastContentMessage = [...messages]
       .reverse()
       .find(m => !m.isSystemMessage && m.content);
     const preview = lastContentMessage?.content.slice(0, 100) || '';
-    
+
     const chatDoc: ThreadChatDocument = {
       messages,
       lastUpdated: Timestamp.now(),
       messageCount: messages.length,
       lastMessagePreview: preview,
+      lastEmailMessageId,
+      lastEmailMessageDate,
     };
-    
+
     await setDoc(docRef, chatDoc);
   } catch (error) {
     console.error('Failed to save thread chat:', error);
