@@ -82,6 +82,7 @@ export function FloMailApp() {
   // AI Provider settings (moved here from ChatInterface so they persist globally)
   const [aiProvider, setAiProvider] = useState<AIProvider>('anthropic');
   const [aiModel, setAiModel] = useState<string>('claude-sonnet-4-20250514');
+  const [settingsLoaded, setSettingsLoaded] = useState(false); // Move this up before it's used
   const availableModels = aiProvider === 'openai' ? OPENAI_MODELS : CLAUDE_MODELS;
 
   // Update model when provider changes (only if settings haven't been loaded from Firestore yet)
@@ -128,8 +129,7 @@ export function FloMailApp() {
     useNaturalVoice: true,
   });
 
-  // Track if settings have been loaded from Firestore
-  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  // Settings have been moved up to avoid "used before declaration" error
 
   // Load and subscribe to user settings from Firestore
   useEffect(() => {
