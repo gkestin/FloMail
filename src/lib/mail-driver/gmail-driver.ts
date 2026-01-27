@@ -79,7 +79,7 @@ export class GmailDriver implements MailDriver {
     const labelIds = folderToLabels[params.folder] || [];
     
     const result = await fetchInbox(this.accessToken, {
-      maxResults: params.maxResults || 20,
+      maxResults: params.maxResults || 30,
       pageToken: params.pageToken,
       labelIds: labelIds.length > 0 ? labelIds : undefined,
       query: params.query,
@@ -91,7 +91,7 @@ export class GmailDriver implements MailDriver {
     };
   }
 
-  async searchThreads(query: string, maxResults: number = 20): Promise<ListResult> {
+  async searchThreads(query: string, maxResults: number = 30): Promise<ListResult> {
     const result = await fetchInbox(this.accessToken, {
       maxResults,
       query,

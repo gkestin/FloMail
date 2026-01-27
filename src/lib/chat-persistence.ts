@@ -86,6 +86,8 @@ export interface ThreadChatDocument {
   lastUpdated: Timestamp;
   messageCount: number;
   lastMessagePreview: string;
+  lastEmailMessageId?: string; // Track the last email message ID when chat was saved
+  lastEmailMessageDate?: string; // Track the date of the last email message
 }
 
 // ============================================================================

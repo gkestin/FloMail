@@ -906,11 +906,18 @@ export function ChatInterface({
     for (const toolCall of toolCalls) {
       switch (toolCall.name) {
         case 'prepare_draft':
-          // NOTE: Auto-cancel of old drafts happens in sendMessage, NOT here
-          // This allows the draft to be created without immediately cancelling itself
+          // Cancel any existing unsent/unsaved drafts when creating a new one
+          // This prevents multiple drafts from being open at once
+          setMessages(prev => prev.map(m => {
+            if (m.draft && !m.draftCancelled && !m.draftSaved && !m.draftSent) {
+              return { ...m, draftCancelled: true };
+            }
+            return m;
+          }));
+
           const newDraft = buildDraftFromToolCall(toolCall.arguments, thread);
           // Preserve gmailDraftId if we're modifying an existing draft
-          const draft = existingDraft?.gmailDraftId 
+          const draft = existingDraft?.gmailDraftId
             ? { ...newDraft, gmailDraftId: existingDraft.gmailDraftId }
             : newDraft;
           setCurrentDraft(draft);
@@ -2348,19 +2355,19 @@ export function ChatInterface({
           </div>
         )}
 
-        {messages.map((message) => (
+        {messages.map((message, index) => (
           <motion.div
             key={message.id}
             // Skip y transform for messages with drafts to avoid iOS cursor positioning issues
             initial={{ opacity: 0, y: message.draft ? 0 : 10 }}
             animate={{ opacity: 1, y: 0 }}
             className={`flex flex-col ${
-              message.isSystemMessage 
-                ? 'items-center' 
-                : message.role === 'user' 
-                  ? 'items-end' 
+              message.isSystemMessage
+                ? 'items-center'
+                : message.role === 'user'
+                  ? 'items-end'
                   : 'items-start'
-            }`}
+            } ${index > 0 ? 'mt-3' : ''}`}
           >
             {/* Snooze confirmation - special pending style with integrated buttons */}
             {message.isSystemMessage && message.snoozeConfirmation && !message.snoozeConfirmation.confirmed && (
@@ -2751,7 +2758,7 @@ export function ChatInterface({
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className="flex justify-start"
+            className={`flex justify-start ${messages.length > 0 ? 'mt-3' : ''}`}
           >
             <div className="rounded-2xl px-4 py-3 flex items-center gap-3" style={{ background: 'var(--bg-elevated)' }}>
               <Loader2 className="w-4 h-4 animate-spin text-blue-400" />

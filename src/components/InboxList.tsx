@@ -1365,7 +1365,7 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
               <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
                 Scroll for more
               </div>
-            ) : threads.length > 20 ? (
+            ) : threads.length > 30 ? (
               <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
                 All {threads.length} emails loaded
               </div>

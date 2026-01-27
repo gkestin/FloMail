@@ -358,7 +358,7 @@ export async function fetchInbox(
   options: { maxResults?: number; pageToken?: string; query?: string; labelIds?: string[] } = {}
 ): Promise<{ threads: EmailThread[]; nextPageToken?: string }> {
   const params = new URLSearchParams({
-    maxResults: String(options.maxResults || 20),
+    maxResults: String(options.maxResults || 30),
   });
   
   // Use labelIds if provided (preferred Gmail API approach)
