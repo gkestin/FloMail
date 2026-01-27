@@ -1361,7 +1361,7 @@ export function ChatInterface({
         return { ...m, draftCancelled: true };
       }
       return m;
-    }));
+    }))
     
     // Clear currentDraft if it exists and hasn't been saved
     if (currentDraft && !currentDraft.gmailDraftId) {
@@ -1431,7 +1431,11 @@ export function ChatInterface({
             isTranscribing: true,
             transcriptionError: false,
           };
-          setMessages(prev => [...prev, pendingMessage]);
+          console.log('[Transcribing] Adding transcribing message:', messageId);
+          setMessages(prev => {
+            console.log('[Transcribing] Previous messages count:', prev.length);
+            return [...prev, pendingMessage];
+          });
 
           // Transcribe
           try {
@@ -1667,11 +1671,13 @@ export function ChatInterface({
       await onSendEmail(draft);
       
       // Mark the draft message as sent (so it shows differently in UI)
-      setMessages(prev => prev.map(m => 
-        m.draft && !m.draftCancelled && !m.draftSent
-          ? { ...m, draftSent: true }
-          : m
-      ));
+      setMessages(prev => prev.map(m => {
+        // Mark draft as sent
+        if (m.draft && !m.draftCancelled && !m.draftSent) {
+          return { ...m, draftSent: true };
+        }
+        return m;
+      }));
       
       // Update the existing "Sending..." message to "✓ Sent" (if we have the ID)
       // or create a new one (for navigation-triggered sends where we might not have it)
@@ -1746,19 +1752,14 @@ export function ChatInterface({
   
   const handleSendDraft = async (updatedDraft: EmailDraft) => {
     if (!updatedDraft || !onSendEmail) return;
-    
+
     setIsSending(true);
     setCurrentDraft(null);
-    
-    // Optimistically mark draft as sent (but don't actually send yet)
-    setMessages(prev => prev.map(m => 
-      m.draft && !m.draftCancelled && !m.draftSent
-        ? { ...m, draftSent: true }
-        : m
-    ));
-    
-    // Immediately add a "sending" confirmation message with action buttons
-    // This shows the user they can archive/navigate while waiting for undo to expire
+
+    // Don't mark as sent yet - keep showing the draft with sending state
+    // The DraftCard will show "Sending..." when isSending is true
+
+    // Add a small system message for the sending status
     const recipient = updatedDraft.to[0] || 'recipient';
     const confirmMessageId = `sending-${Date.now()}`;
     const pendingConfirmMessage: UIMessage = {

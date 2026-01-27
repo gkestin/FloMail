@@ -110,7 +110,7 @@ const QUICK_SNOOZE_OPTIONS: {
 
 export function SnoozePicker({ isOpen, onClose, onSelect, isLoading = false }: SnoozePickerProps) {
   const [showCustom, setShowCustom] = useState(false);
-  const [customDate, setCustomDate] = useState('');
+  const [customDate, setCustomDate] = useState(new Date().toISOString().split('T')[0]); // Initialize with today's date
   const [customTime, setCustomTime] = useState('13:00');
   const [lastSnooze, setLastSnooze] = useState<{ option: SnoozeOption; customDate?: string } | null>(null);
 

@@ -76,9 +76,18 @@ export async function saveUserSettings(userId: string, settings: Partial<UserSet
     // Get current settings to merge with updates
     const current = await getUserSettings(userId);
 
+    // Deep merge for nested objects like aiDraftingPreferences
     const updated: UserSettings = {
       ...current,
       ...settings,
+      aiDraftingPreferences: {
+        ...current.aiDraftingPreferences,
+        ...(settings.aiDraftingPreferences || {}),
+      },
+      ttsSettings: {
+        ...current.ttsSettings,
+        ...(settings.ttsSettings || {}),
+      },
       lastUpdated: new Date(),
     };
 

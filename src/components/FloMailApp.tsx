@@ -709,6 +709,13 @@ export function FloMailApp() {
               await markAsRead(token, fullThread.id);
               // Update the thread to reflect read status
               fullThread.isRead = true;
+              // Update all thread lists to show as read
+              setAllThreads(prev => prev.map((t: EmailThread) =>
+                t.id === fullThread.id ? { ...t, isRead: true } : t
+              ));
+              setFolderThreads(prev => prev.map((t: EmailThread) =>
+                t.id === fullThread.id ? { ...t, isRead: true } : t
+              ));
             }
             setSelectedThread(fullThread);
           } else {
@@ -825,6 +832,13 @@ export function FloMailApp() {
                         await markAsRead(token, fullThread.id);
                         // Update the thread to reflect read status
                         fullThread.isRead = true;
+                        // Update all thread lists to show as read
+                        setAllThreads(prev => prev.map((t: EmailThread) =>
+                          t.id === fullThread.id ? { ...t, isRead: true } : t
+                        ));
+                        setFolderThreads(prev => prev.map((t: EmailThread) =>
+                          t.id === fullThread.id ? { ...t, isRead: true } : t
+                        ));
                       }
                       setSelectedThread(fullThread);
                       return;
@@ -862,6 +876,13 @@ export function FloMailApp() {
               await markAsRead(token, fullThread.id);
               // Update the thread to reflect read status
               fullThread.isRead = true;
+              // Update all thread lists to show as read
+              setAllThreads(prev => prev.map((t: EmailThread) =>
+                t.id === fullThread.id ? { ...t, isRead: true } : t
+              ));
+              setFolderThreads(prev => prev.map((t: EmailThread) =>
+                t.id === fullThread.id ? { ...t, isRead: true } : t
+              ));
             }
             setSelectedThread(fullThread);
             return;
@@ -904,6 +925,13 @@ export function FloMailApp() {
               await markAsRead(token, fullThread.id);
               // Update the thread to reflect read status
               fullThread.isRead = true;
+              // Update all thread lists to show as read
+              setAllThreads(prev => prev.map((t: EmailThread) =>
+                t.id === fullThread.id ? { ...t, isRead: true } : t
+              ));
+              setFolderThreads(prev => prev.map((t: EmailThread) =>
+                t.id === fullThread.id ? { ...t, isRead: true } : t
+              ));
             }
             setSelectedThread(fullThread);
             return;

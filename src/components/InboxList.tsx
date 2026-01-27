@@ -1167,7 +1167,7 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
                     <CollapseRow
                       key={thread.id}
                       height={collapseInfo.height}
-                      color={collapseInfo.type === 'archive' ? 'rgb(59, 130, 246)' : 'rgb(245, 158, 11)'}
+                      color={collapseInfo.type === 'archive' ? 'rgb(34, 197, 94)' : 'rgb(245, 158, 11)'}
                       onComplete={() => finishCollapse(thread.id)}
                     />
                   );
@@ -1316,7 +1316,7 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
                   <CollapseRow
                     key={thread.id}
                     height={collapseInfo.height}
-                    color={collapseInfo.type === 'archive' ? 'rgb(59, 130, 246)' : 'rgb(245, 158, 11)'}
+                    color={collapseInfo.type === 'archive' ? 'rgb(34, 197, 94)' : 'rgb(245, 158, 11)'}
                     onComplete={() => finishCollapse(thread.id)}
                   />
                 );
