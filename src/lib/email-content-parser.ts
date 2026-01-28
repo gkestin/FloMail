@@ -430,7 +430,7 @@ function requiresHtmlRendering(html: string): boolean {
  */
 export function extractMessageBody(message: EmailMessage): ParsedEmailContent {
   // Prefer HTML if available and substantial
-  const hasHtml = message.bodyHtml && message.bodyHtml.trim().length > 0;
+  const hasHtml = !!(message.bodyHtml && message.bodyHtml.trim().length > 0);
   const content = hasHtml ? message.bodyHtml! : (message.body || '');
 
   return parseEmailContent(content, hasHtml);
