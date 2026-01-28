@@ -77,13 +77,34 @@ export async function saveUserSettings(userId: string, settings: Partial<UserSet
     const current = await getUserSettings(userId);
 
     // Deep merge for nested objects like aiDraftingPreferences
+    // Filter out undefined values as Firestore doesn't support them
+    const cleanedDraftingPrefs = settings.aiDraftingPreferences ?
+      Object.entries(settings.aiDraftingPreferences).reduce((acc, [key, value]) => {
+        // Only include non-undefined values
+        if (value !== undefined) {
+          acc[key as keyof AIDraftingPreferences] = value;
+        }
+        return acc;
+      }, {} as Partial<AIDraftingPreferences>) : {};
+
+    // Create updated settings, handling undefined values properly
+    const aiDraftingPreferences = {
+      ...current.aiDraftingPreferences,
+      ...cleanedDraftingPrefs,
+    };
+
+    // Replace undefined with null for Firestore compatibility
+    if (aiDraftingPreferences.length === undefined) {
+      delete (aiDraftingPreferences as any).length;
+    }
+    if (aiDraftingPreferences.useExclamations === undefined) {
+      delete (aiDraftingPreferences as any).useExclamations;
+    }
+
     const updated: UserSettings = {
       ...current,
       ...settings,
-      aiDraftingPreferences: {
-        ...current.aiDraftingPreferences,
-        ...(settings.aiDraftingPreferences || {}),
-      },
+      aiDraftingPreferences,
       ttsSettings: {
         ...current.ttsSettings,
         ...(settings.ttsSettings || {}),

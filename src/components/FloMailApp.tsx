@@ -704,11 +704,28 @@ export function FloMailApp() {
         try {
           const fullThread = await fetchThread(token, nextThread.id);
           if (fullThread) {
-            // Mark as read if it's unread
-            if (!fullThread.isRead) {
+            // Store unread status for auto-expand
+            const wasUnread = !fullThread.isRead;
+
+            // Set thread FIRST while still unread (so ChatInterface can see it and auto-expand)
+            setSelectedThread(fullThread);
+
+            // Then mark as read if it was unread
+            if (wasUnread) {
               await markAsRead(token, fullThread.id);
-              // Update the thread to reflect read status
-              fullThread.isRead = true;
+              // Invalidate cache for this thread AND update folder cache
+              emailCache.invalidateThread(fullThread.id);
+              // Update the cached folder data to reflect the read status
+              const folderData = emailCache.getStaleFolderData(currentMailFolder);
+              if (folderData && folderData.threads) {
+                const updatedThreads = folderData.threads.map(t =>
+                  t.id === fullThread.id ? { ...t, isRead: true } : t
+                );
+                emailCache.setFolderData(currentMailFolder, {
+                  ...folderData,
+                  threads: updatedThreads
+                });
+              }
               // Update all thread lists to show as read
               setAllThreads(prev => prev.map((t: EmailThread) =>
                 t.id === fullThread.id ? { ...t, isRead: true } : t
@@ -716,8 +733,9 @@ export function FloMailApp() {
               setFolderThreads(prev => prev.map((t: EmailThread) =>
                 t.id === fullThread.id ? { ...t, isRead: true } : t
               ));
+              // Update selectedThread to reflect read status
+              setSelectedThread(prev => prev ? { ...prev, isRead: true } : prev);
             }
-            setSelectedThread(fullThread);
           } else {
             setSelectedThread(nextThread); // Fallback to cached
           }
@@ -827,11 +845,17 @@ export function FloMailApp() {
                   try {
                     const fullThread = await fetchThread(token, newThread.id);
                     if (fullThread) {
-                      // Mark as read if it's unread
-                      if (!fullThread.isRead) {
+                      // Store unread status for auto-expand
+                      const wasUnread = !fullThread.isRead;
+
+                      // Set thread FIRST while still unread (so ChatInterface can see it and auto-expand)
+                      setSelectedThread(fullThread);
+
+                      // Then mark as read if it was unread
+                      if (wasUnread) {
                         await markAsRead(token, fullThread.id);
-                        // Update the thread to reflect read status
-                        fullThread.isRead = true;
+                        // Invalidate cache for this thread (was missing here!)
+                        emailCache.invalidateThread(fullThread.id);
                         // Update all thread lists to show as read
                         setAllThreads(prev => prev.map((t: EmailThread) =>
                           t.id === fullThread.id ? { ...t, isRead: true } : t
@@ -839,8 +863,9 @@ export function FloMailApp() {
                         setFolderThreads(prev => prev.map((t: EmailThread) =>
                           t.id === fullThread.id ? { ...t, isRead: true } : t
                         ));
+                        // Update selectedThread to reflect read status
+                        setSelectedThread(prev => prev ? { ...prev, isRead: true } : prev);
                       }
-                      setSelectedThread(fullThread);
                       return;
                     }
                   } catch (e) {
@@ -871,11 +896,28 @@ export function FloMailApp() {
         if (token) {
           const fullThread = await fetchThread(token, nextThread.id);
           if (fullThread) {
-            // Mark as read if it's unread
-            if (!fullThread.isRead) {
+            // Store unread status for auto-expand
+            const wasUnread = !fullThread.isRead;
+
+            // Set thread FIRST while still unread (so ChatInterface can see it and auto-expand)
+            setSelectedThread(fullThread);
+
+            // Then mark as read if it was unread
+            if (wasUnread) {
               await markAsRead(token, fullThread.id);
-              // Update the thread to reflect read status
-              fullThread.isRead = true;
+              // Invalidate cache for this thread AND update folder cache
+              emailCache.invalidateThread(fullThread.id);
+              // Update the cached folder data to reflect the read status
+              const folderData = emailCache.getStaleFolderData(currentMailFolder);
+              if (folderData && folderData.threads) {
+                const updatedThreads = folderData.threads.map(t =>
+                  t.id === fullThread.id ? { ...t, isRead: true } : t
+                );
+                emailCache.setFolderData(currentMailFolder, {
+                  ...folderData,
+                  threads: updatedThreads
+                });
+              }
               // Update all thread lists to show as read
               setAllThreads(prev => prev.map((t: EmailThread) =>
                 t.id === fullThread.id ? { ...t, isRead: true } : t
@@ -883,8 +925,9 @@ export function FloMailApp() {
               setFolderThreads(prev => prev.map((t: EmailThread) =>
                 t.id === fullThread.id ? { ...t, isRead: true } : t
               ));
+              // Update selectedThread to reflect read status
+              setSelectedThread(prev => prev ? { ...prev, isRead: true } : prev);
             }
-            setSelectedThread(fullThread);
             return;
           }
         }
@@ -920,11 +963,28 @@ export function FloMailApp() {
         if (token) {
           const fullThread = await fetchThread(token, prevThread.id);
           if (fullThread) {
-            // Mark as read if it's unread
-            if (!fullThread.isRead) {
+            // Store unread status for auto-expand
+            const wasUnread = !fullThread.isRead;
+
+            // Set thread FIRST while still unread (so ChatInterface can see it and auto-expand)
+            setSelectedThread(fullThread);
+
+            // Then mark as read if it was unread
+            if (wasUnread) {
               await markAsRead(token, fullThread.id);
-              // Update the thread to reflect read status
-              fullThread.isRead = true;
+              // Invalidate cache for this thread AND update folder cache
+              emailCache.invalidateThread(fullThread.id);
+              // Update the cached folder data to reflect the read status
+              const folderData = emailCache.getStaleFolderData(currentMailFolder);
+              if (folderData && folderData.threads) {
+                const updatedThreads = folderData.threads.map(t =>
+                  t.id === fullThread.id ? { ...t, isRead: true } : t
+                );
+                emailCache.setFolderData(currentMailFolder, {
+                  ...folderData,
+                  threads: updatedThreads
+                });
+              }
               // Update all thread lists to show as read
               setAllThreads(prev => prev.map((t: EmailThread) =>
                 t.id === fullThread.id ? { ...t, isRead: true } : t
@@ -932,8 +992,9 @@ export function FloMailApp() {
               setFolderThreads(prev => prev.map((t: EmailThread) =>
                 t.id === fullThread.id ? { ...t, isRead: true } : t
               ));
+              // Update selectedThread to reflect read status
+              setSelectedThread(prev => prev ? { ...prev, isRead: true } : prev);
             }
-            setSelectedThread(fullThread);
             return;
           }
         }

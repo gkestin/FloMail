@@ -129,7 +129,12 @@ service cloud.firestore {
     match /users/{userId}/recentlyUnsnoozed/{threadId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
-    
+
+    // User's settings (drafting preferences, TTS settings, etc.)
+    match /users/{userId}/settings/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
     // Deny all other access by default
     match /{document=**} {
       allow read, write: if false;

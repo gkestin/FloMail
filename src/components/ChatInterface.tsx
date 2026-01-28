@@ -512,20 +512,31 @@ export function ChatInterface({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Track if we've already auto-expanded for the current thread to avoid re-collapsing
+  const hasAutoExpandedRef = useRef<string | null>(null);
+
   // Reset revealed messages when thread changes
   // For unread emails, always start expanded (revealed = 1)
   // For read emails, use stored preference
   useEffect(() => {
+    // If thread ID changes, reset our tracking
+    if (thread?.id !== hasAutoExpandedRef.current) {
+      hasAutoExpandedRef.current = null;
+    }
+
     if (thread && !thread.isRead) {
-      // Unread email - start fully expanded
+      // Unread email - start fully expanded and remember we did this
       setRevealedMessageCount(1);
       setBaseRevealedCount(1);
-    } else {
-      // Read email - use stored preference
+      hasAutoExpandedRef.current = thread.id;
+    } else if (thread && thread.id !== hasAutoExpandedRef.current) {
+      // Only apply stored preference if we haven't already auto-expanded for this thread
+      // This prevents re-collapsing when the thread changes from unread to read
       const pref = getLoadPreference();
       setRevealedMessageCount(pref);
       setBaseRevealedCount(pref);
     }
+    // If this is the same thread we auto-expanded, don't change anything
   }, [thread?.id, thread?.isRead, getLoadPreference]);
 
   // ===========================================
@@ -934,8 +945,9 @@ export function ChatInterface({
         case 'prepare_draft':
           // Cancel any existing unsent/unsaved drafts when creating a new one
           // This prevents multiple drafts from being open at once
+          // BUT don't cancel drafts that are currently streaming (they'll be updated)
           setMessages(prev => prev.map(m => {
-            if (m.draft && !m.draftCancelled && !m.draftSaved && !m.draftSent) {
+            if (m.draft && !m.draftCancelled && !m.draftSaved && !m.draftSent && !m.isStreaming) {
               return { ...m, draftCancelled: true };
             }
             return m;
@@ -1434,8 +1446,23 @@ export function ChatInterface({
           console.log('[Transcribing] Adding transcribing message:', messageId);
           setMessages(prev => {
             console.log('[Transcribing] Previous messages count:', prev.length);
-            return [...prev, pendingMessage];
+            console.log('[Transcribing] Has draft in messages:', prev.some(m => m.draft && !m.draftCancelled));
+            console.log('[Transcribing] Messages before adding:', prev.map(m => ({
+              id: m.id,
+              role: m.role,
+              hasDraft: !!m.draft,
+              isTranscribing: m.isTranscribing,
+              content: m.content?.substring(0, 50)
+            })));
+            const newMessages = [...prev, pendingMessage];
+            console.log('[Transcribing] Messages after adding:', newMessages.length);
+            return newMessages;
           });
+
+          // Scroll to bottom to ensure transcribing message is visible
+          setTimeout(() => {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+          }, 100);
 
           // Transcribe
           try {
@@ -1669,11 +1696,14 @@ export function ChatInterface({
     
     try {
       await onSendEmail(draft);
-      
-      // Mark the draft message as sent (so it shows differently in UI)
+
+      // Mark ONLY THE SPECIFIC draft message as sent (so it shows differently in UI)
       setMessages(prev => prev.map(m => {
-        // Mark draft as sent
-        if (m.draft && !m.draftCancelled && !m.draftSent) {
+        // Mark draft as sent if it's the active draft we just sent
+        // Check if it's not already cancelled/saved/sent and matches the current active draft
+        // We can't compare object identity since the draft may have been edited
+        if (m.draft && !m.draftCancelled && !m.draftSaved && !m.draftSent && !m.isStreaming) {
+          // This is the active draft message - mark it as sent
           return { ...m, draftSent: true };
         }
         return m;
@@ -1728,23 +1758,25 @@ export function ChatInterface({
   // Undo the pending send
   const handleUndoSend = useCallback(() => {
     if (!pendingSend) return;
-    
+
     // Clear the timeout
     clearTimeout(pendingSend.timeoutId);
-    
+
     // Restore the draft
     setCurrentDraft(pendingSend.draft);
-    
-    // Un-mark the draft as sent in messages AND remove the confirmation message
+
+    // Un-mark ONLY the specific draft being undone (compare draft objects)
+    // AND remove the confirmation message
     setMessages(prev => prev
       .filter(m => m.id !== pendingSend.confirmMessageId) // Remove "Sending to..." message
-      .map(m => 
-        m.draft && m.draftSent
+      .map(m =>
+        // Only reset the specific draft being undone
+        m.draft && m.draftSent && m.draft === pendingSend.draft
           ? { ...m, draftSent: false }
           : m
       )
     );
-    
+
     // Clear pending send state
     setPendingSend(null);
     setIsSending(false);
@@ -1872,9 +1904,18 @@ export function ChatInterface({
     archiveWithNotification();
   }, [archiveWithNotification]);
 
+  const handleSentActionPrevious = useCallback(() => {
+    // Mark the buttons as handled
+    setMessages(prev => prev.map(m =>
+      m.hasActionButtons ? { ...m, actionButtonsHandled: true } : m
+    ));
+    // Go to previous
+    onPreviousEmail?.();
+  }, [onPreviousEmail]);
+
   const handleSentActionNext = useCallback(() => {
     // Mark the buttons as handled
-    setMessages(prev => prev.map(m => 
+    setMessages(prev => prev.map(m =>
       m.hasActionButtons ? { ...m, actionButtonsHandled: true } : m
     ));
     // Just go to next
@@ -1883,7 +1924,7 @@ export function ChatInterface({
 
   const handleSentActionInbox = useCallback(() => {
     // Mark the buttons as handled
-    setMessages(prev => prev.map(m => 
+    setMessages(prev => prev.map(m =>
       m.hasActionButtons ? { ...m, actionButtonsHandled: true } : m
     ));
     // Go to inbox
@@ -2411,7 +2452,12 @@ export function ChatInterface({
           </motion.div>
         )}
 
-        {messages.map((message, index) => (
+        {messages.map((message, index) => {
+          // Debug log for transcribing messages
+          if (message.isTranscribing) {
+            console.log('[Transcribing] Rendering transcribing message:', message.id, 'at index:', index);
+          }
+          return (
           <motion.div
             key={message.id}
             // Skip y transform for messages with drafts to avoid iOS cursor positioning issues
@@ -2558,32 +2604,65 @@ export function ChatInterface({
             {/* Action buttons for sent confirmation */}
             {message.isSystemMessage && message.systemType === 'sent' && message.hasActionButtons && !message.actionButtonsHandled && (
               <div className="w-full flex flex-wrap items-center justify-center gap-2 py-2">
+                {/* Previous button with arrow */}
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleSentActionPrevious}
+                  disabled={!onPreviousEmail}
+                  className="p-2 rounded-lg transition-colors disabled:opacity-50"
+                  style={{
+                    background: 'var(--bg-interactive)',
+                    border: '1px solid var(--border-subtle)',
+                    color: 'var(--text-muted)'
+                  }}
+                  title="Previous email"
+                >
+                  <ChevronLeft className="w-5 h-5" />
+                </motion.button>
+
+                {/* Archive button with blue styling */}
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handleSentActionArchiveNext}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/30 hover:bg-purple-500/30 transition-colors text-sm font-medium"
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 transition-colors text-sm font-medium"
+                  style={{ color: 'rgb(147, 197, 253)' }}
                 >
                   <Archive className="w-4 h-4" />
                   Archive & Next
                 </motion.button>
+
+                {/* Next button with arrow */}
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handleSentActionNext}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-700/50 text-slate-300 border border-slate-600/30 hover:bg-slate-700 transition-colors text-sm font-medium"
+                  className="p-2 rounded-lg transition-colors"
+                  style={{
+                    background: 'var(--bg-interactive)',
+                    border: '1px solid var(--border-subtle)',
+                    color: 'var(--text-muted)'
+                  }}
+                  title="Next email"
                 >
-                  <ChevronRight className="w-4 h-4" />
-                  Next
+                  <ChevronRight className="w-5 h-5" />
                 </motion.button>
+
+                {/* Inbox button */}
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handleSentActionInbox}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-700/50 text-slate-300 border border-slate-600/30 hover:bg-slate-700 transition-colors text-sm font-medium"
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-sm font-medium"
+                  style={{
+                    background: 'var(--bg-interactive)',
+                    border: '1px solid var(--border-subtle)',
+                    color: 'var(--text-secondary)'
+                  }}
                 >
                   <Inbox className="w-4 h-4" />
-                  Inbox
+                  <span>Inbox</span>
                 </motion.button>
               </div>
             )}
@@ -2786,7 +2865,8 @@ export function ChatInterface({
               </div>
             )}
           </motion.div>
-        ))}
+        );
+        })}
 
         {/* Current draft - only show if no ACTIVE (non-cancelled/saved/sent) draft in messages */}
         {currentDraft && !messages.some(m => m.draft && !m.draftCancelled && !m.draftSaved && !m.draftSent) && (
