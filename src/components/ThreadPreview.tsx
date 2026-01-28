@@ -5,6 +5,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, FolderOpen, Clock, Shield, ShieldOff, Paperclip, Download, FileText, Image as ImageIcon, Film, Music, FileArchive, FileCode, File, X, Copy, Check } from 'lucide-react';
 import { EmailThread, EmailMessage } from '@/types';
 import { EmailHtmlViewer, isHtmlContent, normalizeEmailPlainText, stripBasicHtml } from './EmailHtmlViewer';
+import { getDisplayContent } from '@/lib/email-content-parser';
+import { getMessageBodyClass, getMetadataClass, getQuotedContentClass } from '@/lib/email-styles';
 import { UnsubscribeButton } from './UnsubscribeButton';
 import Linkify from 'linkify-react';
 
@@ -150,29 +152,26 @@ function parseEmailContent(text: string): { mainContent: string; quotedContent: 
 /**
  * Component to render email body with collapsible quoted content
  */
-function EmailBodyWithQuotes({ 
-  content, 
-  isDraft = false 
-}: { 
-  content: string; 
+function EmailBodyWithQuotes({
+  content,
+  isDraft = false
+}: {
+  content: string;
   isDraft?: boolean;
 }) {
   const [showQuoted, setShowQuoted] = useState(false);
   const normalized = normalizeEmailPlainText(content);
   const { mainContent, quotedContent, attributionLine } = parseEmailContent(normalized);
-  
+
   return (
-    <div 
-      className={`text-sm leading-relaxed ${isDraft ? 'italic' : ''}`}
-      style={{ color: isDraft ? 'var(--text-secondary)' : 'var(--text-primary)' }}
-    >
-      {/* Main content with Linkify */}
-      <div className="whitespace-pre-wrap">
+    <div className={isDraft ? 'italic' : ''}>
+      {/* Main content with improved styling */}
+      <div className={getMessageBodyClass(true)}>
         <Linkify
           options={{
             target: '_blank',
             rel: 'noopener noreferrer',
-            className: 'text-blue-400 hover:underline',
+            className: 'text-blue-400 hover:text-blue-300 underline',
             format: (value: string, type: string) => {
               if (type === 'url' && value.length > 50) {
                 return value.slice(0, 50) + '…';
@@ -1524,11 +1523,15 @@ function MessageItem({
               <Paperclip className="w-3 h-3" style={{ color: 'var(--text-muted)' }} />
             )}
           </div>
-          {!isExpanded && (
-            <p className="text-xs truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-              {message.snippet || message.body.slice(0, 100)}
-            </p>
-          )}
+          {!isExpanded && (() => {
+            // Use our parser to get clean preview text
+            const { content } = getDisplayContent(message);
+            return (
+              <p className="text-xs truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                {message.snippet || content.slice(0, 100)}
+              </p>
+            );
+          })()}
         </div>
 
         {/* Expand indicator */}
@@ -1595,34 +1598,41 @@ function MessageItem({
                 </div>
               )}
 
-              {/* Email body - HTML viewer for any HTML content (preserves links, formatting) */}
-              {/* Plain text fallback only when no HTML available */}
-              {message.bodyHtml && isHtmlContent(message.bodyHtml) ? (
-                <div className={isDraft ? 'italic opacity-80' : ''}>
-                  <EmailHtmlViewer
-                    html={message.bodyHtml}
-                    plainText={message.body}
-                    maxHeight={600}
-                    onNextEmail={onNextEmail}
-                    onPreviousEmail={onPreviousEmail}
-                  />
-                </div>
-              ) : (
-                <EmailBodyWithQuotes 
-                  content={message.body || ''}
-                  isDraft={isDraft}
-                />
-              )}
+              {/* Email body - use our improved parser for better separation */}
+              {(() => {
+                const { content: displayContent, isHtml, ttsContent } = getDisplayContent(message);
 
-              {/* Copy and TTS buttons for the message */}
-              <div className="flex items-center gap-2 mt-3">
-                <CopyButton content={message.body || ''} />
-                <TTSController
-                  content={message.body || ''}
-                  id={`email-${message.id}`}
-                  compact={true}
-                />
-              </div>
+                return (
+                  <>
+                    {isHtml ? (
+                      <div className={isDraft ? 'italic opacity-80' : ''}>
+                        <EmailHtmlViewer
+                          html={displayContent}
+                          plainText={message.body}
+                          maxHeight={600}
+                          onNextEmail={onNextEmail}
+                          onPreviousEmail={onPreviousEmail}
+                        />
+                      </div>
+                    ) : (
+                      <EmailBodyWithQuotes
+                        content={displayContent}
+                        isDraft={isDraft}
+                      />
+                    )}
+
+                    {/* Copy and TTS buttons for the message - use clean TTS content */}
+                    <div className="flex items-center gap-2 mt-3">
+                      <CopyButton content={displayContent} />
+                      <TTSController
+                        content={ttsContent || displayContent}
+                        id={`email-${message.id}`}
+                        compact={true}
+                      />
+                    </div>
+                  </>
+                );
+              })()}
 
               {/* Attachments section */}
               {message.attachments && message.attachments.length > 0 && (

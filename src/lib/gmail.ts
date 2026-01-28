@@ -387,10 +387,20 @@ export async function fetchInbox(
 
   if (data.threads) {
     // Fetch ALL thread metadata in parallel (not batched) - much faster!
-    const threadDetails = await Promise.all(
+    // Use Promise.allSettled to handle individual thread errors gracefully
+    const threadResults = await Promise.allSettled(
       data.threads.map((t: { id: string }) => fetchThreadMetadata(accessToken, t.id))
     );
-    threads.push(...threadDetails);
+
+    // Only include successfully fetched threads
+    for (const result of threadResults) {
+      if (result.status === 'fulfilled') {
+        threads.push(result.value);
+      } else {
+        // Log the error but don't fail the entire inbox load
+        console.warn('Failed to fetch thread:', result.reason);
+      }
+    }
   }
 
   return {
@@ -414,7 +424,12 @@ async function fetchThreadMetadata(accessToken: string, threadId: string): Promi
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to fetch thread metadata: ${response.statusText}`);
+    console.error(`Failed to fetch thread metadata: ${response.status} ${response.statusText}`);
+    // If it's a 404, the thread might have been deleted
+    if (response.status === 404) {
+      throw new Error('Thread not found - it may have been deleted');
+    }
+    throw new Error(`Failed to fetch thread metadata: ${response.status} ${response.statusText}`);
   }
 
   const data = await response.json();

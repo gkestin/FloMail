@@ -129,8 +129,9 @@ export function EmailHtmlViewer({
       return null;
     }
 
-    const bgColor = needsWhiteBackground ? '#ffffff' : '#1e1e1e';
-    const textColor = needsWhiteBackground ? '#222222' : '#e0e0e0';
+    // Improved dark theme colors for better readability
+    const bgColor = needsWhiteBackground ? '#ffffff' : '#0f172a';  // Darker, richer background
+    const textColor = needsWhiteBackground ? '#222222' : '#e2e8f0'; // Lighter text for better contrast
     const linkColor = needsWhiteBackground ? '#1a73e8' : '#60a5fa';
 
     // For dark theme, we need to override inline dark text colors
@@ -204,11 +205,11 @@ export function EmailHtmlViewer({
     * { box-sizing: border-box; }
     html, body {
       margin: 0;
-      padding: 8px;
+      padding: 12px;
       background: ${bgColor} !important;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-      font-size: 14px;
-      line-height: 1.5;
+      font-size: 16px; /* Mobile default */
+      line-height: 1.625; /* More comfortable line height */
       color: ${textColor};
       word-wrap: break-word;
     }
@@ -232,6 +233,18 @@ export function EmailHtmlViewer({
       display: inline-block;
       min-width: 100%;
       transform-origin: top left;
+    }
+    /* Responsive font sizes */
+    @media (min-width: 640px) {
+      html, body {
+        font-size: 17px; /* Slightly larger on tablets */
+      }
+    }
+    @media (min-width: 1024px) {
+      html, body {
+        font-size: 16px; /* Standard on desktop */
+        padding: 16px;
+      }
     }
     ${darkThemeOverrides}
   </style>
