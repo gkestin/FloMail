@@ -4,12 +4,13 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { motion, useAnimation, PanInfo } from 'framer-motion';
 import { EmailThread } from '@/types';
 import { ChatInterface } from './ChatInterface';
+import { MailFolder } from './InboxList';
 
 interface MessageSliderProps {
   currentThread: EmailThread;
   previousThread?: EmailThread | null;
   nextThread?: EmailThread | null;
-  folder: string;
+  folder: MailFolder;
   aiProvider: 'anthropic' | 'openai';
   aiModel: string;
   draftingPreferences: any;
