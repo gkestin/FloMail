@@ -3,7 +3,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { motion, useAnimation, PanInfo } from 'framer-motion';
 import { EmailThread } from '@/types';
-import ChatInterface from './ChatInterface';
+import { ChatInterface } from './ChatInterface';
 
 interface MessageSliderProps {
   currentThread: EmailThread;
