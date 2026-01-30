@@ -2131,14 +2131,66 @@ export function ChatInterface({
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Add swipe gesture handling for navigation
+  const touchStartX = useRef(0);
+  const touchStartY = useRef(0);
+  const wheelAccumX = useRef(0);
+  const wheelTimeout = useRef<NodeJS.Timeout>();
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0].clientX;
+    touchStartY.current = e.touches[0].clientY;
+  }, []);
+
+  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
+    const dx = e.changedTouches[0].clientX - touchStartX.current;
+    const dy = e.changedTouches[0].clientY - touchStartY.current;
+
+    // Only trigger on definite horizontal swipes with reasonable threshold
+    if (Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 100) {
+      if (dx < 0) {
+        onNextEmail?.(); // Swipe left = next
+      } else {
+        onPreviousEmail?.(); // Swipe right = previous
+      }
+    }
+  }, [onNextEmail, onPreviousEmail]);
+
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    // Only handle horizontal scrolling for navigation
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.5) {
+      wheelAccumX.current += e.deltaX;
+
+      if (Math.abs(wheelAccumX.current) > 150) {
+        if (wheelAccumX.current > 0) {
+          onNextEmail?.(); // Scroll left = next
+        } else {
+          onPreviousEmail?.(); // Scroll right = previous
+        }
+        wheelAccumX.current = 0;
+      }
+
+      if (wheelTimeout.current) clearTimeout(wheelTimeout.current);
+      wheelTimeout.current = setTimeout(() => {
+        wheelAccumX.current = 0;
+      }, 150);
+    }
+  }, [onNextEmail, onPreviousEmail]);
+
   return (
-    <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)' }}>
+    <div
+      className="flex flex-col h-full"
+      style={{ background: 'var(--bg-primary)' }}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+      onWheel={handleWheel}
+    >
       {/* Email Thread Preview */}
       {thread && (
-        <ThreadPreview 
+        <ThreadPreview
           key={thread.id} // Force remount when thread changes to reset all internal state
-          thread={thread} 
-          folder={folder} 
+          thread={thread}
+          folder={folder}
           defaultExpanded={false}
           revealedMessageCount={revealedMessageCount}
           baseRevealedCount={baseRevealedCount}
@@ -2156,10 +2208,10 @@ export function ChatInterface({
 
 
       {/* Messages - with purple tint when in incognito mode */}
-      <div 
-        ref={chatContainerRef} 
+      <div
+        ref={chatContainerRef}
         className="flex-1 overflow-y-auto transition-colors duration-300"
-        style={isIncognito ? { 
+        style={isIncognito ? {
           background: 'linear-gradient(180deg, rgba(139, 92, 246, 0.12) 0%, rgba(139, 92, 246, 0.05) 100%)',
           marginTop: '-1px', // Pull up to cover separator line
         } : {}}

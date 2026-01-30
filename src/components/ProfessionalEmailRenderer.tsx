@@ -419,20 +419,22 @@ export function ProfessionalEmailRenderer({
                           var elapsed = Date.now() - touchStartTime;
                           var velocity = Math.abs(dx) / Math.max(elapsed, 1);
 
-                          // Horizontal swipe detection - require EITHER:
-                          // 1. Large swipe distance (>150px) for slow swipes
-                          // 2. Fast swipe (velocity > 0.5) with moderate distance (>100px)
-                          // This prevents accidental triggers when scrolling wide content
-                          var isDefiniteHorizontalSwipe = Math.abs(dx) > Math.abs(dy) * 2.0;
-                          var isLargeSwipe = Math.abs(dx) > 150;
-                          var isFastSwipe = velocity > 0.5 && Math.abs(dx) > 100;
+                          // Horizontal swipe detection - DISABLED in message region
+                          // to allow free horizontal scrolling of wide content.
+                          // Navigation should be done via buttons or chat region swipes.
+                          // Uncomment below to re-enable with very high thresholds:
+                          /*
+                          var isDefiniteHorizontalSwipe = Math.abs(dx) > Math.abs(dy) * 3.0;
+                          var isVeryLargeSwipe = Math.abs(dx) > 250;
+                          var isVeryFastSwipe = velocity > 1.0 && Math.abs(dx) > 150;
 
-                          if (isDefiniteHorizontalSwipe && (isLargeSwipe || isFastSwipe)) {
+                          if (isDefiniteHorizontalSwipe && (isVeryLargeSwipe || isVeryFastSwipe)) {
                             hasActed = true;
                             parent.postMessage({ type: dx < 0 ? 'flomail-swipe-left' : 'flomail-swipe-right' }, '*');
                           }
+                          */
                           // Forward vertical touch to parent for expand/collapse
-                          else if (Math.abs(dy) > 30 && Math.abs(dy) > Math.abs(dx)) {
+                          if (Math.abs(dy) > 30 && Math.abs(dy) > Math.abs(dx)) {
                             parent.postMessage({ type: 'flomail-vertical-scroll', deltaY: -dy }, '*');
                           }
                         }, { passive: true });
@@ -450,30 +452,18 @@ export function ProfessionalEmailRenderer({
                             wheelVelocityX = 0;
                           }
 
-                          // Horizontal scroll detection - require larger threshold
-                          // to prevent interference with content scrolling
-                          if (Math.abs(e.deltaX) > Math.abs(e.deltaY) * 2.0) {
-                            wheelAccumX += e.deltaX;
+                          // Horizontal scroll detection - DISABLED in message region
+                          // to allow free horizontal scrolling of wide content.
+                          // Only forward vertical scroll events to parent.
 
-                            // Require larger accumulation (200px) or high velocity
-                            var shouldNavigate = Math.abs(wheelAccumX) > 200 ||
-                                                (Math.abs(wheelAccumX) > 150 && Math.abs(wheelVelocityX) > 2);
-
-                            if (shouldNavigate) {
-                              parent.postMessage({ type: wheelAccumX > 0 ? 'flomail-swipe-left' : 'flomail-swipe-right' }, '*');
-                              wheelAccumX = 0;
-                              // Add pause after navigation
-                              lastWheelTime = now + 300;
-                            }
-                            clearTimeout(wheelTimeout);
-                            wheelTimeout = setTimeout(function() {
-                              wheelAccumX = 0;
-                              wheelVelocityX = 0;
-                            }, 200);
-                          } else {
-                            // Forward vertical scroll to parent with momentum
+                          // Always forward vertical scroll to parent for expand/collapse
+                          if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
                             parent.postMessage({ type: 'flomail-vertical-scroll', deltaY: e.deltaY }, '*');
                           }
+
+                          // Note: Horizontal scrolling is now handled natively by the browser
+                          // for scrolling wide content. Navigation between threads should be
+                          // done via buttons or swipes in the chat region.
                         }, { passive: true });
                       })();
                     </script>
