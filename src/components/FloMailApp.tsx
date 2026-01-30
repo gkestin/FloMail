@@ -17,6 +17,7 @@ import { DraftAttachment } from '@/types';
 import { SnoozePicker } from './SnoozePicker';
 import { SnoozeOption } from '@/lib/snooze-persistence';
 import { getUserSettings, saveUserSettings, subscribeToUserSettings, migrateSettingsFromLocalStorage, TTSSettings } from '@/lib/user-settings-persistence';
+import { useThreadPreloader } from '@/hooks/useThreadPreloader';
 
 import { User as UserType } from '@/types';
 
@@ -79,7 +80,15 @@ export function FloMailApp() {
   const [isArchiving, setIsArchiving] = useState(false); // For archive button spinner
   const [refreshKey, setRefreshKey] = useState(0); // Increment to trigger InboxList refresh
   const [urlInitialized, setUrlInitialized] = useState(false);
-  
+
+  // Preload adjacent threads for seamless navigation
+  const navThreads = folderThreads.length > 0 ? folderThreads : allThreads;
+  const { getCachedThread, preloadThread } = useThreadPreloader(
+    selectedThread,
+    navThreads,
+    getAccessToken
+  );
+
   // AI Provider settings (moved here from ChatInterface so they persist globally)
   const [aiProvider, setAiProvider] = useState<AIProvider>('anthropic');
   const [aiModel, setAiModel] = useState<string>('claude-sonnet-4-20250514');
@@ -897,54 +906,60 @@ export function FloMailApp() {
       currentThreadIndexRef.current = nextIndex;
       setCurrentView('chat');
 
-      // Fetch full thread data (navThreads might only have metadata)
-      try {
-        const token = await getAccessToken();
-        if (token) {
-          const fullThread = await fetchThread(token, nextThread.id);
-          if (fullThread) {
-            // Store unread status for auto-expand
-            const wasUnread = !fullThread.isRead;
+      // Try to get cached thread first for instant transition
+      const cachedThread = getCachedThread(nextThread.id);
+      if (cachedThread) {
+        // Use cached thread immediately for seamless transition
+        setSelectedThread(cachedThread);
 
-            // Set thread FIRST while still unread (so ChatInterface can see it and auto-expand)
-            setSelectedThread(fullThread);
-
-            // Then mark as read if it was unread
-            if (wasUnread) {
-              await markAsRead(token, fullThread.id);
-              // Invalidate cache for this thread AND update folder cache
-              emailCache.invalidateThread(fullThread.id);
-              // Update the cached folder data to reflect the read status
-              const folderData = emailCache.getStaleFolderData(currentMailFolder);
-              if (folderData && folderData.threads) {
-                const updatedThreads = folderData.threads.map(t =>
-                  t.id === fullThread.id ? { ...t, isRead: true } : t
-                );
-                emailCache.setFolderData(currentMailFolder, {
-                  ...folderData,
-                  threads: updatedThreads
-                });
-              }
-              // Update all thread lists to show as read
+        // Mark as read if needed (in background)
+        if (!cachedThread.isRead) {
+          getAccessToken().then(token => {
+            if (token) {
+              markAsRead(token, cachedThread.id);
+              // Update thread lists
               setAllThreads(prev => prev.map((t: EmailThread) =>
-                t.id === fullThread.id ? { ...t, isRead: true } : t
+                t.id === cachedThread.id ? { ...t, isRead: true } : t
               ));
               setFolderThreads(prev => prev.map((t: EmailThread) =>
-                t.id === fullThread.id ? { ...t, isRead: true } : t
+                t.id === cachedThread.id ? { ...t, isRead: true } : t
               ));
-              // Update selectedThread to reflect read status
               setSelectedThread(prev => prev ? { ...prev, isRead: true } : prev);
             }
-            return;
-          }
+          });
         }
-      } catch (e) {
-        console.error('Failed to fetch full thread:', e);
+      } else {
+        // No cached version, fetch it (but still set view immediately to show transition)
+        setSelectedThread(nextThread); // Use partial data for immediate transition
+
+        // Fetch full thread data
+        try {
+          const token = await getAccessToken();
+          if (token) {
+            const fullThread = await fetchThread(token, nextThread.id);
+            if (fullThread) {
+              const wasUnread = !fullThread.isRead;
+              setSelectedThread(fullThread);
+
+              if (wasUnread) {
+                await markAsRead(token, fullThread.id);
+                // Update thread lists
+                setAllThreads(prev => prev.map((t: EmailThread) =>
+                  t.id === fullThread.id ? { ...t, isRead: true } : t
+                ));
+                setFolderThreads(prev => prev.map((t: EmailThread) =>
+                  t.id === fullThread.id ? { ...t, isRead: true } : t
+                ));
+                setSelectedThread(prev => prev ? { ...prev, isRead: true } : prev);
+              }
+            }
+          }
+        } catch (e) {
+          console.error('Failed to fetch full thread:', e);
+        }
       }
-      // Fallback to cached thread if fetch fails
-      setSelectedThread(nextThread);
     }
-  }, [folderThreads, allThreads, selectedThread, getAccessToken]);
+  }, [folderThreads, allThreads, selectedThread, getAccessToken, getCachedThread]);
 
   const handlePreviousEmail = useCallback(async () => {
     // Set navigation direction for animation
@@ -967,54 +982,60 @@ export function FloMailApp() {
       currentThreadIndexRef.current = prevIndex;
       setCurrentView('chat');
 
-      // Fetch full thread data (navThreads might only have metadata)
-      try {
-        const token = await getAccessToken();
-        if (token) {
-          const fullThread = await fetchThread(token, prevThread.id);
-          if (fullThread) {
-            // Store unread status for auto-expand
-            const wasUnread = !fullThread.isRead;
+      // Try to get cached thread first for instant transition
+      const cachedThread = getCachedThread(prevThread.id);
+      if (cachedThread) {
+        // Use cached thread immediately for seamless transition
+        setSelectedThread(cachedThread);
 
-            // Set thread FIRST while still unread (so ChatInterface can see it and auto-expand)
-            setSelectedThread(fullThread);
-
-            // Then mark as read if it was unread
-            if (wasUnread) {
-              await markAsRead(token, fullThread.id);
-              // Invalidate cache for this thread AND update folder cache
-              emailCache.invalidateThread(fullThread.id);
-              // Update the cached folder data to reflect the read status
-              const folderData = emailCache.getStaleFolderData(currentMailFolder);
-              if (folderData && folderData.threads) {
-                const updatedThreads = folderData.threads.map(t =>
-                  t.id === fullThread.id ? { ...t, isRead: true } : t
-                );
-                emailCache.setFolderData(currentMailFolder, {
-                  ...folderData,
-                  threads: updatedThreads
-                });
-              }
-              // Update all thread lists to show as read
+        // Mark as read if needed (in background)
+        if (!cachedThread.isRead) {
+          getAccessToken().then(token => {
+            if (token) {
+              markAsRead(token, cachedThread.id);
+              // Update thread lists
               setAllThreads(prev => prev.map((t: EmailThread) =>
-                t.id === fullThread.id ? { ...t, isRead: true } : t
+                t.id === cachedThread.id ? { ...t, isRead: true } : t
               ));
               setFolderThreads(prev => prev.map((t: EmailThread) =>
-                t.id === fullThread.id ? { ...t, isRead: true } : t
+                t.id === cachedThread.id ? { ...t, isRead: true } : t
               ));
-              // Update selectedThread to reflect read status
               setSelectedThread(prev => prev ? { ...prev, isRead: true } : prev);
             }
-            return;
-          }
+          });
         }
-      } catch (e) {
-        console.error('Failed to fetch full thread:', e);
+      } else {
+        // No cached version, fetch it (but still set view immediately to show transition)
+        setSelectedThread(prevThread); // Use partial data for immediate transition
+
+        // Fetch full thread data
+        try {
+          const token = await getAccessToken();
+          if (token) {
+            const fullThread = await fetchThread(token, prevThread.id);
+            if (fullThread) {
+              const wasUnread = !fullThread.isRead;
+              setSelectedThread(fullThread);
+
+              if (wasUnread) {
+                await markAsRead(token, fullThread.id);
+                // Update thread lists
+                setAllThreads(prev => prev.map((t: EmailThread) =>
+                  t.id === fullThread.id ? { ...t, isRead: true } : t
+                ));
+                setFolderThreads(prev => prev.map((t: EmailThread) =>
+                  t.id === fullThread.id ? { ...t, isRead: true } : t
+                ));
+                setSelectedThread(prev => prev ? { ...prev, isRead: true } : prev);
+              }
+            }
+          }
+        } catch (e) {
+          console.error('Failed to fetch full thread:', e);
+        }
       }
-      // Fallback to cached thread if fetch fails
-      setSelectedThread(prevThread);
     }
-  }, [folderThreads, allThreads, getAccessToken]);
+  }, [folderThreads, allThreads, getAccessToken, getCachedThread]);
 
   // Handler for snooze from the draft card page header
   const handleSnooze = useCallback(async (option: SnoozeOption, customDate?: Date) => {
