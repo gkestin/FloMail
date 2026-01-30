@@ -66,6 +66,7 @@ export function FloMailApp() {
   const [currentView, setCurrentView] = useState<View>('inbox');
   const [selectedThread, setSelectedThread] = useState<EmailThread | null>(null);
   const [currentDraft, setCurrentDraft] = useState<EmailDraft | null>(null);
+  const [navigationDirection, setNavigationDirection] = useState<'forward' | 'backward'>('forward');
   const [showProfile, setShowProfile] = useState(false);
   const [allThreads, setAllThreads] = useState<EmailThread[]>([]);
   const [folderThreads, setFolderThreads] = useState<EmailThread[]>([]); // Threads in current folder for navigation
@@ -437,10 +438,13 @@ export function FloMailApp() {
   }, [user, getAccessToken]);
 
   const handleSelectThread = useCallback(async (thread: EmailThread, folder: MailFolder = 'inbox', threadsInFolder: EmailThread[] = []) => {
+    // Set navigation direction for animation (going from inbox to chat is forward)
+    setNavigationDirection('forward');
+
     // Set thread immediately for fast UI response (shows metadata)
     setSelectedThread(thread);
     setCurrentMailFolder(folder);
-    
+
     // Store the folder's threads for navigation
     if (threadsInFolder.length > 0) {
       setFolderThreads(threadsInFolder);
@@ -809,6 +813,9 @@ export function FloMailApp() {
   }, [selectedThread, getAccessToken]);
 
   const handleNextEmail = useCallback(async () => {
+    // Set navigation direction for animation
+    setNavigationDirection('forward');
+
     // Use folder-specific threads for navigation (fall back to allThreads if empty)
     const navThreads = folderThreads.length > 0 ? folderThreads : allThreads;
 
@@ -940,6 +947,9 @@ export function FloMailApp() {
   }, [folderThreads, allThreads, selectedThread, getAccessToken]);
 
   const handlePreviousEmail = useCallback(async () => {
+    // Set navigation direction for animation
+    setNavigationDirection('backward');
+
     // Use folder-specific threads for navigation (fall back to allThreads if empty)
     const navThreads = folderThreads.length > 0 ? folderThreads : allThreads;
 
@@ -1801,12 +1811,30 @@ export function FloMailApp() {
             </motion.div>
           )}
 
-          {currentView === 'chat' && (
+          {currentView === 'chat' && selectedThread && (
             <motion.div
-              key="chat"
-              initial={{ opacity: 0, x: 50 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 50 }}
+              key={`chat-${selectedThread.id}`} // Key by thread ID for smooth transitions
+              initial={{
+                opacity: 0,
+                x: navigationDirection === 'forward' ? 100 : -100,
+                scale: 0.95
+              }}
+              animate={{
+                opacity: 1,
+                x: 0,
+                scale: 1
+              }}
+              exit={{
+                opacity: 0,
+                x: navigationDirection === 'forward' ? -100 : 100,
+                scale: 0.95
+              }}
+              transition={{
+                type: "spring",
+                stiffness: 260,
+                damping: 20,
+                opacity: { duration: 0.2 }
+              }}
               className="absolute inset-0"
             >
               <ChatInterface

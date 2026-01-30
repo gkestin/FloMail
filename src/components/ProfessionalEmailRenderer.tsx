@@ -400,13 +400,15 @@ export function ProfessionalEmailRenderer({
                     ${processedContent}
                     <script>
                       (function() {
-                        var touchStartX = 0, touchStartY = 0, hasActed = false;
+                        var touchStartX = 0, touchStartY = 0, touchStartTime = 0, hasActed = false;
                         var wheelAccumX = 0, wheelTimeout = null;
+                        var lastWheelTime = 0, wheelVelocityX = 0;
 
                         // Touch event handling for mobile swipes
                         document.addEventListener('touchstart', function(e) {
                           touchStartX = e.touches[0].clientX;
                           touchStartY = e.touches[0].clientY;
+                          touchStartTime = Date.now();
                           hasActed = false;
                         }, { passive: true });
 
@@ -414,31 +416,62 @@ export function ProfessionalEmailRenderer({
                           if (hasActed) return;
                           var dx = e.touches[0].clientX - touchStartX;
                           var dy = e.touches[0].clientY - touchStartY;
+                          var elapsed = Date.now() - touchStartTime;
+                          var velocity = Math.abs(dx) / Math.max(elapsed, 1);
 
-                          // Horizontal swipe detection (prev/next thread)
-                          if (Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 80) {
+                          // Horizontal swipe detection - require EITHER:
+                          // 1. Large swipe distance (>150px) for slow swipes
+                          // 2. Fast swipe (velocity > 0.5) with moderate distance (>100px)
+                          // This prevents accidental triggers when scrolling wide content
+                          var isDefiniteHorizontalSwipe = Math.abs(dx) > Math.abs(dy) * 2.0;
+                          var isLargeSwipe = Math.abs(dx) > 150;
+                          var isFastSwipe = velocity > 0.5 && Math.abs(dx) > 100;
+
+                          if (isDefiniteHorizontalSwipe && (isLargeSwipe || isFastSwipe)) {
                             hasActed = true;
                             parent.postMessage({ type: dx < 0 ? 'flomail-swipe-left' : 'flomail-swipe-right' }, '*');
                           }
                           // Forward vertical touch to parent for expand/collapse
-                          else if (Math.abs(dy) > 30) {
+                          else if (Math.abs(dy) > 30 && Math.abs(dy) > Math.abs(dx)) {
                             parent.postMessage({ type: 'flomail-vertical-scroll', deltaY: -dy }, '*');
                           }
                         }, { passive: true });
 
                         // Wheel event handling for desktop trackpad gestures
                         document.addEventListener('wheel', function(e) {
-                          // Horizontal scroll detection (prev/next thread)
-                          if (Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.5) {
+                          var now = Date.now();
+                          var timeDelta = now - lastWheelTime;
+                          lastWheelTime = now;
+
+                          // Calculate velocity for momentum feel
+                          if (timeDelta > 0 && timeDelta < 100) {
+                            wheelVelocityX = e.deltaX / timeDelta;
+                          } else {
+                            wheelVelocityX = 0;
+                          }
+
+                          // Horizontal scroll detection - require larger threshold
+                          // to prevent interference with content scrolling
+                          if (Math.abs(e.deltaX) > Math.abs(e.deltaY) * 2.0) {
                             wheelAccumX += e.deltaX;
-                            if (Math.abs(wheelAccumX) > 100) {
+
+                            // Require larger accumulation (200px) or high velocity
+                            var shouldNavigate = Math.abs(wheelAccumX) > 200 ||
+                                                (Math.abs(wheelAccumX) > 150 && Math.abs(wheelVelocityX) > 2);
+
+                            if (shouldNavigate) {
                               parent.postMessage({ type: wheelAccumX > 0 ? 'flomail-swipe-left' : 'flomail-swipe-right' }, '*');
                               wheelAccumX = 0;
+                              // Add pause after navigation
+                              lastWheelTime = now + 300;
                             }
                             clearTimeout(wheelTimeout);
-                            wheelTimeout = setTimeout(function() { wheelAccumX = 0; }, 150);
+                            wheelTimeout = setTimeout(function() {
+                              wheelAccumX = 0;
+                              wheelVelocityX = 0;
+                            }, 200);
                           } else {
-                            // Forward vertical scroll to parent for expand/collapse
+                            // Forward vertical scroll to parent with momentum
                             parent.postMessage({ type: 'flomail-vertical-scroll', deltaY: e.deltaY }, '*');
                           }
                         }, { passive: true });
