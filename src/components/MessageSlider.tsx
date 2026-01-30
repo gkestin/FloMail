@@ -2,7 +2,7 @@
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { motion, useAnimation, PanInfo } from 'framer-motion';
-import { EmailThread } from '@/types';
+import { EmailThread, EmailDraft, AIDraftingPreferences } from '@/types';
 import { ChatInterface } from './ChatInterface';
 import { MailFolder } from './InboxList';
 
@@ -13,20 +13,20 @@ interface MessageSliderProps {
   folder: MailFolder;
   aiProvider: 'anthropic' | 'openai';
   aiModel: string;
-  draftingPreferences: any;
-  onDraftCreated: (draft: any) => void;
-  onSendEmail: (draft: any) => Promise<void>;
-  onSaveDraft: (draft: any) => Promise<void>;
+  draftingPreferences: AIDraftingPreferences;
+  onDraftCreated: (draft: EmailDraft) => void;
+  onSendEmail: (draft: EmailDraft) => Promise<void>;
+  onSaveDraft: (draft: EmailDraft) => Promise<EmailDraft>;
   onDeleteDraft: (draftId: string) => Promise<void>;
   onArchive: () => Promise<void>;
   onMoveToInbox: () => Promise<void>;
   onStar: () => Promise<void>;
   onUnstar: () => Promise<void>;
-  onSnooze: (option: any, customDate?: Date) => Promise<void>;
+  onSnooze: (snoozeUntil: Date) => Promise<void>;
   onOpenSnoozePicker: () => void;
   onNavigate: (direction: 'next' | 'previous') => void;
   onGoToInbox: () => void;
-  onRegisterArchiveHandler: (handler: any) => void;
+  onRegisterArchiveHandler: (handler: () => void) => void;
 }
 
 export default function MessageSlider({
