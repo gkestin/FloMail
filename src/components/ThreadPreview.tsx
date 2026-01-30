@@ -4,7 +4,8 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, ChevronUp, Mail, Maximize2, Minimize2, GripHorizontal, Inbox, Send, Star, FolderOpen, Clock, Shield, ShieldOff, Paperclip, Download, FileText, Image as ImageIcon, Film, Music, FileArchive, FileCode, File, X, Copy, Check } from 'lucide-react';
 import { EmailThread, EmailMessage } from '@/types';
-import { EmailHtmlViewer, isHtmlContent, normalizeEmailPlainText, stripBasicHtml } from './EmailHtmlViewer';
+import { ProfessionalEmailRenderer } from './ProfessionalEmailRenderer';
+import { isHtmlContent, normalizeEmailPlainText, stripBasicHtml } from './EmailHtmlViewer';
 import { getDisplayContent } from '@/lib/email-content-parser';
 import { getMessageBodyClass, getMetadataClass, getQuotedContentClass } from '@/lib/email-styles';
 import { UnsubscribeButton } from './UnsubscribeButton';
@@ -16,35 +17,6 @@ import { getAttachment } from '@/lib/gmail';
 import { formatFileSize } from '@/lib/email-parsing';
 import { TTSController } from './TTSController';
 
-// Copy button for email messages
-function CopyButton({ content, className = '' }: { content: string; className?: string }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(content);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
-    }
-  };
-
-  return (
-    <button
-      onClick={handleCopy}
-      className={`p-1.5 rounded transition-all hover:bg-white/10 ${className}`}
-      style={{ color: 'var(--text-muted)' }}
-      title={copied ? 'Copied!' : 'Copy message'}
-    >
-      {copied ? (
-        <Check className="w-4 h-4 text-green-400" />
-      ) : (
-        <Copy className="w-4 h-4" />
-      )}
-    </button>
-  );
-}
 
 // Get appropriate icon for attachment type
 function getAttachmentIcon(mimeType: string): React.ElementType {
@@ -149,99 +121,6 @@ function parseEmailContent(text: string): { mainContent: string; quotedContent: 
   };
 }
 
-/**
- * Component to render email body with collapsible quoted content
- */
-function EmailBodyWithQuotes({
-  content,
-  isDraft = false
-}: {
-  content: string;
-  isDraft?: boolean;
-}) {
-  const [showQuoted, setShowQuoted] = useState(false);
-  const normalized = normalizeEmailPlainText(content);
-  const { mainContent, quotedContent, attributionLine } = parseEmailContent(normalized);
-
-  return (
-    <div className={isDraft ? 'italic' : ''}>
-      {/* Main content with improved styling */}
-      <div className={getMessageBodyClass(true)}>
-        <Linkify
-          options={{
-            target: '_blank',
-            rel: 'noopener noreferrer',
-            className: 'text-blue-400 hover:text-blue-300 underline',
-            format: (value: string, type: string) => {
-              if (type === 'url' && value.length > 50) {
-                return value.slice(0, 50) + '…';
-              }
-              return value;
-            }
-          }}
-        >
-          {cleanAngleBracketUrls(mainContent)}
-        </Linkify>
-      </div>
-      
-      {/* Quoted content toggle */}
-      {quotedContent && (
-        <div className="mt-2">
-          <button
-            onClick={() => setShowQuoted(!showQuoted)}
-            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs hover:bg-white/10 transition-colors"
-            style={{ color: 'var(--text-muted)' }}
-          >
-            <span className="tracking-wider">•••</span>
-          </button>
-          
-          <AnimatePresence>
-            {showQuoted && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.15 }}
-                className="overflow-hidden"
-              >
-                <div 
-                  className="mt-2 pl-3 border-l-2 whitespace-pre-wrap"
-                  style={{ 
-                    borderColor: 'var(--border-default)',
-                    color: 'var(--text-secondary)'
-                  }}
-                >
-                  {/* Attribution line */}
-                  {attributionLine && (
-                    <div className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
-                      {attributionLine}
-                    </div>
-                  )}
-                  {/* Quoted text */}
-                  <Linkify
-                    options={{
-                      target: '_blank',
-                      rel: 'noopener noreferrer',
-                      className: 'text-blue-400 hover:underline',
-                    }}
-                  >
-                    {cleanAngleBracketUrls(quotedContent)}
-                  </Linkify>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      )}
-      
-      {isDraft && (
-        <div className="mt-2 text-xs text-red-400/70 not-italic">
-          — This is a draft, not yet sent
-        </div>
-      )}
-    </div>
-  );
-}
 
 interface ThreadPreviewProps {
   thread: EmailThread;
@@ -1598,41 +1477,10 @@ function MessageItem({
                 </div>
               )}
 
-              {/* Email body - use our improved parser for better separation */}
-              {(() => {
-                const { content: displayContent, isHtml, ttsContent } = getDisplayContent(message);
-
-                return (
-                  <>
-                    {isHtml ? (
-                      <div className={isDraft ? 'italic opacity-80' : ''}>
-                        <EmailHtmlViewer
-                          html={displayContent}
-                          plainText={message.body}
-                          maxHeight={600}
-                          onNextEmail={onNextEmail}
-                          onPreviousEmail={onPreviousEmail}
-                        />
-                      </div>
-                    ) : (
-                      <EmailBodyWithQuotes
-                        content={displayContent}
-                        isDraft={isDraft}
-                      />
-                    )}
-
-                    {/* Copy and TTS buttons for the message - use clean TTS content */}
-                    <div className="flex items-center gap-2 mt-3">
-                      <CopyButton content={displayContent} />
-                      <TTSController
-                        content={ttsContent || displayContent}
-                        id={`email-${message.id}`}
-                        compact={true}
-                      />
-                    </div>
-                  </>
-                );
-              })()}
+              {/* Email body - use ProfessionalEmailRenderer */}
+              <div className={isDraft ? 'italic opacity-80' : ''}>
+                <ProfessionalEmailRenderer message={message} />
+              </div>
 
               {/* Attachments section */}
               {message.attachments && message.attachments.length > 0 && (

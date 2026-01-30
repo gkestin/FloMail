@@ -7,9 +7,8 @@ import { TTSController } from './TTSController';
 import { EmailDraft, DraftAttachment, EmailDraftType, EmailThread, EmailMessage } from '@/types';
 import { buildReplyQuote } from '@/lib/agent-tools';
 import { formatFileSize, getFileIcon as getFileIconType } from '@/lib/email-parsing';
-import { EmailHtmlViewer, isHtmlContent, stripBasicHtml } from './EmailHtmlViewer';
-import { getDisplayContent } from '@/lib/email-content-parser';
-import { getMessageBodyClass, getMetadataClass, getQuotedContentClass, messageContainerStyles } from '@/lib/email-styles';
+import { ProfessionalEmailRenderer } from './ProfessionalEmailRenderer';
+import { stripBasicHtml } from './EmailHtmlViewer';
 import Linkify from 'linkify-react';
 
 // Format date for message display
@@ -115,11 +114,9 @@ function ThreadMessagePreview({ message, isLast }: { message: EmailMessage; isLa
   const senderName = message.from.name || message.from.email.split('@')[0];
   const senderInitial = senderName.charAt(0).toUpperCase();
 
-  // Use our improved parser to get display content
-  const { content: displayContent, isHtml, ttsContent } = getDisplayContent(message);
-
-  // Get preview text - prefer parsed main content
-  const previewText = message.snippet || displayContent.slice(0, 150);
+  // Get preview text
+  const previewText = message.snippet ||
+    (message.bodyHtml ? stripBasicHtml(message.bodyHtml).slice(0, 150) : (message.body || '').slice(0, 150));
   
   return (
     <div 
@@ -173,57 +170,15 @@ function ThreadMessagePreview({ message, isLast }: { message: EmailMessage; isLa
           >
             <div className="mt-2 pl-9">
               {/* Recipients info with improved sizing */}
-              <div className={`${getMetadataClass(true)} mb-2`}>
+              <div className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
                 To: {message.to.map((t) => t.name || t.email).join(', ')}
                 {message.cc && message.cc.length > 0 && (
                   <span className="ml-2">· Cc: {message.cc.map((c) => c.name || c.email).join(', ')}</span>
                 )}
               </div>
               
-              {/* Email body - use our improved content parser */}
-              {isHtml ? (
-                <EmailHtmlViewer
-                  html={displayContent}
-                  plainText={message.body}
-                  maxHeight={400}
-                />
-              ) : (
-                <div className="space-y-3">
-                  {/* Main message content with improved styling */}
-                  <div className={getMessageBodyClass(true)}>
-                    <Linkify
-                      options={{
-                        target: '_blank',
-                        rel: 'noopener noreferrer',
-                        className: 'text-blue-400 hover:text-blue-300 underline',
-                      }}
-                    >
-                      {displayContent}
-                    </Linkify>
-                  </div>
-
-                  {/* Add TTS and Copy buttons for the clean content */}
-                  {ttsContent && ttsContent.trim() && (
-                    <div className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
-                      <TTSController content={ttsContent} id={`msg-${message.id}`} />
-                      <button
-                        onClick={async () => {
-                          try {
-                            await navigator.clipboard.writeText(displayContent);
-                          } catch (err) {
-                            console.error('Failed to copy:', err);
-                          }
-                        }}
-                        className="p-1.5 rounded-md transition-colors hover:bg-white/10"
-                        style={{ color: 'var(--text-muted)' }}
-                        title="Copy message"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
+              {/* Email body - use ProfessionalEmailRenderer */}
+              <ProfessionalEmailRenderer message={message} isReply={false} depth={0} />
               
               {/* Attachments indicator */}
               {message.attachments && message.attachments.length > 0 && (
