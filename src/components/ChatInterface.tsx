@@ -19,6 +19,16 @@ import {
 import { getDraftForThread, FullGmailDraft } from '@/lib/gmail';
 import { TTSController, stopAllTTS } from './TTSController';
 
+// Custom hook for button press animation
+function useButtonAnimation() {
+  return useCallback((e: React.MouseEvent<HTMLButtonElement>, callback: () => void) => {
+    const btn = e.currentTarget;
+    btn.classList.add('button-press-glow');
+    setTimeout(() => btn.classList.remove('button-press-glow'), 300);
+    callback();
+  }, []);
+}
+
 // Collapsed view for completed drafts (cancelled, saved, or sent)
 function CompletedDraftPreview({ 
   draft, 
@@ -249,6 +259,7 @@ export function ChatInterface({
   onRegisterArchiveHandler,
 }: ChatInterfaceProps) {
   const { user, getAccessToken } = useAuth();
+  const animateButton = useButtonAnimation();
   
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [collapsedMessages, setCollapsedMessages] = useState<UIMessage[]>([]);
@@ -259,6 +270,8 @@ export function ChatInterface({
   const [isSending, setIsSending] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isArchiving, setIsArchiving] = useState(false);
+  const [isSnoozing, setIsSnoozing] = useState(false);
   const [currentDraft, setCurrentDraft] = useState<EmailDraft | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -276,8 +289,7 @@ export function ChatInterface({
     confirmMessageId: string; // ID of the "Sending to..." message to update
   } | null>(null);
   const pendingSendRef = useRef<typeof pendingSend>(null);
-  // Ref to hold executeSend to avoid effect dependencies causing double-sends
-  const executeSendRef = useRef<((draft: EmailDraft, confirmMessageId?: string) => Promise<void>) | null>(null);
+  const [undoCountdown, setUndoCountdown] = useState(5);
   
   // Track if message region is fully expanded (for mobile action buttons)
   const [isMessageFullyExpanded, setIsMessageFullyExpanded] = useState(false);
@@ -327,6 +339,27 @@ export function ChatInterface({
   useEffect(() => { revealedCountRef.current = revealedMessageCount; }, [revealedMessageCount]);
   useEffect(() => { baseCountRef.current = baseRevealedCount; }, [baseRevealedCount]);
   useEffect(() => { pendingSendRef.current = pendingSend; }, [pendingSend]);
+
+  // Update countdown timer for undo
+  useEffect(() => {
+    if (!pendingSend) {
+      setUndoCountdown(5);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      const elapsed = Date.now() - pendingSend.timestamp;
+      const remaining = Math.max(0, 5000 - elapsed);
+      const seconds = Math.ceil(remaining / 1000);
+      setUndoCountdown(seconds);
+
+      if (seconds <= 0) {
+        clearInterval(interval);
+      }
+    }, 100); // Update every 100ms for smooth countdown
+
+    return () => clearInterval(interval);
+  }, [pendingSend]);
   
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const isPullingRef = useRef(false);
@@ -915,23 +948,34 @@ export function ChatInterface({
   }, [messages, isLoadingChat, persistChat, thread]);
 
   // Archive with notification - used by both agent and direct button press
-  const archiveWithNotification = useCallback(() => {
-    const archiveSubject = thread?.subject || 'Email';
-    const lastMsg = thread?.messages[thread.messages.length - 1];
-    const archiveSnippet = lastMsg?.snippet || '';
-    const archivePreview = lastMsg?.body || '';
-    setMessages(prev => [...prev, {
-      id: `archive-${Date.now()}`,
-      role: 'assistant' as const,
-      content: `Archived: "${archiveSubject}"`,
-      timestamp: new Date(),
-      isSystemMessage: true,
-      systemType: 'archived' as const,
-      systemSnippet: archiveSnippet,
-      systemPreview: archivePreview,
-    }]);
-    onArchive?.();
-  }, [thread, onArchive]);
+  const archiveWithNotification = useCallback(async () => {
+    if (isArchiving) return; // Prevent double-clicks
+
+    setIsArchiving(true);
+    try {
+      const archiveSubject = thread?.subject || 'Email';
+      const lastMsg = thread?.messages[thread.messages.length - 1];
+      const archiveSnippet = lastMsg?.snippet || '';
+      const archivePreview = lastMsg?.body || '';
+
+      // Call the archive function
+      await onArchive?.();
+
+      // Show confirmation message after successful archive
+      setMessages(prev => [...prev, {
+        id: `archive-${Date.now()}`,
+        role: 'assistant' as const,
+        content: `Archived: "${archiveSubject}"`,
+        timestamp: new Date(),
+        isSystemMessage: true,
+        systemType: 'archived' as const,
+        systemSnippet: archiveSnippet,
+        systemPreview: archivePreview,
+      }]);
+    } finally {
+      setIsArchiving(false);
+    }
+  }, [thread, onArchive, isArchiving]);
 
   // Register archive handler with parent so top bar button can use it
   useEffect(() => {
@@ -1688,72 +1732,6 @@ export function ChatInterface({
     sendMessage(input);
   };
 
-  // Execute the actual send (called after delay or on navigation away)
-  const executeSend = useCallback(async (draft: EmailDraft, confirmMessageId?: string) => {
-    if (!onSendEmail) return;
-    
-    const recipient = draft.to[0] || 'recipient';
-    
-    try {
-      await onSendEmail(draft);
-
-      // Mark ONLY THE SPECIFIC draft message as sent (so it shows differently in UI)
-      setMessages(prev => prev.map(m => {
-        // Mark draft as sent if it's the active draft we just sent
-        // Check if it's not already cancelled/saved/sent and matches the current active draft
-        // We can't compare object identity since the draft may have been edited
-        if (m.draft && !m.draftCancelled && !m.draftSaved && !m.draftSent && !m.isStreaming) {
-          // This is the active draft message - mark it as sent
-          return { ...m, draftSent: true };
-        }
-        return m;
-      }));
-      
-      // Update the existing "Sending..." message to "✓ Sent" (if we have the ID)
-      // or create a new one (for navigation-triggered sends where we might not have it)
-      if (confirmMessageId) {
-        setMessages(prev => prev.map(m => 
-          m.id === confirmMessageId
-            ? { ...m, content: `✓ Sent to ${recipient}` }
-            : m
-        ));
-      } else {
-        // Fallback: create a new confirmation message
-        const newConfirmMessage: UIMessage = {
-          id: Date.now().toString(),
-          role: 'assistant',
-          content: `✓ Sent to ${recipient}`,
-          timestamp: new Date(),
-          isSystemMessage: true,
-          systemType: 'sent',
-          hasActionButtons: true,
-          actionButtonsHandled: false,
-        };
-        setMessages(prev => [...prev, newConfirmMessage]);
-      }
-    } catch (error) {
-      console.error('Send error:', error);
-      // Update the "Sending..." message to show error, or create error message
-      if (confirmMessageId) {
-        setMessages(prev => prev.map(m => 
-          m.id === confirmMessageId
-            ? { ...m, content: '⚠️ Send failed. Try again?', hasActionButtons: false }
-            : m
-        ));
-      } else {
-        const errorMessage: UIMessage = {
-          id: Date.now().toString(),
-          role: 'assistant',
-          content: '⚠️ Send failed. Try again?',
-          timestamp: new Date(),
-        };
-        setMessages(prev => [...prev, errorMessage]);
-      }
-    }
-  }, [onSendEmail]);
-  
-  // Keep executeSendRef in sync (used in cleanup effects to avoid dependency issues)
-  useEffect(() => { executeSendRef.current = executeSend; }, [executeSend]);
   
   // Undo the pending send
   const handleUndoSend = useCallback(() => {
@@ -1788,71 +1766,87 @@ export function ChatInterface({
     setIsSending(true);
     setCurrentDraft(null);
 
-    // Don't mark as sent yet - keep showing the draft with sending state
-    // The DraftCard will show "Sending..." when isSending is true
+    // Mark the draft as sent immediately
+    setMessages(prev => prev.map(m => {
+      if (m.draft && !m.draftCancelled && !m.draftSaved && !m.draftSent && !m.isStreaming) {
+        return { ...m, draftSent: true };
+      }
+      return m;
+    }));
 
-    // Add a small system message for the sending status
+    // Add a system message showing "Sent" immediately
     const recipient = updatedDraft.to[0] || 'recipient';
     const confirmMessageId = `sending-${Date.now()}`;
-    const pendingConfirmMessage: UIMessage = {
+    const sentMessage: UIMessage = {
       id: confirmMessageId,
       role: 'assistant',
-      content: `Sending to ${recipient}...`,
+      content: `✓ Sent to ${recipient}`,
       timestamp: new Date(),
       isSystemMessage: true,
       systemType: 'sent',
       hasActionButtons: true,
       actionButtonsHandled: false,
     };
-    setMessages(prev => [...prev, pendingConfirmMessage]);
-    
-    // Set up delayed send (5 seconds)
+    setMessages(prev => [...prev, sentMessage]);
+
+    // Immediately set isSending to false so UI updates to show sent state
+    setIsSending(false);
+
+    // Set up delayed actual send (5 seconds) - during this time undo is available
     const UNDO_DELAY = 5000;
     const timeoutId = setTimeout(async () => {
       // IMPORTANT: Clear pending state BEFORE executing send to prevent double-send
-      // If we clear after, state changes during the async send (e.g., selectedThread update)
-      // can cause effect cleanups that see pendingSendRef still set and trigger another send
       setPendingSend(null);
       pendingSendRef.current = null;
-      setIsSending(false);
-      await executeSend(updatedDraft, confirmMessageId);
+
+      // Actually send the email
+      try {
+        await onSendEmail(updatedDraft);
+      } catch (error) {
+        console.error('Send error:', error);
+        // Update message to show error
+        setMessages(prev => prev.map(m =>
+          m.id === confirmMessageId
+            ? { ...m, content: '⚠️ Send failed. Please try again.' }
+            : m
+        ));
+      }
     }, UNDO_DELAY);
-    
+
     setPendingSend({
       draft: updatedDraft,
       timeoutId,
       timestamp: Date.now(),
-      confirmMessageId, // Track the confirmation message so we can update/remove it
+      confirmMessageId,
     });
   };
   
   // Handle navigation away - complete any pending send immediately
   useEffect(() => {
     const handleBeforeUnload = () => {
-      if (pendingSendRef.current && executeSendRef.current) {
-        // Clear the timeout and send immediately (synchronously not possible, but try)
+      if (pendingSendRef.current && onSendEmail) {
+        // Clear the timeout and send immediately
         clearTimeout(pendingSendRef.current.timeoutId);
-        // Note: async operation won't complete, but the browser will try
-        executeSendRef.current(pendingSendRef.current.draft, pendingSendRef.current.confirmMessageId);
+        // Try to send - browser may not complete async operation
+        onSendEmail(pendingSendRef.current.draft).catch(console.error);
       }
     };
-    
+
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, []); // No dependencies - uses refs to avoid stale closures
-  
+  }, [onSendEmail]);
+
   // Also complete pending send when thread changes (navigating to different email)
   useEffect(() => {
     return () => {
-      // Cleanup: if there's a pending send when component unmounts or thread changes, send it
-      if (pendingSendRef.current && executeSendRef.current) {
+      // Cleanup: if there's a pending send when thread changes, send it immediately
+      if (pendingSendRef.current && onSendEmail) {
         clearTimeout(pendingSendRef.current.timeoutId);
-        executeSendRef.current(pendingSendRef.current.draft, pendingSendRef.current.confirmMessageId);
-        // Clear refs
+        onSendEmail(pendingSendRef.current.draft).catch(console.error);
         pendingSendRef.current = null;
       }
     };
-  }, [thread?.id]); // Only trigger on thread change, not on executeSend recreation
+  }, [thread?.id, onSendEmail]);
 
   const handleSaveDraft = async (updatedDraft: EmailDraft) => {
     if (!updatedDraft || !onSaveDraft) return;
@@ -2307,22 +2301,44 @@ export function ChatInterface({
               </div>
             </div>
             
-            {/* Archive button - positioned above input area */}
+            {/* Archive and Snooze buttons - positioned above input area */}
             {thread && (
-              <div className="flex justify-center pb-4">
+              <div className="flex justify-center gap-2 pb-4">
                 <motion.button
                   whileHover={{ scale: 1.03 }}
                   whileTap={{ scale: 0.97 }}
-                  onClick={() => archiveWithNotification()}
-                  className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-medium transition-all"
-                  style={{ 
-                    background: 'rgba(59, 130, 246, 0.1)', 
+                  onClick={(e) => animateButton(e, () => archiveWithNotification())}
+                  disabled={isArchiving}
+                  className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-medium transition-all disabled:opacity-50"
+                  style={{
+                    background: 'rgba(59, 130, 246, 0.1)',
                     color: 'rgba(147, 197, 253, 0.85)',
                     border: '1px solid rgba(59, 130, 246, 0.2)'
                   }}
                 >
-                  <Archive className="w-4 h-4" />
+                  {isArchiving ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Archive className="w-4 h-4" />
+                  )}
                   Archive
+                </motion.button>
+
+                {/* Snooze button - icon only */}
+                <motion.button
+                  whileHover={{ scale: 1.03 }}
+                  whileTap={{ scale: 0.97 }}
+                  onClick={() => onOpenSnoozePicker?.()}
+                  disabled={!onOpenSnoozePicker}
+                  className="p-2.5 rounded-xl text-sm font-medium transition-all disabled:opacity-50"
+                  style={{
+                    background: 'rgba(59, 130, 246, 0.1)',
+                    color: 'rgba(147, 197, 253, 0.85)',
+                    border: '1px solid rgba(59, 130, 246, 0.2)'
+                  }}
+                  title="Snooze"
+                >
+                  <Clock className="w-4 h-4" />
                 </motion.button>
               </div>
             )}
@@ -2601,8 +2617,32 @@ export function ChatInterface({
               </div>
             )}
 
-            {/* Action buttons for sent confirmation */}
-            {message.isSystemMessage && message.systemType === 'sent' && message.hasActionButtons && !message.actionButtonsHandled && (
+            {/* Undo button for sent messages during undo period */}
+            {message.isSystemMessage && message.systemType === 'sent' && pendingSend && pendingSend.confirmMessageId === message.id && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="w-full flex items-center justify-center gap-3 py-2"
+              >
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleUndoSend}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/30 transition-colors text-sm font-medium"
+                  style={{ color: 'rgb(251, 191, 36)' }}
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  Undo Send
+                </motion.button>
+                <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  {undoCountdown}s
+                </div>
+              </motion.div>
+            )}
+
+            {/* Action buttons for sent confirmation (shown after undo period) */}
+            {message.isSystemMessage && message.systemType === 'sent' && message.hasActionButtons && !message.actionButtonsHandled && !pendingSend && (
               <div className="w-full flex flex-wrap items-center justify-center gap-2 py-2">
                 {/* Previous button with arrow */}
                 <motion.button
@@ -2625,12 +2665,34 @@ export function ChatInterface({
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
-                  onClick={handleSentActionArchiveNext}
+                  onClick={(e) => {
+                    const btn = e.currentTarget;
+                    btn.classList.add('button-press-glow');
+                    setTimeout(() => btn.classList.remove('button-press-glow'), 300);
+                    handleSentActionArchiveNext();
+                  }}
                   className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 transition-colors text-sm font-medium"
                   style={{ color: 'rgb(147, 197, 253)' }}
                 >
                   <Archive className="w-4 h-4" />
                   Archive & Next
+                </motion.button>
+
+                {/* Snooze button - icon only */}
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => onOpenSnoozePicker?.()}
+                  disabled={!onOpenSnoozePicker}
+                  className="p-2 rounded-lg transition-colors disabled:opacity-50"
+                  style={{
+                    background: 'var(--bg-interactive)',
+                    border: '1px solid var(--border-subtle)',
+                    color: 'var(--text-muted)'
+                  }}
+                  title="Snooze"
+                >
+                  <Clock className="w-5 h-5" />
                 </motion.button>
 
                 {/* Next button with arrow */}
@@ -2647,22 +2709,6 @@ export function ChatInterface({
                   title="Next email"
                 >
                   <ChevronRight className="w-5 h-5" />
-                </motion.button>
-
-                {/* Inbox button */}
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={handleSentActionInbox}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-sm font-medium"
-                  style={{
-                    background: 'var(--bg-interactive)',
-                    border: '1px solid var(--border-subtle)',
-                    color: 'var(--text-secondary)'
-                  }}
-                >
-                  <Inbox className="w-4 h-4" />
-                  <span>Inbox</span>
                 </motion.button>
               </div>
             )}
@@ -3022,7 +3068,7 @@ export function ChatInterface({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 20 }}
               transition={{ duration: 0.2 }}
-              className="flex items-center justify-center gap-3"
+              className="flex items-center justify-center gap-2"
             >
               {/* Previous button */}
               <motion.button
@@ -3030,28 +3076,49 @@ export function ChatInterface({
                 whileTap={{ scale: 0.95 }}
                 onClick={onPreviousEmail}
                 disabled={!onPreviousEmail}
-                className="flex items-center gap-2 px-4 py-3 rounded-xl transition-colors disabled:opacity-50"
-                style={{ 
-                  background: 'var(--bg-interactive)', 
+                className="p-2.5 rounded-xl transition-colors disabled:opacity-50"
+                style={{
+                  background: 'var(--bg-interactive)',
                   border: '1px solid var(--border-subtle)',
-                  color: 'var(--text-primary)'
+                  color: 'var(--text-muted)'
                 }}
+                title="Previous email"
               >
                 <ChevronLeft className="w-5 h-5" />
-                <span className="text-sm font-medium hidden sm:inline">Prev</span>
               </motion.button>
 
               {/* Archive button */}
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={onArchive}
-                disabled={!onArchive}
-                className="flex items-center gap-2 px-6 py-3 rounded-xl bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 transition-colors disabled:opacity-50"
+                onClick={(e) => animateButton(e, () => archiveWithNotification())}
+                disabled={!onArchive || isArchiving}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 transition-colors disabled:opacity-50"
                 style={{ color: 'rgb(147, 197, 253)' }}
               >
-                <Archive className="w-5 h-5" />
+                {isArchiving ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <Archive className="w-5 h-5" />
+                )}
                 <span className="text-sm font-medium">Archive</span>
+              </motion.button>
+
+              {/* Snooze button - icon only */}
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => onOpenSnoozePicker?.()}
+                disabled={!onOpenSnoozePicker}
+                className="p-2.5 rounded-xl transition-colors disabled:opacity-50"
+                style={{
+                  background: 'var(--bg-interactive)',
+                  border: '1px solid var(--border-subtle)',
+                  color: 'var(--text-muted)'
+                }}
+                title="Snooze"
+              >
+                <Clock className="w-5 h-5" />
               </motion.button>
 
               {/* Next button */}
@@ -3060,14 +3127,14 @@ export function ChatInterface({
                 whileTap={{ scale: 0.95 }}
                 onClick={onNextEmail}
                 disabled={!onNextEmail}
-                className="flex items-center gap-2 px-4 py-3 rounded-xl transition-colors disabled:opacity-50"
-                style={{ 
-                  background: 'var(--bg-interactive)', 
+                className="p-2.5 rounded-xl transition-colors disabled:opacity-50"
+                style={{
+                  background: 'var(--bg-interactive)',
                   border: '1px solid var(--border-subtle)',
-                  color: 'var(--text-primary)'
+                  color: 'var(--text-muted)'
                 }}
+                title="Next email"
               >
-                <span className="text-sm font-medium hidden sm:inline">Next</span>
                 <ChevronRight className="w-5 h-5" />
               </motion.button>
             </motion.div>
