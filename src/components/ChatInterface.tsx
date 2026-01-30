@@ -2135,7 +2135,7 @@ export function ChatInterface({
   const touchStartX = useRef(0);
   const touchStartY = useRef(0);
   const wheelAccumX = useRef(0);
-  const wheelTimeout = useRef<NodeJS.Timeout>();
+  const wheelTimeout = useRef<NodeJS.Timeout | undefined>(undefined);
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     touchStartX.current = e.touches[0].clientX;

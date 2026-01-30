@@ -67,6 +67,8 @@ export function FloMailApp() {
   const [currentView, setCurrentView] = useState<View>('inbox');
   const [selectedThread, setSelectedThread] = useState<EmailThread | null>(null);
   const [currentDraft, setCurrentDraft] = useState<EmailDraft | null>(null);
+  const [isTransitioning, setIsTransitioning] = useState(false);
+  // Track navigation direction with state
   const [navigationDirection, setNavigationDirection] = useState<'forward' | 'backward'>('forward');
   const [showProfile, setShowProfile] = useState(false);
   const [allThreads, setAllThreads] = useState<EmailThread[]>([]);
@@ -447,8 +449,11 @@ export function FloMailApp() {
   }, [user, getAccessToken]);
 
   const handleSelectThread = useCallback(async (thread: EmailThread, folder: MailFolder = 'inbox', threadsInFolder: EmailThread[] = []) => {
-    // Set navigation direction for animation (going from inbox to chat is forward)
+    // Set navigation direction (always forward from inbox)
     setNavigationDirection('forward');
+
+    // Small delay to ensure direction is set before thread changes
+    await new Promise(resolve => setTimeout(resolve, 10));
 
     // Set thread immediately for fast UI response (shows metadata)
     setSelectedThread(thread);
@@ -527,7 +532,7 @@ export function FloMailApp() {
     triggerRefresh(); // Signal InboxList to refresh
     // Update URL to root
     window.history.pushState({}, '', '/');
-  }, [triggerRefresh]);
+  }, [triggerRefresh, selectedThread]);
 
 
   const handleDraftCreated = useCallback((draft: EmailDraft) => {
@@ -822,8 +827,14 @@ export function FloMailApp() {
   }, [selectedThread, getAccessToken]);
 
   const handleNextEmail = useCallback(async () => {
-    // Set navigation direction for animation
+    // Prevent rapid navigation during transitions
+    if (isTransitioning) return;
+
+    setIsTransitioning(true);
+
+    // Set direction FIRST
     setNavigationDirection('forward');
+    await new Promise(resolve => setTimeout(resolve, 10));
 
     // Use folder-specific threads for navigation (fall back to allThreads if empty)
     const navThreads = folderThreads.length > 0 ? folderThreads : allThreads;
@@ -959,11 +970,17 @@ export function FloMailApp() {
         }
       }
     }
-  }, [folderThreads, allThreads, selectedThread, getAccessToken, getCachedThread]);
+  }, [folderThreads, allThreads, selectedThread, getAccessToken, getCachedThread, isTransitioning]);
 
   const handlePreviousEmail = useCallback(async () => {
-    // Set navigation direction for animation
+    // Prevent rapid navigation during transitions
+    if (isTransitioning) return;
+
+    setIsTransitioning(true);
+
+    // Set direction FIRST
     setNavigationDirection('backward');
+    await new Promise(resolve => setTimeout(resolve, 10));
 
     // Use folder-specific threads for navigation (fall back to allThreads if empty)
     const navThreads = folderThreads.length > 0 ? folderThreads : allThreads;
@@ -1035,7 +1052,7 @@ export function FloMailApp() {
         }
       }
     }
-  }, [folderThreads, allThreads, getAccessToken, getCachedThread]);
+  }, [folderThreads, allThreads, getAccessToken, getCachedThread, isTransitioning]);
 
   // Handler for snooze from the draft card page header
   const handleSnooze = useCallback(async (option: SnoozeOption, customDate?: Date) => {
@@ -1809,54 +1826,36 @@ export function FloMailApp() {
 
       {/* Main content area */}
       <div className="flex-1 overflow-hidden relative">
-        <AnimatePresence mode="wait">
-          {currentView === 'inbox' && (
-            <motion.div
-              key="inbox"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0, x: -50 }}
-              className="absolute inset-0"
-            >
-              <InboxList
-                key={refreshKey} // Change key to force remount/refresh
-                onSelectThread={handleSelectThread}
-                selectedThreadId={selectedThread?.id}
-                defaultFolder={currentMailFolder}
-                searchQuery={searchQuery}
-                onClearSearch={() => setSearchQuery('')}
-                onFolderChange={setCurrentMailFolder}
-                onRegisterLoadMore={handleRegisterLoadMore}
-                onThreadsUpdate={handleThreadsUpdate}
-              />
-            </motion.div>
-          )}
+        {currentView === 'inbox' && (
+          <div className="absolute inset-0">
+            <InboxList
+              key={refreshKey} // Change key to force remount/refresh
+              onSelectThread={handleSelectThread}
+              selectedThreadId={selectedThread?.id}
+              defaultFolder={currentMailFolder}
+              searchQuery={searchQuery}
+              onClearSearch={() => setSearchQuery('')}
+              onFolderChange={setCurrentMailFolder}
+              onRegisterLoadMore={handleRegisterLoadMore}
+              onThreadsUpdate={handleThreadsUpdate}
+            />
+          </div>
+        )}
 
-          {currentView === 'chat' && selectedThread && (
+        {currentView === 'chat' && selectedThread && (
+          <AnimatePresence mode="popLayout" initial={false}>
             <motion.div
-              key={`chat-${selectedThread.id}`} // Key by thread ID for smooth transitions
-              initial={{
-                opacity: 0,
-                x: navigationDirection === 'forward' ? 100 : -100,
-                scale: 0.95
-              }}
-              animate={{
-                opacity: 1,
-                x: 0,
-                scale: 1
-              }}
-              exit={{
-                opacity: 0,
-                x: navigationDirection === 'forward' ? -100 : 100,
-                scale: 0.95
-              }}
+              key={selectedThread.id}
+              className="absolute inset-0 will-change-transform"
+              initial={{ x: navigationDirection === 'forward' ? '100%' : '-100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: navigationDirection === 'forward' ? '-100%' : '100%' }}
               transition={{
-                type: "spring",
-                stiffness: 260,
-                damping: 20,
-                opacity: { duration: 0.2 }
+                type: "tween",
+                duration: 0.25,
+                ease: [0.25, 0.1, 0.25, 1]
               }}
-              className="absolute inset-0"
+              onAnimationComplete={() => setIsTransitioning(false)}
             >
               <ChatInterface
                 thread={selectedThread || undefined}
@@ -1880,8 +1879,8 @@ export function FloMailApp() {
                 onRegisterArchiveHandler={(handler) => { archiveHandlerRef.current = handler; }}
               />
             </motion.div>
-          )}
-        </AnimatePresence>
+          </AnimatePresence>
+        )}
       </div>
 
       {/* Bottom safe area */}

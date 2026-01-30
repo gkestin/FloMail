@@ -45,7 +45,7 @@ export function useThreadPreloader(
         if (fullThread) {
           cache.current[threadId] = fullThread;
           // Also store in email cache for consistency
-          emailCache.setThread(threadId, fullThread);
+          emailCache.setThread(fullThread);
         }
       }
     } catch (error) {
