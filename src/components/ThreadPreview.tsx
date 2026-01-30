@@ -1479,7 +1479,11 @@ function MessageItem({
 
               {/* Email body - use ProfessionalEmailRenderer */}
               <div className={isDraft ? 'italic opacity-80' : ''}>
-                <ProfessionalEmailRenderer message={message} />
+                <ProfessionalEmailRenderer
+                  message={message}
+                  onNextEmail={onNextEmail}
+                  onPreviousEmail={onPreviousEmail}
+                />
               </div>
 
               {/* Attachments section */}

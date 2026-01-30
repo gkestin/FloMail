@@ -23,6 +23,8 @@ interface ProfessionalEmailRendererProps {
   isReply?: boolean;
   depth?: number;
   className?: string;
+  onNextEmail?: () => void;
+  onPreviousEmail?: () => void;
 }
 
 /**
@@ -168,14 +170,51 @@ export function ProfessionalEmailRenderer({
   message,
   isReply = false,
   depth = 0,
-  className = ''
+  className = '',
+  onNextEmail,
+  onPreviousEmail
 }: ProfessionalEmailRendererProps) {
   const [showQuotedContent, setShowQuotedContent] = useState(false);
   const [copied, setCopied] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const onNextEmailRef = useRef(onNextEmail);
+  const onPreviousEmailRef = useRef(onPreviousEmail);
 
   const isHtml = !!(message.bodyHtml && message.bodyHtml.trim());
   const content = isHtml ? message.bodyHtml! : (message.body || '');
+
+  // Update refs when props change
+  useEffect(() => {
+    onNextEmailRef.current = onNextEmail;
+    onPreviousEmailRef.current = onPreviousEmail;
+  }, [onNextEmail, onPreviousEmail]);
+
+  // Handle postMessage events from iframe for swipe gestures
+  useEffect(() => {
+    const handleMessage = (e: MessageEvent) => {
+      const type = e.data?.type;
+      if (type === 'flomail-swipe-left') {
+        onNextEmailRef.current?.();
+      } else if (type === 'flomail-swipe-right') {
+        onPreviousEmailRef.current?.();
+      } else if (type === 'flomail-vertical-scroll') {
+        const deltaY = e.data.deltaY || 0;
+        if (iframeRef.current) {
+          // Forward vertical scroll to parent for expand/collapse
+          const syntheticEvent = new WheelEvent('wheel', {
+            deltaY: deltaY,
+            deltaX: 0,
+            bubbles: true,
+            cancelable: true,
+          });
+          iframeRef.current.dispatchEvent(syntheticEvent);
+        }
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
 
   // Parse email structure - now returns a single quoted section
   const { mainContent, quotedContent, hasQuotes } = useMemo(
@@ -295,6 +334,7 @@ export function ProfessionalEmailRenderer({
                   <head>
                     <meta charset="utf-8">
                     <meta name="viewport" content="width=device-width, initial-scale=1">
+                    <base target="_blank">
                     <style>
                       * {
                         margin: 0;
@@ -315,10 +355,13 @@ export function ProfessionalEmailRenderer({
                       }
                       a {
                         color: ${COLORS.accent.link} !important;
-                        text-decoration: none !important;
+                        text-decoration: underline !important;
+                        cursor: pointer !important;
+                        touch-action: manipulation !important;
+                        -webkit-tap-highlight-color: rgba(74, 158, 255, 0.3) !important;
                       }
                       a:hover {
-                        text-decoration: underline !important;
+                        opacity: 0.8 !important;
                       }
                       img {
                         max-width: 100% !important;
@@ -353,7 +396,55 @@ export function ProfessionalEmailRenderer({
                       }
                     </style>
                   </head>
-                  <body>${processedContent}</body>
+                  <body>
+                    ${processedContent}
+                    <script>
+                      (function() {
+                        var touchStartX = 0, touchStartY = 0, hasActed = false;
+                        var wheelAccumX = 0, wheelTimeout = null;
+
+                        // Touch event handling for mobile swipes
+                        document.addEventListener('touchstart', function(e) {
+                          touchStartX = e.touches[0].clientX;
+                          touchStartY = e.touches[0].clientY;
+                          hasActed = false;
+                        }, { passive: true });
+
+                        document.addEventListener('touchmove', function(e) {
+                          if (hasActed) return;
+                          var dx = e.touches[0].clientX - touchStartX;
+                          var dy = e.touches[0].clientY - touchStartY;
+
+                          // Horizontal swipe detection (prev/next thread)
+                          if (Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 80) {
+                            hasActed = true;
+                            parent.postMessage({ type: dx < 0 ? 'flomail-swipe-left' : 'flomail-swipe-right' }, '*');
+                          }
+                          // Forward vertical touch to parent for expand/collapse
+                          else if (Math.abs(dy) > 30) {
+                            parent.postMessage({ type: 'flomail-vertical-scroll', deltaY: -dy }, '*');
+                          }
+                        }, { passive: true });
+
+                        // Wheel event handling for desktop trackpad gestures
+                        document.addEventListener('wheel', function(e) {
+                          // Horizontal scroll detection (prev/next thread)
+                          if (Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.5) {
+                            wheelAccumX += e.deltaX;
+                            if (Math.abs(wheelAccumX) > 100) {
+                              parent.postMessage({ type: wheelAccumX > 0 ? 'flomail-swipe-left' : 'flomail-swipe-right' }, '*');
+                              wheelAccumX = 0;
+                            }
+                            clearTimeout(wheelTimeout);
+                            wheelTimeout = setTimeout(function() { wheelAccumX = 0; }, 150);
+                          } else {
+                            // Forward vertical scroll to parent for expand/collapse
+                            parent.postMessage({ type: 'flomail-vertical-scroll', deltaY: e.deltaY }, '*');
+                          }
+                        }, { passive: true });
+                      })();
+                    </script>
+                  </body>
                 </html>
               `}
               className="w-full border-0"
@@ -362,7 +453,7 @@ export function ProfessionalEmailRenderer({
                 background: COLORS.bg.card,
                 borderRadius: '4px'
               }}
-              sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+              sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-scripts allow-top-navigation-by-user-activation"
               title="Email content"
             />
           ) : isHtml ? (
