@@ -97,13 +97,13 @@ export default function ThreadSlider({
               draftingPreferences={draftingPreferences}
               onDraftCreated={() => {}}
               onSendEmail={() => Promise.resolve()}
-              onSaveDraft={() => {}}
-              onDeleteDraft={() => {}}
+              onSaveDraft={(draft) => Promise.resolve(draft)}
+              onDeleteDraft={() => Promise.resolve()}
               onArchive={() => {}}
               onMoveToInbox={() => {}}
               onStar={() => {}}
               onUnstar={() => {}}
-              onSnooze={() => {}}
+              onSnooze={() => Promise.resolve()}
               onOpenSnoozePicker={() => {}}
               onNextEmail={() => {}}
               onPreviousEmail={() => {}}
@@ -149,13 +149,13 @@ export default function ThreadSlider({
               draftingPreferences={draftingPreferences}
               onDraftCreated={() => {}}
               onSendEmail={() => Promise.resolve()}
-              onSaveDraft={() => {}}
-              onDeleteDraft={() => {}}
+              onSaveDraft={(draft) => Promise.resolve(draft)}
+              onDeleteDraft={() => Promise.resolve()}
               onArchive={() => {}}
               onMoveToInbox={() => {}}
               onStar={() => {}}
               onUnstar={() => {}}
-              onSnooze={() => {}}
+              onSnooze={() => Promise.resolve()}
               onOpenSnoozePicker={() => {}}
               onNextEmail={() => {}}
               onPreviousEmail={() => {}}

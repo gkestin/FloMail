@@ -172,7 +172,7 @@ export default function SwipeableMessageView({
                 draftingPreferences={draftingPreferences}
                 onDraftCreated={() => {}}
                 onSendEmail={() => Promise.resolve()}
-                onSaveDraft={() => Promise.resolve()}
+                onSaveDraft={(draft) => Promise.resolve(draft)}
                 onDeleteDraft={() => Promise.resolve()}
                 onArchive={() => Promise.resolve()}
                 onMoveToInbox={() => Promise.resolve()}
@@ -207,7 +207,7 @@ export default function SwipeableMessageView({
                 draftingPreferences={draftingPreferences}
                 onDraftCreated={() => {}}
                 onSendEmail={() => Promise.resolve()}
-                onSaveDraft={() => Promise.resolve()}
+                onSaveDraft={(draft) => Promise.resolve(draft)}
                 onDeleteDraft={() => Promise.resolve()}
                 onArchive={() => Promise.resolve()}
                 onMoveToInbox={() => Promise.resolve()}
