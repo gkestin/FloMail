@@ -419,8 +419,11 @@ export function ChatInterface({
       pendingNavTimeoutRef.current = null;
     }
     
-    // Set loading state BEFORE clearing messages to avoid flash of empty state
-    setIsLoadingChat(true);
+    // Only show loading spinner if thread doesn't have full content yet
+    const hasFullContent = thread?.messages && thread.messages.length > 0;
+    if (!hasFullContent) {
+      setIsLoadingChat(true);
+    }
     
     // Clear messages and mark that we're switching threads
     // This prevents any race conditions with persisting

@@ -1852,7 +1852,7 @@ export function FloMailApp() {
               exit={{ x: navigationDirection === 'forward' ? '-100%' : '100%' }}
               transition={{
                 type: "tween",
-                duration: 0.25,
+                duration: 0.18,
                 ease: [0.25, 0.1, 0.25, 1]
               }}
               onAnimationComplete={() => setIsTransitioning(false)}
