@@ -2,8 +2,9 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import ChatInterface from './ChatInterface';
-import { EmailThread, EmailDraft, AIDraftingPreferences, MailFolder } from '@/types';
+import { ChatInterface } from './ChatInterface';
+import { EmailThread, EmailDraft, AIDraftingPreferences } from '@/types';
+import { MailFolder } from './InboxList';
 
 interface ThreadSliderProps {
   threads: EmailThread[];
@@ -14,18 +15,18 @@ interface ThreadSliderProps {
   draftingPreferences: AIDraftingPreferences;
   onDraftCreated: (draft: EmailDraft) => void;
   onSendEmail: (draft: EmailDraft) => Promise<void>;
-  onSaveDraft: (draft: EmailDraft) => void;
-  onDeleteDraft: (draft: EmailDraft) => void;
+  onSaveDraft: (draft: EmailDraft) => Promise<EmailDraft>;
+  onDeleteDraft: (draftId: string) => Promise<void>;
   onArchive: () => void;
   onMoveToInbox: () => void;
   onStar: () => void;
   onUnstar: () => void;
-  onSnooze: (option: any) => void;
+  onSnooze: (snoozeUntil: Date) => Promise<void>;
   onOpenSnoozePicker: () => void;
   onNextEmail: () => void;
   onPreviousEmail: () => void;
   onGoToInbox: () => void;
-  onRegisterArchiveHandler: (handler: any) => void;
+  onRegisterArchiveHandler: (handler: () => void) => void;
   navigationDirection: 'forward' | 'backward';
 }
 
