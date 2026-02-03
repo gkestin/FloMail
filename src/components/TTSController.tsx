@@ -55,7 +55,7 @@ interface TTSControllerProps {
 export function TTSController({ content, id, className = '', compact = true }: TTSControllerProps) {
   const [state, setState] = useState<'idle' | 'loading' | 'playing' | 'paused'>('idle');
   const [isBrowserTTS, setIsBrowserTTS] = useState(false);
-  const [currentSpeed, setCurrentSpeed] = useState(1.0);
+  const [currentSpeed, setCurrentSpeed] = useState(() => getTTSSettings().speed);
   const [showControls, setShowControls] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -75,7 +75,7 @@ export function TTSController({ content, id, className = '', compact = true }: T
         }
         return;
       }
-      
+
       if (globalIsBrowserTTS) {
         if (speechSynthesis.speaking) {
           setState(speechSynthesis.paused ? 'paused' : 'playing');
@@ -84,6 +84,9 @@ export function TTSController({ content, id, className = '', compact = true }: T
           setShowControls(false);
         }
       } else if (globalCurrentAudio) {
+        // Keep speed in sync with actual playback rate
+        setCurrentSpeed(globalCurrentAudio.playbackRate);
+
         if (globalCurrentAudio.paused) {
           if (globalCurrentAudio.ended || globalCurrentAudio.currentTime === 0) {
             setState('idle');
@@ -96,7 +99,7 @@ export function TTSController({ content, id, className = '', compact = true }: T
         }
       }
     };
-    
+
     checkState();
     const interval = setInterval(checkState, 100);
     return () => clearInterval(interval);
@@ -334,8 +337,26 @@ export function TTSController({ content, id, className = '', compact = true }: T
   const handleSpeedChange = (e: React.MouseEvent, delta: number) => {
     e.stopPropagation();
     if (!isBrowserTTS && globalCurrentAudio) {
-      const currentIdx = SPEED_OPTIONS.findIndex(s => Math.abs(s - currentSpeed) < 0.01);
-      const newIdx = Math.max(0, Math.min(SPEED_OPTIONS.length - 1, currentIdx + delta));
+      // Get the actual current speed from the audio element
+      const actualCurrentSpeed = globalCurrentAudio.playbackRate;
+      const currentIdx = SPEED_OPTIONS.findIndex(s => Math.abs(s - actualCurrentSpeed) < 0.01);
+
+      // Calculate new index with bounds checking
+      let newIdx = currentIdx + delta;
+
+      // If we can't find the current speed in options (edge case), find the closest one
+      if (currentIdx === -1) {
+        // Find the closest speed option
+        const closestIdx = SPEED_OPTIONS.reduce((prevIdx, speed, idx) => {
+          const prevDiff = Math.abs(SPEED_OPTIONS[prevIdx] - actualCurrentSpeed);
+          const currDiff = Math.abs(speed - actualCurrentSpeed);
+          return currDiff < prevDiff ? idx : prevIdx;
+        }, 0);
+        newIdx = Math.max(0, Math.min(SPEED_OPTIONS.length - 1, closestIdx + delta));
+      } else {
+        newIdx = Math.max(0, Math.min(SPEED_OPTIONS.length - 1, newIdx));
+      }
+
       const newSpeed = SPEED_OPTIONS[newIdx];
       globalCurrentAudio.playbackRate = newSpeed;
       setCurrentSpeed(newSpeed);

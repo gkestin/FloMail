@@ -676,18 +676,6 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
 
         {/* Body - one scrollable container, textareas expand */}
         <div ref={containerRef} className="max-h-[60vh] overflow-y-auto relative">
-          {/* Streaming indicator overlay */}
-          {isStreaming && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="absolute bottom-0 left-0 right-0 flex items-center gap-2 py-2 px-1"
-              style={{ background: 'linear-gradient(to top, var(--bg-elevated), transparent)' }}
-            >
-              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
-              <span className="text-xs text-blue-400">Writing draft...</span>
-            </motion.div>
-          )}
           
           <textarea
             ref={bodyRef}
@@ -706,12 +694,24 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
             placeholder="Write your message..."
             disabled={isSending || isStreaming}
             className="w-full bg-transparent leading-relaxed resize-none border-none focus:outline-none focus:ring-0 p-0"
-            style={{ 
+            style={{
               color: 'var(--text-primary)',
               // 16px minimum to prevent iOS auto-zoom on focus
               fontSize: '16px',
             }}
           />
+
+          {/* Streaming indicator - show inline below textarea */}
+          {isStreaming && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="flex items-center gap-2 py-2 px-1"
+            >
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
+              <span className="text-xs text-blue-400">Writing draft...</span>
+            </motion.div>
+          )}
 
           {/* Copy and speak buttons for draft body - subtle, at bottom of body area */}
           {displayedBody && displayedBody.trim() && !isStreaming && (

@@ -260,6 +260,49 @@ function decodeBase64Url(str: string): string {
   }
 }
 
+// Helper to convert HTML to plain text while preserving structure
+function convertHtmlToPlainText(html: string): string {
+  if (!html) return '';
+
+  let text = html;
+
+  // Convert <br> tags to newlines
+  text = text.replace(/<br\s*\/?>/gi, '\n');
+
+  // Convert </p>, </div>, </li> to newlines for block elements
+  text = text.replace(/<\/(p|div|li|h[1-6])>/gi, '\n');
+
+  // Convert </td> to tab for table cells
+  text = text.replace(/<\/td>/gi, '\t');
+
+  // Convert </tr> to newline for table rows
+  text = text.replace(/<\/tr>/gi, '\n');
+
+  // Remove remaining HTML tags
+  text = text.replace(/<[^>]*>/g, '');
+
+  // Decode HTML entities
+  text = text.replace(/&nbsp;/gi, ' ');
+  text = text.replace(/&amp;/gi, '&');
+  text = text.replace(/&lt;/gi, '<');
+  text = text.replace(/&gt;/gi, '>');
+  text = text.replace(/&quot;/gi, '"');
+  text = text.replace(/&#39;/gi, "'");
+  text = text.replace(/&apos;/gi, "'");
+
+  // Decode numeric entities
+  text = text.replace(/&#(\d+);/gi, (match, num) => String.fromCharCode(parseInt(num, 10)));
+  text = text.replace(/&#x([0-9a-f]+);/gi, (match, hex) => String.fromCharCode(parseInt(hex, 16)));
+
+  // Clean up excessive whitespace but preserve structure
+  text = text.replace(/\n{3,}/g, '\n\n'); // Limit to max 2 newlines
+  text = text.replace(/[ \t]+/g, ' '); // Collapse spaces and tabs
+  text = text.replace(/\n[ \t]+/g, '\n'); // Remove leading spaces on lines
+  text = text.replace(/[ \t]+\n/g, '\n'); // Remove trailing spaces on lines
+
+  return text.trim();
+}
+
 // Helper to extract body from message parts
 function extractBody(payload: any): { text: string; html: string } {
   let text = '';
@@ -566,7 +609,7 @@ export async function fetchThread(accessToken: string, threadId: string): Promis
       bcc,
       replyTo,
       date: getHeader(headers, 'Date'),
-      body: text || html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim(),
+      body: text || convertHtmlToPlainText(html),
       bodyHtml: html || undefined,
       isRead: !msg.labelIds?.includes('UNREAD'),
       labels: msg.labelIds || [],
@@ -604,35 +647,44 @@ export async function sendEmail(accessToken: string, draft: EmailDraft): Promise
   // 3. Creates the sent message in the Sent folder
   if (draftIdToCleanup) {
     console.log('[sendEmail] Attempting to send saved draft:', draftIdToCleanup);
-    const response = await fetch('/api/gmail/send-draft', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ draftId: draftIdToCleanup }),
-    });
 
-    if (response.ok) {
-      console.log('[sendEmail] Draft sent successfully via drafts.send');
-      return; // Draft is automatically deleted by Gmail
-    }
-    
-    // If draft not found (404), fall back to sending as new message
-    if (response.status === 404) {
-      console.log('[sendEmail] Draft not found in Gmail, falling back to messages/send');
-      // Continue to the regular send flow below
+    // Check if this looks like a message ID instead of a draft ID
+    // Message IDs typically start with 'r' followed by digits
+    // Draft IDs have a different format (alphanumeric, sometimes with underscores)
+    if (draftIdToCleanup.startsWith('r') && /^r\d+$/.test(draftIdToCleanup)) {
+      console.warn('[sendEmail] Draft ID looks like a message ID, skipping draft send and using regular send');
+      // Skip the draft send attempt and go directly to regular send
     } else {
-      // For other errors, throw
-      let errorMessage = 'Failed to send draft';
-      try {
-        const errorData = await response.json();
-        errorMessage = errorData.error || errorMessage;
-      } catch {
-        errorMessage = `Server error (${response.status})`;
+      const response = await fetch('/api/gmail/send-draft', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ draftId: draftIdToCleanup }),
+      });
+
+      if (response.ok) {
+        console.log('[sendEmail] Draft sent successfully via drafts.send');
+        return; // Draft is automatically deleted by Gmail
       }
-      console.error('[sendEmail] Draft send failed:', errorMessage);
-      throw new Error(errorMessage);
+
+      // If draft not found (404), fall back to sending as new message
+      if (response.status === 404) {
+        console.log('[sendEmail] Draft not found in Gmail, falling back to messages/send');
+        // Continue to the regular send flow below
+      } else {
+        // For other errors, throw
+        let errorMessage = 'Failed to send draft';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.error || errorMessage;
+        } catch {
+          errorMessage = `Server error (${response.status})`;
+        }
+        console.error('[sendEmail] Draft send failed:', errorMessage);
+        throw new Error(errorMessage);
+      }
     }
   }
 
@@ -661,7 +713,8 @@ export async function sendEmail(accessToken: string, draft: EmailDraft): Promise
   
   // If we had a draft ID and fell back to messages/send, try to clean up the draft
   // (It might have been in a weird state or the ID was stale)
-  if (draftIdToCleanup) {
+  // But skip cleanup if it looks like a message ID rather than a draft ID
+  if (draftIdToCleanup && !(draftIdToCleanup.startsWith('r') && /^r\d+$/.test(draftIdToCleanup))) {
     console.log('[sendEmail] Cleaning up draft after fallback send:', draftIdToCleanup);
     try {
       await deleteGmailDraft(accessToken, draftIdToCleanup);
@@ -670,6 +723,8 @@ export async function sendEmail(accessToken: string, draft: EmailDraft): Promise
       // Draft might already be deleted, that's fine
       console.log('[sendEmail] Draft cleanup skipped (probably already deleted)');
     }
+  } else if (draftIdToCleanup) {
+    console.log('[sendEmail] Skipping draft cleanup - ID looks like a message ID');
   }
 }
 
@@ -854,6 +909,20 @@ export async function createGmailDraft(accessToken: string, draft: EmailDraft): 
   }
 
   const data = await response.json();
+
+  // Log the structure to understand what Gmail is returning
+  console.log('[createGmailDraft] Response structure:');
+  console.log('  - data.id:', data.id);
+  console.log('  - data.message?.id:', data.message?.id);
+  console.log('  - Full data keys:', Object.keys(data));
+
+  // Gmail API should return { id: "draft_id", message: { id: "message_id", ... } }
+  // The draft ID should be in data.id, NOT data.message.id
+  if (!data.id) {
+    console.error('[createGmailDraft] No draft ID in response:', data);
+    throw new Error('No draft ID returned from Gmail API');
+  }
+
   console.log('[createGmailDraft] Created draft with ID:', data.id);
   return data.id;
 }
@@ -890,7 +959,16 @@ export async function updateGmailDraft(accessToken: string, draftId: string, dra
   }
 
   const data = await response.json();
+  console.log('[updateGmailDraft] Full response data:', JSON.stringify(data, null, 2));
   console.log('[updateGmailDraft] Updated draft, new ID:', data.id);
+
+  // Gmail API returns { id: "draft_id", message: { id: "message_id", ... } }
+  // We need the draft ID, not the message ID
+  if (!data.id) {
+    console.error('[updateGmailDraft] No draft ID in response:', data);
+    throw new Error('No draft ID returned from Gmail API');
+  }
+
   return data.id;
 }
 
@@ -1121,16 +1199,37 @@ export async function getDraftForThread(accessToken: string, threadId: string): 
           // Helper to convert HTML to plain text
           const htmlToPlainText = (html: string): string => {
             let text = html;
+
+            // First, handle our own div wrappers (created by textToHtmlBody)
+            // These have a specific style, so we can detect them
+            text = text.replace(/<div style="margin: 0 0 1em 0;">([^<]*)<\/div>/gi, '$1\n\n');
+
             // Convert <br> and <br/> to newlines
             text = text.replace(/<br\s*\/?>/gi, '\n');
-            // Convert </p> and </div> to newlines (block elements)
-            text = text.replace(/<\/(p|div|li|tr)>/gi, '\n');
+
+            // For remaining block elements, add newlines only if there isn't already a newline
+            // This prevents double newlines from our own formatting
+            text = text.replace(/<\/(p|div)>/gi, (match, tag, offset) => {
+              // Look ahead to see if there's already a newline coming
+              const nextChar = text[offset + match.length];
+              if (nextChar === '\n' || nextChar === undefined) {
+                return ''; // Don't add another newline
+              }
+              return '\n';
+            });
+
+            // Handle list items and table rows
+            text = text.replace(/<\/(li|tr)>/gi, '\n');
+
             // Remove all remaining HTML tags
             text = text.replace(/<[^>]*>/g, '');
+
             // Decode HTML entities
             text = decodeHtmlEntities(text);
+
             // Clean up excessive newlines
             text = text.replace(/\n{3,}/g, '\n\n');
+
             return text.trim();
           };
           

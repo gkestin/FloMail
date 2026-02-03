@@ -30,19 +30,23 @@ function useButtonAnimation() {
 }
 
 // Collapsed view for completed drafts (cancelled, saved, or sent)
-function CompletedDraftPreview({ 
-  draft, 
-  status 
-}: { 
-  draft: EmailDraft; 
+function CompletedDraftPreview({
+  draft,
+  status,
+  onUndo,
+  undoCountdown
+}: {
+  draft: EmailDraft;
   status: 'cancelled' | 'saved' | 'sent';
+  onUndo?: () => void;
+  undoCountdown?: number;
 }) {
   const [expanded, setExpanded] = useState(false);
-  
+
   // Check if there are CC/BCC recipients
   const hasCc = draft.cc && draft.cc.length > 0;
   const hasBcc = draft.bcc && draft.bcc.length > 0;
-  
+
   // Different styling for each status - improved contrast for visibility
   const statusConfig = {
     cancelled: {
@@ -73,17 +77,17 @@ function CompletedDraftPreview({
       opacity: 'opacity-80',
     },
   };
-  
+
   const config = statusConfig[status];
   const Icon = config.icon;
   
   return (
     <div className={`${config.bgColor} rounded-xl border ${config.borderColor} overflow-hidden ${config.opacity}`}>
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-white/5 transition-colors"
-      >
-        <div className="flex items-center gap-2 flex-wrap min-w-0">
+      <div className="w-full flex items-center justify-between px-4 py-2.5">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex-1 flex items-center gap-2 flex-wrap min-w-0 text-left hover:bg-white/5 transition-colors -mx-4 -my-2.5 px-4 py-2.5 rounded-lg"
+        >
           <Icon className={`w-4 h-4 ${config.iconColor} flex-shrink-0`} />
           <span className={`text-sm ${config.labelColor}`}>{config.label}</span>
           <span className="text-xs text-slate-500">• {draft.to.join(', ').slice(0, 20)}{draft.to.join(', ').length > 20 ? '...' : ''}</span>
@@ -98,9 +102,30 @@ function CompletedDraftPreview({
               <span className="text-slate-600">BCC:</span> {draft.bcc!.join(', ').slice(0, 15)}{draft.bcc!.join(', ').length > 15 ? '...' : ''}
             </span>
           )}
+        </button>
+        <div className="flex items-center gap-2 ml-2">
+          {/* Undo button for sent messages during undo period */}
+          {status === 'sent' && onUndo && undoCountdown !== undefined && (
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={onUndo}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/30 transition-colors text-sm font-medium"
+              style={{ color: 'rgb(251, 191, 36)' }}
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              Undo
+              <span className="text-xs opacity-70">{undoCountdown}s</span>
+            </motion.button>
+          )}
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="p-1 hover:bg-white/5 rounded transition-colors"
+          >
+            <ChevronDown className={`w-4 h-4 text-slate-500 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+          </button>
         </div>
-        <ChevronDown className={`w-4 h-4 text-slate-500 transition-transform flex-shrink-0 ${expanded ? 'rotate-180' : ''}`} />
-      </button>
+      </div>
       
       {expanded && (
         <div className="px-4 pb-3 pt-1 border-t border-slate-700/30 space-y-1.5 text-sm">
@@ -1242,6 +1267,7 @@ export function ChatInterface({
 
               case 'tool_start':
                 // Tool call started - already showing status via 'status' event
+                // Keep loading indicator visible during tool execution
                 break;
 
               case 'tool_args':
@@ -1338,7 +1364,7 @@ export function ChatInterface({
                   success: event.data.success,
                   resultPreview: event.data.resultPreview,
                 };
-                
+
                 // Add a simple message showing the completed search (left-aligned, part of chat flow)
                 const searchMessageId = `search-${Date.now()}`;
                 const searchMessage: UIMessage = {
@@ -1349,6 +1375,11 @@ export function ChatInterface({
                   searchResults: [searchResult],
                 };
                 setMessages(prev => [...prev, searchMessage]);
+
+                // Keep loading indicator visible - server will continue processing
+                // and will send more events (either more searches or final response)
+                // The loading indicator will be hidden when text starts or done event arrives
+                setLoadingStatus('Analyzing results...');
                 break;
 
               case 'done':
@@ -1769,28 +1800,25 @@ export function ChatInterface({
     setIsSending(true);
     setCurrentDraft(null);
 
-    // Mark the draft as sent immediately
+    // First, save the draft to Gmail so user doesn't lose it if send fails
+    let finalDraft = updatedDraft;
+    if (onSaveDraft) {
+      try {
+        finalDraft = await onSaveDraft(updatedDraft);
+      } catch (error) {
+        console.warn('[handleSendDraft] Failed to save draft before sending:', error);
+        // Continue with send attempt even if save failed
+      }
+    }
+
+    // Mark the draft as sent immediately with a confirmMessageId
+    const confirmMessageId = `sending-${Date.now()}`;
     setMessages(prev => prev.map(m => {
       if (m.draft && !m.draftCancelled && !m.draftSaved && !m.draftSent && !m.isStreaming) {
-        return { ...m, draftSent: true };
+        return { ...m, draftSent: true, draft: finalDraft, id: confirmMessageId };
       }
       return m;
     }));
-
-    // Add a system message showing "Sent" immediately
-    const recipient = updatedDraft.to[0] || 'recipient';
-    const confirmMessageId = `sending-${Date.now()}`;
-    const sentMessage: UIMessage = {
-      id: confirmMessageId,
-      role: 'assistant',
-      content: `✓ Sent to ${recipient}`,
-      timestamp: new Date(),
-      isSystemMessage: true,
-      systemType: 'sent',
-      hasActionButtons: true,
-      actionButtonsHandled: false,
-    };
-    setMessages(prev => [...prev, sentMessage]);
 
     // Immediately set isSending to false so UI updates to show sent state
     setIsSending(false);
@@ -1804,20 +1832,29 @@ export function ChatInterface({
 
       // Actually send the email
       try {
-        await onSendEmail(updatedDraft);
+        await onSendEmail(finalDraft);
       } catch (error) {
         console.error('Send error:', error);
-        // Update message to show error
+        // Mark the draft as failed to send
         setMessages(prev => prev.map(m =>
-          m.id === confirmMessageId
-            ? { ...m, content: '⚠️ Send failed. Please try again.' }
+          m.id === confirmMessageId && m.draft
+            ? { ...m, draftSent: false, draftSendFailed: true }
             : m
         ));
+        // Add an error message
+        const errorMessage: UIMessage = {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: '⚠️ Failed to send email. Please try again.',
+          timestamp: new Date(),
+          isSystemMessage: true,
+        };
+        setMessages(prev => [...prev, errorMessage]);
       }
     }, UNDO_DELAY);
 
     setPendingSend({
-      draft: updatedDraft,
+      draft: finalDraft,
       timeoutId,
       timestamp: Date.now(),
       confirmMessageId,
@@ -1893,37 +1930,21 @@ export function ChatInterface({
 
   // Handle action button clicks from sent confirmation
   const handleSentActionArchiveNext = useCallback(() => {
-    // Mark the buttons as handled so they disappear
-    setMessages(prev => prev.map(m => 
-      m.hasActionButtons ? { ...m, actionButtonsHandled: true } : m
-    ));
     // Archive and then go to next
     archiveWithNotification();
   }, [archiveWithNotification]);
 
   const handleSentActionPrevious = useCallback(() => {
-    // Mark the buttons as handled
-    setMessages(prev => prev.map(m =>
-      m.hasActionButtons ? { ...m, actionButtonsHandled: true } : m
-    ));
     // Go to previous
     onPreviousEmail?.();
   }, [onPreviousEmail]);
 
   const handleSentActionNext = useCallback(() => {
-    // Mark the buttons as handled
-    setMessages(prev => prev.map(m =>
-      m.hasActionButtons ? { ...m, actionButtonsHandled: true } : m
-    ));
     // Just go to next
     onNextEmail?.();
   }, [onNextEmail]);
 
   const handleSentActionInbox = useCallback(() => {
-    // Mark the buttons as handled
-    setMessages(prev => prev.map(m =>
-      m.hasActionButtons ? { ...m, actionButtonsHandled: true } : m
-    ));
     // Go to inbox
     onGoToInbox?.();
   }, [onGoToInbox]);
@@ -2585,8 +2606,8 @@ export function ChatInterface({
               </div>
             )}
 
-            {/* System/Action message - horizontal divider with centered badge (not for pending snooze) */}
-            {message.isSystemMessage && !(message.snoozeConfirmation && !message.snoozeConfirmation.confirmed) && (
+            {/* System/Action message - horizontal divider with centered badge (not for pending snooze or sent) */}
+            {message.isSystemMessage && !(message.snoozeConfirmation && !message.snoozeConfirmation.confirmed) && message.systemType !== 'sent' && (
               <div className="w-full flex items-center gap-2 py-2 group overflow-hidden">
                 {/* Left line - min width ensures visibility on narrow screens */}
                 <div className={`flex-1 min-w-12 h-px ${
@@ -2672,32 +2693,8 @@ export function ChatInterface({
               </div>
             )}
 
-            {/* Undo button for sent messages during undo period */}
-            {message.isSystemMessage && message.systemType === 'sent' && pendingSend && pendingSend.confirmMessageId === message.id && (
-              <motion.div
-                initial={{ opacity: 0, y: -10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="w-full flex items-center justify-center gap-3 py-2"
-              >
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={handleUndoSend}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/30 transition-colors text-sm font-medium"
-                  style={{ color: 'rgb(251, 191, 36)' }}
-                >
-                  <RotateCcw className="w-4 h-4" />
-                  Undo Send
-                </motion.button>
-                <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                  {undoCountdown}s
-                </div>
-              </motion.div>
-            )}
-
-            {/* Action buttons for sent confirmation (shown after undo period) */}
-            {message.isSystemMessage && message.systemType === 'sent' && message.hasActionButtons && !message.actionButtonsHandled && !pendingSend && (
+            {/* Action buttons shown immediately after sending */}
+            {message.draftSent && pendingSend && pendingSend.confirmMessageId === message.id && (
               <div className="w-full flex flex-wrap items-center justify-center gap-2 py-2">
                 {/* Previous button with arrow */}
                 <motion.button
@@ -2932,7 +2929,12 @@ export function ChatInterface({
             {message.draft && message.role === 'assistant' && (
               <div className="w-full max-w-[85%] mt-3">
                 {message.draftSent ? (
-                  <CompletedDraftPreview draft={message.draft} status="sent" />
+                  <CompletedDraftPreview
+                    draft={message.draft}
+                    status="sent"
+                    onUndo={pendingSend && pendingSend.confirmMessageId === message.id ? handleUndoSend : undefined}
+                    undoCountdown={pendingSend && pendingSend.confirmMessageId === message.id ? undoCountdown : undefined}
+                  />
                 ) : message.draftSaved ? (
                   <CompletedDraftPreview draft={message.draft} status="saved" />
                 ) : message.draftCancelled ? (

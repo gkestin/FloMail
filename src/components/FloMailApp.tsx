@@ -641,7 +641,10 @@ export function FloMailApp() {
     
     // Create the saved draft with the ID
     const savedDraft = { ...processedDraft, gmailDraftId: savedDraftId };
-    
+
+    console.log('[FloMailApp] Saved draft with gmailDraftId:', savedDraftId);
+    console.log('[FloMailApp] savedDraft object:', savedDraft);
+
     // Update the draft with the saved ID so future saves update instead of create
     setCurrentDraft(prev => prev ? savedDraft : null);
     
