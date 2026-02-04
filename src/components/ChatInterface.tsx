@@ -2611,30 +2611,25 @@ export function ChatInterface({
               <div className="w-full flex items-center gap-2 py-2 group overflow-hidden">
                 {/* Left line - min width ensures visibility on narrow screens */}
                 <div className={`flex-1 min-w-12 h-px ${
-                  message.systemType === 'archived' 
-                    ? 'bg-gradient-to-r from-transparent to-blue-500/40' 
-                    : message.systemType === 'sent'
-                      ? 'bg-gradient-to-r from-transparent to-cyan-500/40'
-                      : message.systemType === 'search'
-                        ? 'bg-gradient-to-r from-transparent to-purple-500/40'
-                        : 'bg-gradient-to-r from-transparent to-green-500/40'
+                  message.systemType === 'archived'
+                    ? 'bg-gradient-to-r from-transparent to-blue-500/40'
+                    : message.systemType === 'search'
+                      ? 'bg-gradient-to-r from-transparent to-purple-500/40'
+                      : 'bg-gradient-to-r from-transparent to-green-500/40'
                 }`} />
                 
                 {/* Center badge - shrinks on narrow screens, lines stay visible */}
                 <div className={`
                   relative flex items-center gap-2 px-3 py-2 rounded-lg text-sm cursor-default
                   flex-shrink min-w-0 max-w-[calc(100%-112px)]
-                  ${message.systemType === 'archived' 
-                    ? 'bg-blue-500/15 text-blue-300 border border-blue-500/25' 
-                    : message.systemType === 'sent'
-                      ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/25'
-                      : message.systemType === 'search'
-                        ? 'bg-purple-500/15 text-purple-300 border border-purple-500/25'
-                        : 'bg-green-500/15 text-green-300 border border-green-500/25'
+                  ${message.systemType === 'archived'
+                    ? 'bg-blue-500/15 text-blue-300 border border-blue-500/25'
+                    : message.systemType === 'search'
+                      ? 'bg-purple-500/15 text-purple-300 border border-purple-500/25'
+                      : 'bg-green-500/15 text-green-300 border border-green-500/25'
                   }
                 `}>
                   {message.systemType === 'archived' && <Archive className="w-4 h-4 text-blue-400 flex-shrink-0" />}
-                  {message.systemType === 'sent' && <Send className="w-4 h-4 text-cyan-400 flex-shrink-0" />}
                   {message.systemType === 'navigated' && <Eye className="w-4 h-4 text-green-400 flex-shrink-0" />}
                   {message.systemType === 'search' && (
                     message.searchResults?.[0]?.type === 'browse_url' 
@@ -2682,13 +2677,11 @@ export function ChatInterface({
                 
                 {/* Right line - min width ensures visibility on narrow screens */}
                 <div className={`flex-1 min-w-12 h-px ${
-                  message.systemType === 'archived' 
-                    ? 'bg-gradient-to-l from-transparent to-blue-500/40' 
-                    : message.systemType === 'sent'
-                      ? 'bg-gradient-to-l from-transparent to-cyan-500/40'
-                      : message.systemType === 'search'
-                        ? 'bg-gradient-to-l from-transparent to-purple-500/40'
-                        : 'bg-gradient-to-l from-transparent to-green-500/40'
+                  message.systemType === 'archived'
+                    ? 'bg-gradient-to-l from-transparent to-blue-500/40'
+                    : message.systemType === 'search'
+                      ? 'bg-gradient-to-l from-transparent to-purple-500/40'
+                      : 'bg-gradient-to-l from-transparent to-green-500/40'
                 }`} />
               </div>
             )}
