@@ -15,6 +15,7 @@ import { sendEmail, archiveThread, getAttachment, createGmailDraft, updateGmailD
 import { emailCache } from '@/lib/email-cache';
 import { DraftAttachment } from '@/types';
 import { SnoozePicker } from './SnoozePicker';
+import { FloatingTTSMiniPlayer } from './TTSController';
 import { SnoozeOption } from '@/lib/snooze-persistence';
 import { getUserSettings, saveUserSettings, subscribeToUserSettings, migrateSettingsFromLocalStorage, TTSSettings } from '@/lib/user-settings-persistence';
 import { useThreadPreloader } from '@/hooks/useThreadPreloader';
@@ -1920,6 +1921,9 @@ export function FloMailApp() {
         onSelect={handleSnooze}
         isLoading={false}
       />
+
+      {/* Floating TTS mini-player (shows when original controls scroll out of view) */}
+      <FloatingTTSMiniPlayer />
 
       {/* Error toast for failed background operations */}
       <AnimatePresence>

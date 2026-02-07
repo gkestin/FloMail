@@ -45,6 +45,12 @@ let globalBrowserUtteranceToken = 0;
 // Speed options for the controls
 const SPEED_OPTIONS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
+// Globals for floating mini-player: tracks the active TTS element and playback metadata
+let globalActiveElement: HTMLElement | null = null;
+let globalDisplaySpeed = 1.0;
+let globalApiBaseSpeed = 1.0;
+let globalTTSContent = ''; // Text being spoken (for browser TTS speed changes from floating player)
+
 interface TTSControllerProps {
   content: string;
   id: string;
@@ -59,6 +65,7 @@ export function TTSController({ content, id, className = '', compact = true }: T
   const [showControls, setShowControls] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const isRestartingRef = useRef(false); // Flag to prevent race condition during restart
   const apiBaseSpeedRef = useRef(1.0); // The speed baked into the TTS API audio
 
@@ -139,6 +146,18 @@ export function TTSController({ content, id, className = '', compact = true }: T
       abortControllerRef.current?.abort();
     };
   }, []);
+
+  // Register this element for the floating mini-player to track visibility
+  useEffect(() => {
+    if ((state === 'playing' || state === 'paused' || state === 'loading') && globalCurrentSpeakingId === id) {
+      globalActiveElement = containerRef.current;
+    }
+    return () => {
+      if (globalActiveElement === containerRef.current) {
+        globalActiveElement = null;
+      }
+    };
+  }, [state, id]);
   
   const stopAll = useCallback(() => {
     // Stop any browser TTS
@@ -185,6 +204,8 @@ export function TTSController({ content, id, className = '', compact = true }: T
     
     globalCurrentSpeakingId = id;
     globalIsBrowserTTS = true;
+    globalTTSContent = text;
+    globalDisplaySpeed = speed;
     setIsBrowserTTS(true);
     setState('playing');
     setShowControls(true);
@@ -267,6 +288,9 @@ export function TTSController({ content, id, className = '', compact = true }: T
       globalCurrentAudio = audio;
       globalCurrentSpeakingId = id;
       globalIsBrowserTTS = false;
+      globalTTSContent = ttsText;
+      globalDisplaySpeed = settings.speed;
+      globalApiBaseSpeed = settings.speed;
       audioRef.current = audio;
       apiBaseSpeedRef.current = settings.speed; // Track the speed baked into the audio
       setIsBrowserTTS(false);
@@ -402,6 +426,7 @@ export function TTSController({ content, id, className = '', compact = true }: T
 
     const newSpeed = SPEED_OPTIONS[newIdx];
     setCurrentSpeed(newSpeed);
+    globalDisplaySpeed = newSpeed;
 
     if (isBrowserTTS) {
       // Browser TTS: restart at new speed (SpeechSynthesis can't change rate mid-utterance)
@@ -471,7 +496,7 @@ export function TTSController({ content, id, className = '', compact = true }: T
   const canPause = state === 'playing' || state === 'paused';
   
   return (
-    <div className={`relative inline-flex items-center ${state === 'idle' ? className : ''}`}>
+    <div ref={containerRef} className={`relative inline-flex items-center ${state === 'idle' ? className : ''}`}>
       <AnimatePresence mode="wait">
         {/* Idle state - just the speaker button */}
         {state === 'idle' && (
@@ -636,4 +661,196 @@ export function stopAllTTS() {
   }
   globalCurrentSpeakingId = null;
   globalIsBrowserTTS = false;
+}
+
+// Floating mini-player that appears when the active TTS controls scroll out of view
+export function FloatingTTSMiniPlayer() {
+  const [visible, setVisible] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [browserTTS, setBrowserTTS] = useState(false);
+  const [speed, setSpeed] = useState(1.0);
+
+  // Poll global TTS state and check if original element is visible
+  useEffect(() => {
+    const check = () => {
+      if (!globalCurrentSpeakingId) {
+        if (visible) setVisible(false);
+        return;
+      }
+
+      let isPlaying = false;
+      let isPaused = false;
+      const isBrowser = globalIsBrowserTTS;
+
+      if (isBrowser) {
+        isPlaying = speechSynthesis.speaking && !speechSynthesis.paused;
+        isPaused = speechSynthesis.paused;
+      } else if (globalCurrentAudio) {
+        isPlaying = !globalCurrentAudio.paused && !globalCurrentAudio.ended;
+        isPaused = globalCurrentAudio.paused && !globalCurrentAudio.ended && globalCurrentAudio.currentTime > 0;
+      }
+
+      if (!isPlaying && !isPaused) {
+        if (visible) setVisible(false);
+        return;
+      }
+
+      setPlaying(isPlaying);
+      setBrowserTTS(isBrowser);
+      setSpeed(globalDisplaySpeed);
+
+      // Check if original controls element is in viewport
+      const el = globalActiveElement;
+      if (!el) {
+        setVisible(true);
+        return;
+      }
+      const rect = el.getBoundingClientRect();
+      const inView = rect.top < window.innerHeight && rect.bottom > 0;
+      setVisible(!inView);
+    };
+
+    const interval = setInterval(check, 200);
+    return () => clearInterval(interval);
+  }, [visible]);
+
+  const handleStop = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    stopAllTTS();
+    setVisible(false);
+  };
+
+  const handlePauseResume = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (browserTTS) {
+      if (speechSynthesis.paused) {
+        speechSynthesis.resume();
+      } else {
+        speechSynthesis.pause();
+      }
+    } else if (globalCurrentAudio) {
+      if (globalCurrentAudio.paused) {
+        globalCurrentAudio.play();
+      } else {
+        globalCurrentAudio.pause();
+      }
+    }
+  };
+
+  const handleSpeedChange = (e: React.MouseEvent, delta: number) => {
+    e.stopPropagation();
+    const currentIdx = SPEED_OPTIONS.findIndex(s => Math.abs(s - speed) < 0.01);
+    let newIdx: number;
+
+    if (currentIdx === -1) {
+      const closestIdx = SPEED_OPTIONS.reduce((prevIdx, _s, idx) =>
+        Math.abs(SPEED_OPTIONS[idx] - speed) < Math.abs(SPEED_OPTIONS[prevIdx] - speed) ? idx : prevIdx, 0);
+      newIdx = Math.max(0, Math.min(SPEED_OPTIONS.length - 1, closestIdx + delta));
+    } else {
+      newIdx = Math.max(0, Math.min(SPEED_OPTIONS.length - 1, currentIdx + delta));
+    }
+
+    const newSpeed = SPEED_OPTIONS[newIdx];
+    setSpeed(newSpeed);
+    globalDisplaySpeed = newSpeed;
+
+    if (browserTTS && globalTTSContent) {
+      // Restart browser TTS at new speed
+      const utteranceToken = ++globalBrowserUtteranceToken;
+      speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(globalTTSContent);
+      utterance.rate = newSpeed;
+      utterance.pitch = 1.0;
+      utterance.onend = () => {
+        if (utteranceToken !== globalBrowserUtteranceToken) return;
+        globalCurrentSpeakingId = null;
+        globalIsBrowserTTS = false;
+      };
+      utterance.onerror = () => {
+        if (utteranceToken !== globalBrowserUtteranceToken) return;
+        globalCurrentSpeakingId = null;
+        globalIsBrowserTTS = false;
+      };
+      speechSynthesis.speak(utterance);
+    } else if (globalCurrentAudio) {
+      globalCurrentAudio.playbackRate = newSpeed / globalApiBaseSpeed;
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {visible && (
+        <motion.div
+          key="floating-tts"
+          initial={{ opacity: 0, y: 20, scale: 0.95 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 20, scale: 0.95 }}
+          transition={{ duration: 0.2 }}
+          className="fixed bottom-24 left-1/2 -translate-x-1/2 z-40 flex items-center gap-0.5 px-2 py-1.5 rounded-full shadow-lg"
+          style={{
+            background: 'rgba(20, 20, 40, 0.92)',
+            backdropFilter: 'blur(12px)',
+            border: '1px solid rgba(59, 130, 246, 0.3)',
+            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)',
+          }}
+        >
+          {/* Stop */}
+          <button
+            onClick={handleStop}
+            className="p-2 rounded-full transition-colors hover:bg-white/10 active:bg-white/20"
+            style={{ color: 'var(--text-muted)' }}
+            title="Stop"
+          >
+            <Square className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Play/Pause */}
+          <button
+            onClick={handlePauseResume}
+            className="p-2 rounded-full transition-colors hover:bg-white/10 active:bg-white/20"
+            style={{ color: playing ? 'var(--text-accent-blue)' : 'var(--text-muted)' }}
+            title={playing ? 'Pause' : 'Resume'}
+          >
+            {playing ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+          </button>
+
+          {/* Speed - */}
+          <button
+            onClick={(e) => handleSpeedChange(e, -1)}
+            disabled={speed <= SPEED_OPTIONS[0]}
+            className="p-2 rounded-full transition-colors hover:bg-white/10 active:bg-white/20 disabled:opacity-30"
+            style={{ color: 'var(--text-muted)' }}
+            title="Slow down"
+          >
+            <Minus className="w-3.5 h-3.5" />
+          </button>
+
+          <span
+            className="text-xs font-medium min-w-[32px] text-center select-none"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            {speed}x
+          </span>
+
+          {/* Speed + */}
+          <button
+            onClick={(e) => handleSpeedChange(e, 1)}
+            disabled={speed >= SPEED_OPTIONS[SPEED_OPTIONS.length - 1]}
+            className="p-2 rounded-full transition-colors hover:bg-white/10 active:bg-white/20 disabled:opacity-30"
+            style={{ color: 'var(--text-muted)' }}
+            title="Speed up"
+          >
+            <Plus className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Browser TTS indicator */}
+          {browserTTS && (
+            <div className="flex items-center px-0.5" title="System voice">
+              <Zap className="w-3 h-3 opacity-50" style={{ color: 'var(--text-muted)' }} />
+            </div>
+          )}
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
 }
