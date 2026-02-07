@@ -1160,7 +1160,15 @@ export function ChatInterface({
       const messagesToInclude = showCollapsedMessages || collapsedMessages.length === 0 ? messages : messages;
       const contextMessages = messagesToInclude
         .filter(m => !m.isCancelled && !m.isTranscribing && !m.transcriptionError && m.content && m.content.trim() && !m.snoozeConfirmation)
-        .map(m => ({ role: m.role, content: m.content }));
+        .map(m => {
+          // If this message has a draft (active or cancelled), include the draft content
+          // so the AI can see what was drafted/edited, not just "Here's a draft for you:"
+          if (m.draft && m.draft.body) {
+            const draftSummary = `\n\n[Draft - To: ${m.draft.to.join(', ')} | Subject: ${m.draft.subject} | Type: ${m.draft.type}]\n${m.draft.body}`;
+            return { role: m.role, content: m.content + draftSummary };
+          }
+          return { role: m.role, content: m.content };
+        });
       
       // Check if there's a pending snooze confirmation - if so, tell the AI not to snooze again
       const hasPendingSnooze = messages.some(m => m.snoozeConfirmation && !m.snoozeConfirmation.confirmed);
@@ -1467,8 +1475,8 @@ export function ChatInterface({
       return m;
     }))
     
-    // Clear currentDraft if it exists and hasn't been saved
-    if (currentDraft && !currentDraft.gmailDraftId) {
+    // Clear currentDraft when user continues the conversation
+    if (currentDraft) {
       setCurrentDraft(null);
     }
 
@@ -2897,8 +2905,8 @@ export function ChatInterface({
               </div>
             )}
 
-            {/* Action buttons shown below sent confirmation - persist until user acts */}
-            {message.draftSent && message.draft && (
+            {/* Action buttons shown below sent confirmation - hide if user continues chatting */}
+            {message.draftSent && message.draft && !messages.slice(index + 1).some(m => m.role === 'user') && (
               <div className="w-full flex flex-wrap items-center justify-center gap-2 py-2">
                 {/* Previous button with arrow */}
                 <motion.button

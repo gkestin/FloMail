@@ -239,6 +239,11 @@ export function DraftCard({ draft, thread, userEmail, onSend, onSaveDraft, onDis
   const lastSyncedDraftIdRef = useRef(draft.id);
   // Track previous streaming state to detect when streaming ends
   const wasStreamingRef = useRef(isStreaming);
+  // Refs for flushing pending draft changes on unmount
+  const latestEditedDraftRef = useRef(editedDraft);
+  const latestOnDraftChangeRef = useRef(onDraftChange);
+  latestEditedDraftRef.current = editedDraft;
+  latestOnDraftChangeRef.current = onDraftChange;
   
   // For replies with thread context, parse body to separate user content from garbled quoted content
   // We'll show thread messages with proper HTML rendering instead of the malformed quoted text
@@ -383,6 +388,18 @@ export function DraftCard({ draft, thread, userEmail, onSend, onSaveDraft, onDis
       }
     };
   }, [editedDraft, onDraftChange, isStreaming]);
+
+  // Flush any pending draft changes on unmount (e.g., when draft is cancelled because user continues chatting)
+  // This prevents losing edits that are still in the debounce window
+  useEffect(() => {
+    return () => {
+      if (draftChangeTimeoutRef.current && hasUserEditsRef.current) {
+        clearTimeout(draftChangeTimeoutRef.current);
+        draftChangeTimeoutRef.current = null;
+        latestOnDraftChangeRef.current?.(latestEditedDraftRef.current);
+      }
+    };
+  }, []);
 
   // Handle file selection
   const handleFileSelect = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {

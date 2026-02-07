@@ -60,6 +60,7 @@ export function TTSController({ content, id, className = '', compact = true }: T
   const abortControllerRef = useRef<AbortController | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const isRestartingRef = useRef(false); // Flag to prevent race condition during restart
+  const apiBaseSpeedRef = useRef(1.0); // The speed baked into the TTS API audio
   
   // Check if this button's content is currently being spoken
   useEffect(() => {
@@ -84,9 +85,6 @@ export function TTSController({ content, id, className = '', compact = true }: T
           setShowControls(false);
         }
       } else if (globalCurrentAudio) {
-        // Keep speed in sync with actual playback rate
-        setCurrentSpeed(globalCurrentAudio.playbackRate);
-
         if (globalCurrentAudio.paused) {
           if (globalCurrentAudio.ended || globalCurrentAudio.currentTime === 0) {
             setState('idle');
@@ -223,6 +221,7 @@ export function TTSController({ content, id, className = '', compact = true }: T
       globalCurrentSpeakingId = id;
       globalIsBrowserTTS = false;
       audioRef.current = audio;
+      apiBaseSpeedRef.current = settings.speed; // Track the speed baked into the audio
       setIsBrowserTTS(false);
       setState('playing');
       setShowControls(true);
@@ -338,7 +337,9 @@ export function TTSController({ content, id, className = '', compact = true }: T
     e.stopPropagation();
 
     // Find current speed index and calculate new speed
-    const refSpeed = (!isBrowserTTS && globalCurrentAudio) ? globalCurrentAudio.playbackRate : currentSpeed;
+    // Always use currentSpeed (the UI-displayed speed) as reference, not playbackRate
+    // (for natural voice, playbackRate is a ratio of newSpeed/apiBaseSpeed, not the absolute speed)
+    const refSpeed = currentSpeed;
     const currentIdx = SPEED_OPTIONS.findIndex(s => Math.abs(s - refSpeed) < 0.01);
     let newIdx = currentIdx + delta;
 
@@ -392,8 +393,10 @@ export function TTSController({ content, id, className = '', compact = true }: T
         isRestartingRef.current = false;
       }, 200);
     } else if (globalCurrentAudio) {
-      // Natural voice: change speed in-place (instant)
-      globalCurrentAudio.playbackRate = newSpeed;
+      // Natural voice: the API already baked in apiBaseSpeed, so adjust playbackRate
+      // as a ratio to get the desired effective speed
+      // e.g., if API generated at 0.5x and user wants 0.75x: playbackRate = 0.75/0.5 = 1.5
+      globalCurrentAudio.playbackRate = newSpeed / apiBaseSpeedRef.current;
     }
   };
   
