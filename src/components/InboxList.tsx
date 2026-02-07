@@ -1678,9 +1678,10 @@ function SwipeableEmailRow({
         }}
         whileDrag={{ cursor: 'grabbing' }}
         onClick={handleClick}
-        className="relative cursor-pointer transition-colors touch-pan-y select-none"
+        className="relative cursor-pointer transition-colors touch-pan-y select-none group"
       >
-        {/* Mobile: py-4 for more breathing room, Desktop: py-3 */}
+        {/* Mobile layout: multi-row (hidden at md+ where desktop uses single-line) */}
+        <div className="md:hidden">
         <div className="flex items-start gap-3 px-4 py-4 sm:py-3" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
           {/* Avatar with sender initial - colored circle */}
           {(() => {
@@ -1794,8 +1795,8 @@ function SwipeableEmailRow({
             </p>
           </div>
 
-          {/* Action buttons - hidden on mobile (use swipe gestures) */}
-          <div className="hidden sm:flex items-center gap-1 self-center">
+          {/* Action buttons - tablet only (mobile uses swipe, desktop uses hover) */}
+          <div className="hidden sm:flex md:hidden items-center gap-1 self-center">
             {/* Snooze button (for inbox emails) */}
             {isInInbox && onSnooze && (
               <motion.button
@@ -1846,6 +1847,136 @@ function SwipeableEmailRow({
             )}
           </div>
         </div>
+        </div>{/* close md:hidden wrapper */}
+
+        {/* Desktop layout: single-line Gmail-style (shown at md+) */}
+        <div className="hidden md:block">
+          <div className="flex items-center px-4 py-2" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+            {/* Unread indicator dot */}
+            <div className="w-2 flex-shrink-0 mr-2">
+              {!thread.isRead && (
+                <div className="w-2 h-2 rounded-full bg-blue-400" />
+              )}
+            </div>
+
+            {/* Sender name + count - fixed width */}
+            <div className="w-44 flex-shrink-0 flex items-center gap-1 pr-3 truncate">
+              <span
+                className={`text-[13px] truncate ${!thread.isRead ? 'font-bold' : ''}`}
+                style={{ color: !thread.isRead ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+              >
+                {getSenderNames(thread)}
+              </span>
+              {thread.messages.length > 1 && (
+                <span className="text-xs flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
+                  {thread.messages.length}
+                </span>
+              )}
+            </div>
+
+            {/* Badges - compact inline */}
+            {hasDraft && (
+              <span className="text-[10px] font-semibold text-red-400 bg-red-500/15 px-1 py-0.5 rounded mr-1.5 flex-shrink-0">
+                Draft
+              </span>
+            )}
+            {labelBadge && (
+              <span className="mr-1.5 flex-shrink-0">{labelBadge}</span>
+            )}
+
+            {/* Subject + Snippet - fills remaining space */}
+            <div className="flex-1 min-w-0 truncate">
+              <span
+                className={`text-[13px] ${!thread.isRead ? 'font-semibold' : ''}`}
+                style={{ color: 'var(--text-primary)' }}
+              >
+                {thread.subject || '(No Subject)'}
+              </span>
+              {thread.snippet && (
+                <span className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+                  {' '}- {thread.snippet}
+                </span>
+              )}
+            </div>
+
+            {/* Inline badges: attachment, snoozed, unsnoozed */}
+            {thread.messages.some(m => m.hasAttachments) && (
+              <Paperclip className="w-3.5 h-3.5 flex-shrink-0 mx-1.5" style={{ color: 'var(--text-muted)' }} />
+            )}
+            {hasSnoozedLabel(thread) && !isSnoozed && (
+              <span className="flex-shrink-0 flex items-center gap-0.5 px-1 py-0.5 rounded text-[10px] mx-1"
+                style={{ background: 'rgba(251, 191, 36, 0.15)', color: 'rgb(251, 191, 36)' }}>
+                <Clock className="w-2.5 h-2.5" />
+              </span>
+            )}
+            {hasUnsnoozedLabel(thread) && (
+              <span className="flex-shrink-0 flex items-center gap-0.5 px-1 py-0.5 rounded text-[10px] mx-1"
+                style={{ background: 'rgba(34, 197, 94, 0.15)', color: 'rgb(34, 197, 94)' }}>
+                <Bell className="w-2.5 h-2.5" />
+              </span>
+            )}
+
+            {/* Right side: Date (default) / Action buttons (on hover) */}
+            <div className="flex-shrink-0 ml-3 min-w-[5rem] flex justify-end">
+              {/* Date - hidden on group hover */}
+              <div className="group-hover:hidden flex items-center">
+                {isSnoozed && snoozeUntil ? (
+                  <span className="flex items-center gap-1 text-xs" style={{ color: 'rgb(251, 191, 36)' }}>
+                    <Clock className="w-3 h-3" />
+                    {snoozeUntil}
+                  </span>
+                ) : (
+                  <span
+                    className={`text-xs whitespace-nowrap ${!thread.isRead ? 'font-medium' : ''}`}
+                    style={{ color: !thread.isRead ? 'var(--text-accent-blue)' : 'var(--text-muted)' }}
+                  >
+                    {formatDate(thread.lastMessageDate)}
+                  </span>
+                )}
+              </div>
+
+              {/* Action buttons - shown on group hover */}
+              <div className="hidden group-hover:flex items-center gap-0.5">
+                {isInInbox && onSnooze && (
+                  <motion.button
+                    whileHover={{ scale: 1.15 }}
+                    whileTap={{ scale: 0.9 }}
+                    onClick={(e) => { e.stopPropagation(); onSnooze(e); }}
+                    className="p-1.5 rounded-full transition-colors hover:bg-amber-500/20"
+                    style={{ color: 'var(--text-muted)' }}
+                    title="Snooze"
+                  >
+                    <Clock className="w-4 h-4" />
+                  </motion.button>
+                )}
+                {isInInbox && !isSnoozed ? (
+                  <motion.button
+                    whileHover={{ scale: 1.15 }}
+                    whileTap={{ scale: 0.9 }}
+                    onClick={(e) => { e.stopPropagation(); onArchive(e); }}
+                    className="p-1.5 rounded-full transition-colors hover:bg-green-500/20"
+                    style={{ color: 'var(--text-muted)' }}
+                    title="Archive"
+                  >
+                    <Archive className="w-4 h-4" />
+                  </motion.button>
+                ) : !isInInbox && onMoveToInbox && (
+                  <motion.button
+                    whileHover={{ scale: 1.15 }}
+                    whileTap={{ scale: 0.9 }}
+                    onClick={(e) => { e.stopPropagation(); onMoveToInbox(e); }}
+                    className="p-1.5 rounded-full transition-colors hover:bg-blue-500/20"
+                    style={{ color: 'var(--text-muted)' }}
+                    title="Move to Inbox"
+                  >
+                    <Inbox className="w-4 h-4" />
+                  </motion.button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
       </motion.div>
     </motion.div>
   );
