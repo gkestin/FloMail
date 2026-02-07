@@ -62,14 +62,34 @@ export function TTSController({ content, id, className = '', compact = true }: T
   const isRestartingRef = useRef(false); // Flag to prevent race condition during restart
   const apiBaseSpeedRef = useRef(1.0); // The speed baked into the TTS API audio
 
-  // Strip HTML tags from content so TTS reads only visible text
+  // Strip HTML from content so TTS reads only visible text
+  // Handles: style/script blocks, HTML tags, entities, excessive whitespace
   const cleanContent = useMemo(() => {
-    if (typeof document !== 'undefined' && content.includes('<') && content.includes('>')) {
+    let text = content;
+
+    // Use DOM parsing if content looks like it contains HTML tags
+    if (typeof document !== 'undefined' && /<[a-z/][\s\S]*?>/i.test(text)) {
       const tmp = document.createElement('div');
-      tmp.innerHTML = content;
-      return tmp.textContent || tmp.innerText || content;
+      tmp.innerHTML = text;
+      // Remove style/script/noscript - their textContent is CSS/JS junk
+      tmp.querySelectorAll('style, script, noscript').forEach(el => el.remove());
+      text = tmp.textContent || tmp.innerText || text;
     }
-    return content;
+
+    // Decode HTML entities that might remain (e.g. from partially-stripped HTML)
+    text = text
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/&apos;/gi, "'");
+
+    // Clean up excessive whitespace
+    text = text.replace(/\s+/g, ' ').trim();
+
+    return text;
   }, [content]);
 
   // Check if this button's content is currently being spoken
@@ -181,17 +201,34 @@ export function TTSController({ content, id, className = '', compact = true }: T
       return;
     }
     
+    // Truncate for natural voice API (OpenAI TTS limit is ~4096 chars)
+    const MAX_TTS_CHARS = 4000;
+    let ttsText = cleanContent;
+    if (ttsText.length > MAX_TTS_CHARS) {
+      const truncated = ttsText.substring(0, MAX_TTS_CHARS);
+      // Try to break at a sentence boundary
+      const lastBreak = Math.max(
+        truncated.lastIndexOf('. '),
+        truncated.lastIndexOf('? '),
+        truncated.lastIndexOf('! '),
+        truncated.lastIndexOf('.\n'),
+      );
+      ttsText = lastBreak > MAX_TTS_CHARS * 0.5
+        ? truncated.substring(0, lastBreak + 1)
+        : truncated;
+    }
+
     // Start loading natural voice
     setState('loading');
     setIsBrowserTTS(false);
     abortControllerRef.current = new AbortController();
-    
+
     try {
       const response = await fetch('/api/ai/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          text: cleanContent,
+          text: ttsText,
           voice: settings.voice,
           speed: settings.speed,
         }),

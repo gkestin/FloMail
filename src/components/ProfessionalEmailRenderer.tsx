@@ -156,12 +156,15 @@ function parseEmailQuotes(content: string, isHtml: boolean): {
   };
 }
 
-// Extract clean text for TTS
+// Extract clean text for TTS - always strips HTML regardless of isHtml flag
 function extractTTSContent(content: string, isHtml: boolean): string {
-  if (isHtml) {
+  // Always try to strip if content looks like it has HTML (body can have HTML even when isHtml is false)
+  if (isHtml || /<[a-z/][\s\S]*?>/i.test(content)) {
     const tmp = document.createElement('div');
     tmp.innerHTML = content;
-    return tmp.textContent || tmp.innerText || '';
+    // Remove style/script/noscript - their textContent is CSS/JS junk
+    tmp.querySelectorAll('style, script, noscript').forEach(el => el.remove());
+    return (tmp.textContent || tmp.innerText || '').replace(/\s+/g, ' ').trim();
   }
   return content;
 }
