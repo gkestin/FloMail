@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Volume2, 
@@ -61,7 +61,17 @@ export function TTSController({ content, id, className = '', compact = true }: T
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const isRestartingRef = useRef(false); // Flag to prevent race condition during restart
   const apiBaseSpeedRef = useRef(1.0); // The speed baked into the TTS API audio
-  
+
+  // Strip HTML tags from content so TTS reads only visible text
+  const cleanContent = useMemo(() => {
+    if (typeof document !== 'undefined' && content.includes('<') && content.includes('>')) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = content;
+      return tmp.textContent || tmp.innerText || content;
+    }
+    return content;
+  }, [content]);
+
   // Check if this button's content is currently being spoken
   useEffect(() => {
     const checkState = () => {
@@ -167,7 +177,7 @@ export function TTSController({ content, id, className = '', compact = true }: T
     
     // If natural voice is disabled, use browser fallback immediately
     if (!settings.useNaturalVoice) {
-      speakWithBrowser(content, settings.speed);
+      speakWithBrowser(cleanContent, settings.speed);
       return;
     }
     
@@ -181,7 +191,7 @@ export function TTSController({ content, id, className = '', compact = true }: T
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          text: content,
+          text: cleanContent,
           voice: settings.voice,
           speed: settings.speed,
         }),
@@ -213,7 +223,7 @@ export function TTSController({ content, id, className = '', compact = true }: T
         setState('idle');
         setShowControls(false);
         // Fallback to browser
-        speakWithBrowser(content, settings.speed);
+        speakWithBrowser(cleanContent, settings.speed);
       };
       
       stopAll(); // Stop any previous audio
@@ -234,7 +244,7 @@ export function TTSController({ content, id, className = '', compact = true }: T
       console.error('TTS error, falling back to browser:', error);
       setState('idle');
       // Fallback to browser speech synthesis
-      speakWithBrowser(content, settings.speed);
+      speakWithBrowser(cleanContent, settings.speed);
     }
   };
   
@@ -242,7 +252,7 @@ export function TTSController({ content, id, className = '', compact = true }: T
     // Abort any ongoing fetch
     abortControllerRef.current?.abort();
     const settings = getTTSSettings();
-    speakWithBrowser(content, settings.speed);
+    speakWithBrowser(cleanContent, settings.speed);
   };
   
   const handleStop = (e?: React.MouseEvent) => {
@@ -293,14 +303,13 @@ export function TTSController({ content, id, className = '', compact = true }: T
       globalCurrentSpeakingId = id;
       globalIsBrowserTTS = true;
       
-      // For browser TTS, cancel current speech and restart with same speed
-      speechSynthesis.cancel();
-      
+      // Increment token BEFORE cancel so the old utterance's onend/onerror is invalidated
       const utteranceToken = ++globalBrowserUtteranceToken;
-      const utterance = new SpeechSynthesisUtterance(content);
+      speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(cleanContent);
       utterance.rate = currentSpeed;
       utterance.pitch = 1.0;
-      
+
       utterance.onend = () => {
         if (utteranceToken !== globalBrowserUtteranceToken) return;
         globalCurrentSpeakingId = null;
@@ -308,7 +317,7 @@ export function TTSController({ content, id, className = '', compact = true }: T
         setState('idle');
         setShowControls(false);
       };
-      
+
       utterance.onerror = () => {
         if (utteranceToken !== globalBrowserUtteranceToken) return;
         globalCurrentSpeakingId = null;
@@ -316,9 +325,9 @@ export function TTSController({ content, id, className = '', compact = true }: T
         setState('idle');
         setShowControls(false);
       };
-      
+
       speechSynthesis.speak(utterance);
-      
+
       // Clear the restarting flag after a short delay (speech should have started by then)
       setTimeout(() => {
         isRestartingRef.current = false;
@@ -364,10 +373,10 @@ export function TTSController({ content, id, className = '', compact = true }: T
       globalCurrentSpeakingId = id;
       globalIsBrowserTTS = true;
 
-      speechSynthesis.cancel();
-
+      // Increment token BEFORE cancel so the old utterance's onend/onerror is invalidated
       const utteranceToken = ++globalBrowserUtteranceToken;
-      const utterance = new SpeechSynthesisUtterance(content);
+      speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(cleanContent);
       utterance.rate = newSpeed;
       utterance.pitch = 1.0;
 
@@ -425,7 +434,7 @@ export function TTSController({ content, id, className = '', compact = true }: T
   const canPause = state === 'playing' || state === 'paused';
   
   return (
-    <div className={`relative inline-flex items-center ${className}`}>
+    <div className={`relative inline-flex items-center ${state === 'idle' ? className : ''}`}>
       <AnimatePresence mode="wait">
         {/* Idle state - just the speaker button */}
         {state === 'idle' && (

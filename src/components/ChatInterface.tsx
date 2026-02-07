@@ -2835,9 +2835,9 @@ export function ChatInterface({
                   {message.content}
                 </p>
                 {/* Copy and speak buttons - always visible on mobile, hover on desktop */}
-                <div className="flex items-center gap-0.5 mt-1.5 opacity-50 sm:opacity-0 sm:group-hover/assistant:opacity-60 transition-opacity">
-                  <CopyButton content={message.content} className="hover:!opacity-100" />
-                  <TTSController content={message.content} id={message.id} className="hover:!opacity-100" />
+                <div className="flex items-center gap-0.5 mt-1.5">
+                  <CopyButton content={message.content} className="opacity-50 sm:opacity-0 sm:group-hover/assistant:opacity-60 hover:!opacity-100 transition-opacity" />
+                  <TTSController content={message.content} id={message.id} className="opacity-50 sm:opacity-0 sm:group-hover/assistant:opacity-60 hover:!opacity-100 transition-opacity" />
                 </div>
               </div>
             )}
