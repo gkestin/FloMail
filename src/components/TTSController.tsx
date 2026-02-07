@@ -336,32 +336,65 @@ export function TTSController({ content, id, className = '', compact = true }: T
   
   const handleSpeedChange = (e: React.MouseEvent, delta: number) => {
     e.stopPropagation();
-    if (!isBrowserTTS && globalCurrentAudio) {
-      // Get the actual current speed from the audio element
-      const actualCurrentSpeed = globalCurrentAudio.playbackRate;
-      const currentIdx = SPEED_OPTIONS.findIndex(s => Math.abs(s - actualCurrentSpeed) < 0.01);
 
-      // Calculate new index with bounds checking
-      let newIdx = currentIdx + delta;
+    // Find current speed index and calculate new speed
+    const refSpeed = (!isBrowserTTS && globalCurrentAudio) ? globalCurrentAudio.playbackRate : currentSpeed;
+    const currentIdx = SPEED_OPTIONS.findIndex(s => Math.abs(s - refSpeed) < 0.01);
+    let newIdx = currentIdx + delta;
 
-      // If we can't find the current speed in options (edge case), find the closest one
-      if (currentIdx === -1) {
-        // Find the closest speed option
-        const closestIdx = SPEED_OPTIONS.reduce((prevIdx, speed, idx) => {
-          const prevDiff = Math.abs(SPEED_OPTIONS[prevIdx] - actualCurrentSpeed);
-          const currDiff = Math.abs(speed - actualCurrentSpeed);
-          return currDiff < prevDiff ? idx : prevIdx;
-        }, 0);
-        newIdx = Math.max(0, Math.min(SPEED_OPTIONS.length - 1, closestIdx + delta));
-      } else {
-        newIdx = Math.max(0, Math.min(SPEED_OPTIONS.length - 1, newIdx));
-      }
-
-      const newSpeed = SPEED_OPTIONS[newIdx];
-      globalCurrentAudio.playbackRate = newSpeed;
-      setCurrentSpeed(newSpeed);
+    if (currentIdx === -1) {
+      const closestIdx = SPEED_OPTIONS.reduce((prevIdx, speed, idx) => {
+        const prevDiff = Math.abs(SPEED_OPTIONS[prevIdx] - refSpeed);
+        const currDiff = Math.abs(speed - refSpeed);
+        return currDiff < prevDiff ? idx : prevIdx;
+      }, 0);
+      newIdx = Math.max(0, Math.min(SPEED_OPTIONS.length - 1, closestIdx + delta));
+    } else {
+      newIdx = Math.max(0, Math.min(SPEED_OPTIONS.length - 1, newIdx));
     }
-    // Browser TTS doesn't support speed change mid-speech
+
+    const newSpeed = SPEED_OPTIONS[newIdx];
+    setCurrentSpeed(newSpeed);
+
+    if (isBrowserTTS) {
+      // Browser TTS: restart at new speed (SpeechSynthesis can't change rate mid-utterance)
+      isRestartingRef.current = true;
+      setState('playing');
+      globalCurrentSpeakingId = id;
+      globalIsBrowserTTS = true;
+
+      speechSynthesis.cancel();
+
+      const utteranceToken = ++globalBrowserUtteranceToken;
+      const utterance = new SpeechSynthesisUtterance(content);
+      utterance.rate = newSpeed;
+      utterance.pitch = 1.0;
+
+      utterance.onend = () => {
+        if (utteranceToken !== globalBrowserUtteranceToken) return;
+        globalCurrentSpeakingId = null;
+        globalIsBrowserTTS = false;
+        setState('idle');
+        setShowControls(false);
+      };
+
+      utterance.onerror = () => {
+        if (utteranceToken !== globalBrowserUtteranceToken) return;
+        globalCurrentSpeakingId = null;
+        globalIsBrowserTTS = false;
+        setState('idle');
+        setShowControls(false);
+      };
+
+      speechSynthesis.speak(utterance);
+
+      setTimeout(() => {
+        isRestartingRef.current = false;
+      }, 200);
+    } else if (globalCurrentAudio) {
+      // Natural voice: change speed in-place (instant)
+      globalCurrentAudio.playbackRate = newSpeed;
+    }
   };
   
   const handleMainButtonClick = (e: React.MouseEvent) => {
@@ -385,7 +418,7 @@ export function TTSController({ content, id, className = '', compact = true }: T
   
   // Determine what controls are available
   const canSeek = !isBrowserTTS && state !== 'idle' && state !== 'loading';
-  const canChangeSpeed = !isBrowserTTS && state !== 'idle' && state !== 'loading';
+  const canChangeSpeed = state !== 'idle' && state !== 'loading';
   const canPause = state === 'playing' || state === 'paused';
   
   return (
@@ -528,19 +561,10 @@ export function TTSController({ content, id, className = '', compact = true }: T
               </>
             )}
             
-            {/* Browser TTS indicator with speed (can't change mid-speech, but shows what it's set to) */}
+            {/* Browser TTS indicator badge */}
             {isBrowserTTS && (
-              <div 
-                className="flex items-center gap-1 px-1.5"
-                title={`System voice at ${currentSpeed}x speed (set in settings)`}
-              >
-                <Zap className="w-3 h-3 opacity-60" style={{ color: 'var(--text-muted)' }} />
-                <span 
-                  className="text-xs font-medium opacity-60"
-                  style={{ color: 'var(--text-secondary)' }}
-                >
-                  {currentSpeed}x
-                </span>
+              <div className="flex items-center px-1" title="System voice">
+                <Zap className="w-3 h-3 opacity-50" style={{ color: 'var(--text-muted)' }} />
               </div>
             )}
           </motion.div>

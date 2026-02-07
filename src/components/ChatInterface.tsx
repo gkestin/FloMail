@@ -295,7 +295,6 @@ export function ChatInterface({
   const [isSending, setIsSending] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [isArchiving, setIsArchiving] = useState(false);
   const [isSnoozing, setIsSnoozing] = useState(false);
   const [currentDraft, setCurrentDraft] = useState<EmailDraft | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
@@ -976,34 +975,26 @@ export function ChatInterface({
   }, [messages, isLoadingChat, persistChat, thread]);
 
   // Archive with notification - used by both agent and direct button press
-  const archiveWithNotification = useCallback(async () => {
-    if (isArchiving) return; // Prevent double-clicks
+  // Now optimistic: adds confirmation message and fires archive immediately (no await)
+  const archiveWithNotification = useCallback(() => {
+    const archiveSubject = thread?.subject || 'Email';
+    const lastMsg = thread?.messages[thread.messages.length - 1];
 
-    setIsArchiving(true);
-    try {
-      const archiveSubject = thread?.subject || 'Email';
-      const lastMsg = thread?.messages[thread.messages.length - 1];
-      const archiveSnippet = lastMsg?.snippet || '';
-      const archivePreview = lastMsg?.body || '';
+    // Add confirmation message (will be persisted in this thread's chat history)
+    setMessages(prev => [...prev, {
+      id: `archive-${Date.now()}`,
+      role: 'assistant' as const,
+      content: `Archived: "${archiveSubject}"`,
+      timestamp: new Date(),
+      isSystemMessage: true,
+      systemType: 'archived' as const,
+      systemSnippet: lastMsg?.snippet || '',
+      systemPreview: lastMsg?.body || '',
+    }]);
 
-      // Call the archive function
-      await onArchive?.();
-
-      // Show confirmation message after successful archive
-      setMessages(prev => [...prev, {
-        id: `archive-${Date.now()}`,
-        role: 'assistant' as const,
-        content: `Archived: "${archiveSubject}"`,
-        timestamp: new Date(),
-        isSystemMessage: true,
-        systemType: 'archived' as const,
-        systemSnippet: archiveSnippet,
-        systemPreview: archivePreview,
-      }]);
-    } finally {
-      setIsArchiving(false);
-    }
-  }, [thread, onArchive, isArchiving]);
+    // Fire archive (optimistic - navigates away immediately)
+    onArchive?.();
+  }, [thread, onArchive]);
 
   // Register archive handler with parent so top bar button can use it
   useEffect(() => {
@@ -1158,7 +1149,7 @@ export function ChatInterface({
     const draftAtStart = currentDraft;
 
     // Create a placeholder for the streaming assistant message
-    const assistantMessageId = (Date.now() + 1).toString();
+    let assistantMessageId = (Date.now() + 1).toString();
     setStreamingMessageId(assistantMessageId);
 
     try {
@@ -1235,20 +1226,23 @@ export function ChatInterface({
             
             switch (event.type) {
               case 'status':
-                // Update loading status message
+                // Update loading status message and re-enable loading indicator
+                // (it may have been turned off when text started streaming)
                 setLoadingStatus(event.data.message);
+                setIsLoading(true);
                 break;
 
-              case 'text':
+              case 'text': {
                 // Stream text content
                 streamedContent = event.data.fullContent;
-                
+                const textMsgId = assistantMessageId;
+
                 // Add or update the message
                 if (!hasAddedMessage) {
                   hasAddedMessage = true;
                   setIsLoading(false); // Hide loading indicator once text starts
                   const newMessage: UIMessage = {
-                    id: assistantMessageId,
+                    id: textMsgId,
                     role: 'assistant',
                     content: streamedContent,
                     timestamp: new Date(),
@@ -1257,20 +1251,22 @@ export function ChatInterface({
                   setMessages(prev => [...prev, newMessage]);
                 } else {
                   // Update existing message with new content
-                  setMessages(prev => prev.map(m => 
-                    m.id === assistantMessageId 
+                  setMessages(prev => prev.map(m =>
+                    m.id === textMsgId
                       ? { ...m, content: streamedContent }
                       : m
                   ));
                 }
                 break;
+              }
 
               case 'tool_start':
-                // Tool call started - already showing status via 'status' event
-                // Keep loading indicator visible during tool execution
+                // Re-enable loading indicator during tool execution
+                // (may have been turned off when text started streaming)
+                setIsLoading(true);
                 break;
 
-              case 'tool_args':
+              case 'tool_args': {
                 // Streaming tool arguments - update draft preview
                 if (event.data.name === 'prepare_draft' && event.data.partial) {
                   const partial = event.data.partial;
@@ -1281,13 +1277,14 @@ export function ChatInterface({
                     type: partial.type || 'reply',
                     threadId: thread?.id,
                   };
-                  
+
+                  const argsMsgId = assistantMessageId;
                   // Show/update the streaming draft in the message
                   if (!hasAddedMessage) {
                     hasAddedMessage = true;
                     setIsLoading(false);
                     const newMessage: UIMessage = {
-                      id: assistantMessageId,
+                      id: argsMsgId,
                       role: 'assistant',
                       content: "Here's a draft for you:",
                       timestamp: new Date(),
@@ -1296,16 +1293,17 @@ export function ChatInterface({
                     };
                     setMessages(prev => [...prev, newMessage]);
                   } else {
-                    setMessages(prev => prev.map(m => 
-                      m.id === assistantMessageId 
+                    setMessages(prev => prev.map(m =>
+                      m.id === argsMsgId
                         ? { ...m, draft: streamingDraft, content: m.content || "Here's a draft for you:" }
                         : m
                     ));
                   }
                 }
                 break;
+              }
 
-              case 'tool_done':
+              case 'tool_done': {
                 // Tool call completed with full arguments
                 const completedTool: ToolCall = {
                   id: event.data.id || `tool_${Date.now()}`,
@@ -1313,10 +1311,10 @@ export function ChatInterface({
                   arguments: event.data.arguments,
                 };
                 toolCalls.push(completedTool);
-                
+
                 // Handle tool calls (pass existing draft to preserve gmailDraftId)
                 handleToolCalls([completedTool], draftAtStart);
-                
+
                 // If it's a draft, build the full draft
                 if (event.data.name === 'prepare_draft') {
                   const newDraft = buildDraftFromToolCall(event.data.arguments, thread, user?.email);
@@ -1326,13 +1324,14 @@ export function ChatInterface({
                     : newDraft;
                   setCurrentDraft(finalDraft);
                   onDraftCreated?.(finalDraft);
-                  
+
+                  const doneMsgId = assistantMessageId;
                   // Update message with final draft
                   if (!hasAddedMessage) {
                     hasAddedMessage = true;
                     setIsLoading(false);
                     const newMessage: UIMessage = {
-                      id: assistantMessageId,
+                      id: doneMsgId,
                       role: 'assistant',
                       content: "Here's a draft for you:",
                       timestamp: new Date(),
@@ -1341,11 +1340,11 @@ export function ChatInterface({
                     };
                     setMessages(prev => [...prev, newMessage]);
                   } else {
-                    setMessages(prev => prev.map(m => 
-                      m.id === assistantMessageId 
-                        ? { 
-                            ...m, 
-                            draft: finalDraft, 
+                    setMessages(prev => prev.map(m =>
+                      m.id === doneMsgId
+                        ? {
+                            ...m,
+                            draft: finalDraft,
                             toolCalls: toolCalls,
                             isStreaming: false,
                             content: m.content || "Here's a draft for you:",
@@ -1355,8 +1354,9 @@ export function ChatInterface({
                   }
                 }
                 break;
+              }
 
-              case 'search_result':
+              case 'search_result': {
                 // Search completed - add as a simple left-aligned chat message (not centered system message)
                 const searchResult: SearchResult = {
                   type: event.data.type,
@@ -1364,6 +1364,18 @@ export function ChatInterface({
                   success: event.data.success,
                   resultPreview: event.data.resultPreview,
                 };
+
+                // If an assistant message was already added (text before search),
+                // finalize it so subsequent content appears AFTER the search result
+                if (hasAddedMessage) {
+                  const prevMsgId = assistantMessageId;
+                  setMessages(prev => prev.map(m =>
+                    m.id === prevMsgId ? { ...m, isStreaming: false } : m
+                  ));
+                  // Create new message ID for any content after this search
+                  assistantMessageId = `post-search-${Date.now()}`;
+                  hasAddedMessage = false;
+                }
 
                 // Add a simple message showing the completed search (left-aligned, part of chat flow)
                 const searchMessageId = `search-${Date.now()}`;
@@ -1377,23 +1389,24 @@ export function ChatInterface({
                 setMessages(prev => [...prev, searchMessage]);
 
                 // Keep loading indicator visible - server will continue processing
-                // and will send more events (either more searches or final response)
-                // The loading indicator will be hidden when text starts or done event arrives
+                setIsLoading(true);
                 setLoadingStatus('Analyzing results...');
                 break;
+              }
 
-              case 'done':
+              case 'done': {
                 // Stream completed
-                setMessages(prev => prev.map(m => 
-                  m.id === assistantMessageId 
+                const finalMsgId = assistantMessageId;
+                setMessages(prev => prev.map(m =>
+                  m.id === finalMsgId
                     ? { ...m, isStreaming: false, toolCalls: toolCalls.length > 0 ? toolCalls : undefined }
                     : m
                 ));
-                
+
                 // If no message was added yet (edge case), add an empty one
                 if (!hasAddedMessage && toolCalls.length === 0) {
                   const newMessage: UIMessage = {
-                    id: assistantMessageId,
+                    id: finalMsgId,
                     role: 'assistant',
                     content: "I'm here to help! You can ask me to summarize this email, draft a reply, archive it, or move to the next email.",
                     timestamp: new Date(),
@@ -1401,6 +1414,7 @@ export function ChatInterface({
                   setMessages(prev => [...prev, newMessage]);
                 }
                 break;
+              }
 
               case 'error':
                 throw new Error(event.data.message);
@@ -2395,7 +2409,6 @@ export function ChatInterface({
                   whileHover={{ scale: 1.03 }}
                   whileTap={{ scale: 0.97 }}
                   onClick={(e) => animateButton(e, () => archiveWithNotification())}
-                  disabled={isArchiving}
                   className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-medium transition-all disabled:opacity-50"
                   style={{
                     background: 'rgba(59, 130, 246, 0.1)',
@@ -2403,11 +2416,7 @@ export function ChatInterface({
                     border: '1px solid rgba(59, 130, 246, 0.2)'
                   }}
                 >
-                  {isArchiving ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Archive className="w-4 h-4" />
-                  )}
+                  <Archive className="w-4 h-4" />
                   Archive
                 </motion.button>
 
@@ -3025,53 +3034,6 @@ export function ChatInterface({
         </div>{/* End inner padding wrapper */}
       </div>
 
-      {/* Undo Send Banner - styled like inbox archive undo */}
-      <AnimatePresence>
-        {pendingSend && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 10 }}
-            transition={{ duration: 0.2, ease: 'easeOut' }}
-            className="px-3 pb-2 pt-1"
-            style={{ 
-              background: 'linear-gradient(to top, var(--bg-primary) 70%, transparent)',
-            }}
-          >
-            <motion.div 
-              className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl"
-              style={{ 
-                background: 'var(--bg-elevated)', 
-                border: '1px solid var(--border-subtle)',
-                boxShadow: '0 2px 12px rgba(0,0,0,0.15)',
-              }}
-            >
-              {/* Left side: Message */}
-              <div className="flex items-center gap-2 min-w-0">
-                <Send className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--text-muted)' }} />
-                <span className="text-sm truncate" style={{ color: 'var(--text-secondary)' }}>
-                  Sending to {pendingSend.draft.to[0] || 'recipient'}...
-                </span>
-              </div>
-              
-              {/* Right side: Undo button */}
-              <motion.button
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
-                onClick={handleUndoSend}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors"
-                style={{ 
-                  background: 'var(--bg-interactive)',
-                  color: 'var(--text-accent-blue)'
-                }}
-              >
-                <span className="text-sm font-medium">Undo</span>
-              </motion.button>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* Input Area */}
       <div className="p-4" style={{ background: 'var(--bg-sidebar)', borderTop: '1px solid var(--border-subtle)' }}>
         {/* Recording state */}
@@ -3156,15 +3118,11 @@ export function ChatInterface({
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={(e) => animateButton(e, () => archiveWithNotification())}
-                disabled={!onArchive || isArchiving}
+                disabled={!onArchive}
                 className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 transition-colors disabled:opacity-50"
                 style={{ color: 'rgb(147, 197, 253)' }}
               >
-                {isArchiving ? (
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                ) : (
-                  <Archive className="w-5 h-5" />
-                )}
+                <Archive className="w-5 h-5" />
                 <span className="text-sm font-medium">Archive</span>
               </motion.button>
 

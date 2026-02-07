@@ -64,7 +64,11 @@ const FOLDER_LABELS: Record<MailFolder, string> = {
 export function FloMailApp() {
   const { user, loading, signOut, getAccessToken } = useAuth();
   
-  const [currentView, setCurrentView] = useState<View>('inbox');
+  const [currentView, setCurrentView] = useState<View>(() => {
+    if (typeof window === 'undefined') return 'inbox';
+    const params = new URLSearchParams(window.location.search);
+    return params.get('thread') ? 'chat' : 'inbox';
+  });
   const [selectedThread, setSelectedThread] = useState<EmailThread | null>(null);
   const [currentDraft, setCurrentDraft] = useState<EmailDraft | null>(null);
   const [isTransitioning, setIsTransitioning] = useState(false);
@@ -78,8 +82,8 @@ export function FloMailApp() {
   const [currentMailFolder, setCurrentMailFolder] = useState<MailFolder>('inbox');
   const [searchQuery, setSearchQuery] = useState(''); // Search query for inbox
   const [snoozePickerOpen, setSnoozePickerOpen] = useState(false);
-  const [snoozeLoading, setSnoozeLoading] = useState(false);
-  const [isArchiving, setIsArchiving] = useState(false); // For archive button spinner
+  // snoozeLoading removed - snooze is now optimistic
+  const [errorToast, setErrorToast] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0); // Increment to trigger InboxList refresh
   const [urlInitialized, setUrlInitialized] = useState(false);
 
@@ -448,6 +452,14 @@ export function FloMailApp() {
     return () => clearInterval(interval);
   }, [user, getAccessToken]);
 
+  // Auto-clear error toast after 5 seconds
+  useEffect(() => {
+    if (errorToast) {
+      const timer = setTimeout(() => setErrorToast(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [errorToast]);
+
   const handleSelectThread = useCallback(async (thread: EmailThread, folder: MailFolder = 'inbox', threadsInFolder: EmailThread[] = []) => {
     // Set navigation direction (always forward from inbox)
     setNavigationDirection('forward');
@@ -687,101 +699,88 @@ export function FloMailApp() {
 
   const handleArchive = useCallback(async () => {
     if (!selectedThread) return;
-    
+
+    const threadToArchive = selectedThread;
+
     try {
       const token = await getAccessToken();
       if (!token) return;
-      
-      await archiveThread(token, selectedThread.id);
-      
-      // Update cache: remove from current folder, invalidate archive
-      emailCache.removeThreadFromFolder(currentMailFolder, selectedThread.id);
+
+      // OPTIMISTIC: Update UI immediately before API call
+      emailCache.removeThreadFromFolder(currentMailFolder, threadToArchive.id);
       emailCache.invalidateFolder('all');
-      
-      // Use folder-specific threads for navigation
+
       const navThreads = folderThreads.length > 0 ? folderThreads : allThreads;
-      
-      // Get the next thread BEFORE removing from list
-      const currentIndex = navThreads.findIndex(t => t.id === selectedThread.id);
-      const remainingThreads = navThreads.filter((t) => t.id !== selectedThread.id);
-      
-      // Remove from local lists
-      setAllThreads(prev => prev.filter((t) => t.id !== selectedThread.id));
+      const currentIndex = navThreads.findIndex(t => t.id === threadToArchive.id);
+      const remainingThreads = navThreads.filter((t) => t.id !== threadToArchive.id);
+
+      setAllThreads(prev => prev.filter((t) => t.id !== threadToArchive.id));
       setFolderThreads(remainingThreads);
-      
-      // Navigate to next thread (or previous if at end, or inbox if none left)
+
       if (remainingThreads.length === 0) {
         setSelectedThread(null);
         setCurrentDraft(null);
         setCurrentView('inbox');
       } else {
-        // Go to the thread that's now at the same index (which was the next one)
         const nextThread = remainingThreads[currentIndex] || remainingThreads[currentIndex - 1] || remainingThreads[0];
         setCurrentDraft(null);
         currentThreadIndexRef.current = remainingThreads.findIndex(t => t.id === nextThread.id);
         setCurrentView('chat');
-        
-        // Fetch full thread data (remainingThreads might only have metadata)
-        try {
-          const fullThread = await fetchThread(token, nextThread.id);
-          if (fullThread) {
-            // Store unread status for auto-expand
-            const wasUnread = !fullThread.isRead;
 
-            // Set thread FIRST while still unread (so ChatInterface can see it and auto-expand)
-            setSelectedThread(fullThread);
-
-            // Then mark as read if it was unread
-            if (wasUnread) {
-              await markAsRead(token, fullThread.id);
-              // Invalidate cache for this thread AND update folder cache
-              emailCache.invalidateThread(fullThread.id);
-              // Update the cached folder data to reflect the read status
-              const folderData = emailCache.getStaleFolderData(currentMailFolder);
-              if (folderData && folderData.threads) {
-                const updatedThreads = folderData.threads.map(t =>
-                  t.id === fullThread.id ? { ...t, isRead: true } : t
-                );
-                emailCache.setFolderData(currentMailFolder, {
-                  ...folderData,
-                  threads: updatedThreads
-                });
-              }
-              // Update all thread lists to show as read
-              setAllThreads(prev => prev.map((t: EmailThread) =>
-                t.id === fullThread.id ? { ...t, isRead: true } : t
-              ));
-              setFolderThreads(prev => prev.map((t: EmailThread) =>
-                t.id === fullThread.id ? { ...t, isRead: true } : t
-              ));
-              // Update selectedThread to reflect read status
-              setSelectedThread(prev => prev ? { ...prev, isRead: true } : prev);
-            }
-          } else {
-            setSelectedThread(nextThread); // Fallback to cached
+        // Try cached thread for instant transition
+        const cachedThread = getCachedThread(nextThread.id);
+        if (cachedThread) {
+          setSelectedThread(cachedThread);
+          if (!cachedThread.isRead) {
+            markAsRead(token, cachedThread.id).catch(() => {});
+            setAllThreads(prev => prev.map((t: EmailThread) =>
+              t.id === cachedThread.id ? { ...t, isRead: true } : t
+            ));
+            setFolderThreads(prev => prev.map((t: EmailThread) =>
+              t.id === cachedThread.id ? { ...t, isRead: true } : t
+            ));
+            setSelectedThread(prev => prev ? { ...prev, isRead: true } : prev);
           }
-        } catch (e) {
-          console.error('Failed to fetch full thread after archive:', e);
-          setSelectedThread(nextThread); // Fallback to cached
+        } else {
+          setSelectedThread(nextThread);
+          fetchThread(token, nextThread.id).then(fullThread => {
+            if (fullThread) {
+              const wasUnread = !fullThread.isRead;
+              setSelectedThread(fullThread);
+              if (wasUnread) {
+                markAsRead(token, fullThread.id).catch(() => {});
+                emailCache.invalidateThread(fullThread.id);
+                setAllThreads(prev => prev.map((t: EmailThread) =>
+                  t.id === fullThread.id ? { ...t, isRead: true } : t
+                ));
+                setFolderThreads(prev => prev.map((t: EmailThread) =>
+                  t.id === fullThread.id ? { ...t, isRead: true } : t
+                ));
+                setSelectedThread(prev => prev ? { ...prev, isRead: true } : prev);
+              }
+            }
+          }).catch(e => {
+            console.error('Failed to fetch full thread after archive:', e);
+          });
         }
       }
+
+      // BACKGROUND: Actually archive (fire-and-forget with error notification)
+      archiveThread(token, threadToArchive.id).catch(err => {
+        console.error('Archive failed:', err);
+        setErrorToast('Failed to archive. The email may still be in your inbox.');
+      });
     } catch (err) {
       console.error('Failed to archive:', err);
     }
-  }, [selectedThread, getAccessToken, currentMailFolder, folderThreads, allThreads]);
+  }, [selectedThread, getAccessToken, currentMailFolder, folderThreads, allThreads, getCachedThread]);
 
   // Handler for top bar archive button - uses registered handler from ChatInterface for notification
-  const handleTopBarArchive = useCallback(async () => {
-    setIsArchiving(true);
-    try {
-      if (archiveHandlerRef.current) {
-        await archiveHandlerRef.current();
-      } else {
-        // Fallback if handler not registered
-        await handleArchive();
-      }
-    } finally {
-      setIsArchiving(false);
+  const handleTopBarArchive = useCallback(() => {
+    if (archiveHandlerRef.current) {
+      archiveHandlerRef.current();
+    } else {
+      handleArchive();
     }
   }, [handleArchive]);
 
@@ -1060,111 +1059,104 @@ export function FloMailApp() {
   // Handler for snooze from the draft card page header
   const handleSnooze = useCallback(async (option: SnoozeOption, customDate?: Date) => {
     if (!selectedThread || !user?.uid) return;
-    
-    setSnoozeLoading(true);
-    
+
+    const threadToSnooze = selectedThread;
+
+    // OPTIMISTIC: Close picker and navigate immediately
+    setSnoozePickerOpen(false);
+
+    // Save last snooze option for "repeat" feature
+    const { saveLastSnooze } = await import('./SnoozePicker');
+    saveLastSnooze(option, customDate);
+
+    // Invalidate caches immediately
+    emailCache.invalidateFolder('inbox');
+    emailCache.invalidateFolder('snoozed');
+
+    // Remove from local lists and navigate
+    setAllThreads(prev => prev.filter(t => t.id !== threadToSnooze.id));
+    setFolderThreads(prev => prev.filter(t => t.id !== threadToSnooze.id));
+    await handleNextEmail();
+
+    // BACKGROUND: API call and Firestore save
     try {
       const token = await getAccessToken();
       if (!token) return;
 
-      // Save last snooze option for "repeat" feature
-      const { saveLastSnooze } = await import('./SnoozePicker');
-      saveLastSnooze(option, customDate);
-
-      // Get thread info for the snooze record
-      const lastMessage = selectedThread.messages[selectedThread.messages.length - 1];
+      const lastMessage = threadToSnooze.messages[threadToSnooze.messages.length - 1];
       const emailInfo = {
-        subject: selectedThread.subject || '(No subject)',
-        snippet: selectedThread.snippet || '',
+        subject: threadToSnooze.subject || '(No subject)',
+        snippet: threadToSnooze.snippet || '',
         senderName: lastMessage?.from?.name || lastMessage?.from?.email || 'Unknown',
       };
 
-      // Call the snooze API (handles Gmail labels)
       const response = await fetch('/api/snooze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'snooze',
-          threadId: selectedThread.id,
+          threadId: threadToSnooze.id,
           accessToken: token,
           snoozeOption: option,
           customDate: customDate?.toISOString(),
         }),
       });
 
-      if (!response.ok) {
-        throw new Error('Failed to snooze');
-      }
+      if (!response.ok) throw new Error('Failed to snooze');
 
       const data = await response.json();
-      
-      // Save to Firestore client-side (where auth context is available)
       const { saveSnoozedEmail } = await import('@/lib/snooze-persistence');
-      await saveSnoozedEmail(user.uid, selectedThread.id, new Date(data.snoozeUntil), emailInfo);
-      
-      // Invalidate caches
-      emailCache.invalidateFolder('inbox');
-      emailCache.invalidateFolder('snoozed');
-      
-      // Navigate to next thread BEFORE closing picker
-      // so we don't see the current thread briefly
-      await handleNextEmail();
-      
-      // Now close picker after navigation is complete
-      setSnoozePickerOpen(false);
+      await saveSnoozedEmail(user.uid, threadToSnooze.id, new Date(data.snoozeUntil), emailInfo);
     } catch (err) {
-      console.error('Failed to snooze:', err);
-    } finally {
-      setSnoozeLoading(false);
+      console.error('Snooze failed:', err);
+      setErrorToast('Failed to snooze. The email may still be in your inbox.');
     }
   }, [selectedThread, user, getAccessToken, handleNextEmail]);
 
   // Handler for snooze from chat AI - takes a Date directly
   const handleSnoozeFromChat = useCallback(async (snoozeUntil: Date) => {
     if (!selectedThread || !user?.uid) return;
-    
+
+    const threadToSnooze = selectedThread;
+
+    // OPTIMISTIC: Invalidate caches and navigate immediately
+    emailCache.invalidateFolder('inbox');
+    emailCache.invalidateFolder('snoozed');
+    setAllThreads(prev => prev.filter(t => t.id !== threadToSnooze.id));
+    setFolderThreads(prev => prev.filter(t => t.id !== threadToSnooze.id));
+    await handleNextEmail();
+
+    // BACKGROUND: API call and Firestore save
     try {
       const token = await getAccessToken();
       if (!token) throw new Error('Not authenticated');
 
-      // Get thread info for the snooze record
-      const lastMessage = selectedThread.messages[selectedThread.messages.length - 1];
+      const lastMessage = threadToSnooze.messages[threadToSnooze.messages.length - 1];
       const emailInfo = {
-        subject: selectedThread.subject || '(No subject)',
-        snippet: selectedThread.snippet || '',
+        subject: threadToSnooze.subject || '(No subject)',
+        snippet: threadToSnooze.snippet || '',
         senderName: lastMessage?.from?.name || lastMessage?.from?.email || 'Unknown',
       };
 
-      // Call the snooze API
       const response = await fetch('/api/snooze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'snooze',
-          threadId: selectedThread.id,
+          threadId: threadToSnooze.id,
           accessToken: token,
           snoozeOption: 'custom',
           customDate: snoozeUntil.toISOString(),
         }),
       });
 
-      if (!response.ok) {
-        throw new Error('Failed to snooze');
-      }
+      if (!response.ok) throw new Error('Failed to snooze');
 
-      // Save to Firestore client-side
       const { saveSnoozedEmail } = await import('@/lib/snooze-persistence');
-      await saveSnoozedEmail(user.uid, selectedThread.id, snoozeUntil, emailInfo);
-      
-      // Invalidate caches
-      emailCache.invalidateFolder('inbox');
-      emailCache.invalidateFolder('snoozed');
-      
-      // Navigate to next email after snooze
-      await handleNextEmail();
+      await saveSnoozedEmail(user.uid, threadToSnooze.id, snoozeUntil, emailInfo);
     } catch (err) {
-      console.error('Failed to snooze from chat:', err);
-      throw err;
+      console.error('Snooze from chat failed:', err);
+      setErrorToast('Failed to snooze. The email may still be in your inbox.');
     }
   }, [selectedThread, user, getAccessToken, handleNextEmail]);
 
@@ -1771,16 +1763,11 @@ export function FloMailApp() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={handleTopBarArchive}
-                disabled={isArchiving}
-                className="p-2 rounded-lg transition-colors hover:text-blue-400 disabled:opacity-50"
+                className="p-2 rounded-lg transition-colors hover:text-blue-400"
                 style={{ color: 'var(--text-muted)' }}
                 title="Archive"
               >
-                {isArchiving ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Archive className="w-4 h-4" />
-                )}
+                <Archive className="w-4 h-4" />
               </motion.button>
             </>
           )}
@@ -1842,6 +1829,12 @@ export function FloMailApp() {
               onRegisterLoadMore={handleRegisterLoadMore}
               onThreadsUpdate={handleThreadsUpdate}
             />
+          </div>
+        )}
+
+        {currentView === 'chat' && !selectedThread && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
           </div>
         )}
 
@@ -1923,14 +1916,26 @@ export function FloMailApp() {
       {/* Snooze Picker Modal */}
       <SnoozePicker
         isOpen={snoozePickerOpen}
-        onClose={() => {
-          if (!snoozeLoading) {
-            setSnoozePickerOpen(false);
-          }
-        }}
+        onClose={() => setSnoozePickerOpen(false)}
         onSelect={handleSnooze}
-        isLoading={snoozeLoading}
+        isLoading={false}
       />
+
+      {/* Error toast for failed background operations */}
+      <AnimatePresence>
+        {errorToast && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            transition={{ duration: 0.2 }}
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl shadow-lg"
+            style={{ background: 'rgba(239, 68, 68, 0.9)', color: 'white' }}
+          >
+            <span className="text-sm font-medium">{errorToast}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
