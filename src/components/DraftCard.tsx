@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Send, X, Loader2, Reply, Forward, Mail, Plus, Paperclip, Trash2, AlertTriangle, ArrowLeftRight, Save, FileIcon as LucideFile, ImageIcon as LucideImage, FileText as LucideFileText, Film, Music, FileArchive, FileCode, FileSpreadsheet, Presentation, ChevronDown, Copy, Check } from 'lucide-react';
 import { TTSController } from './TTSController';
 import { EmailDraft, DraftAttachment, EmailDraftType, EmailThread, EmailMessage } from '@/types';
-import { buildReplyQuote } from '@/lib/agent-tools';
+import { buildReplyQuote, computeReplyAllRecipients } from '@/lib/agent-tools';
 import { formatFileSize, getFileIcon as getFileIconType } from '@/lib/email-parsing';
 import { ProfessionalEmailRenderer } from './ProfessionalEmailRenderer';
 import { stripBasicHtml } from './EmailHtmlViewer';
@@ -198,9 +198,11 @@ function ThreadMessagePreview({ message, isLast }: { message: EmailMessage; isLa
 interface DraftCardProps {
   draft: EmailDraft;
   thread?: EmailThread; // For building quoted content when switching to reply
+  userEmail?: string; // Current user's email for Reply All computation
   onSend: (updatedDraft: EmailDraft) => void;
   onSaveDraft?: (updatedDraft: EmailDraft) => Promise<EmailDraft | void>; // Save as Gmail draft
   onDiscard: (draft: EmailDraft) => void; // Discard/delete the draft (also deletes from Gmail if saved)
+  onDraftChange?: (updatedDraft: EmailDraft) => void; // Called when user edits draft fields (debounced)
   isSending?: boolean;
   isSaving?: boolean;
   isDeleting?: boolean; // Draft is being deleted
@@ -228,7 +230,7 @@ function getFileIcon(mimeType: string, filename?: string): React.ElementType {
   return FILE_ICON_MAP[iconType] || LucideFile;
 }
 
-export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSending, isSaving, isDeleting, isStreaming }: DraftCardProps) {
+export function DraftCard({ draft, thread, userEmail, onSend, onSaveDraft, onDiscard, onDraftChange, isSending, isSaving, isDeleting, isStreaming }: DraftCardProps) {
   const [editedDraft, setEditedDraft] = useState<EmailDraft>(draft);
   
   // Track if user has made local edits (to prevent overwriting with stale draft prop)
@@ -255,6 +257,15 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
   const [showCcBcc, setShowCcBcc] = useState(
     (draft.cc && draft.cc.length > 0) || (draft.bcc && draft.bcc.length > 0)
   );
+
+  // Auto-expand CC/BCC fields when they have recipients
+  // This handles cases where the AI creates a draft with CC/BCC or when draft prop updates
+  useEffect(() => {
+    const hasCcRecipients = (editedDraft.cc && editedDraft.cc.length > 0) || (editedDraft.bcc && editedDraft.bcc.length > 0);
+    if (hasCcRecipients) {
+      setShowCcBcc(true);
+    }
+  }, [editedDraft.cc, editedDraft.bcc]);
   const [showQuoted, setShowQuoted] = useState(false);
   
   // Responsive button labels - progressively hide as space shrinks
@@ -351,6 +362,27 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
     // The user's local edits in editedDraft take precedence
     wasStreamingRef.current = isStreaming;
   }, [draft, isStreaming]);
+
+  // Sync edits back to parent via onDraftChange (debounced)
+  const draftChangeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  useEffect(() => {
+    // Only sync if user has made edits and we have a callback
+    if (!hasUserEditsRef.current || !onDraftChange || isStreaming) return;
+
+    if (draftChangeTimeoutRef.current) {
+      clearTimeout(draftChangeTimeoutRef.current);
+    }
+
+    draftChangeTimeoutRef.current = setTimeout(() => {
+      onDraftChange(editedDraft);
+    }, 150); // Debounce 150ms - fast enough to sync before user switches to chat
+
+    return () => {
+      if (draftChangeTimeoutRef.current) {
+        clearTimeout(draftChangeTimeoutRef.current);
+      }
+    };
+  }, [editedDraft, onDraftChange, isStreaming]);
 
   // Handle file selection
   const handleFileSelect = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
@@ -468,19 +500,27 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
       if (!quotedContent && thread) {
         quotedContent = buildReplyQuote(thread);
       }
-      
+
       // Remove auto-attached (original) attachments - keep only user-added ones
       const userAddedAttachments = prev.attachments?.filter(a => !a.isFromOriginal);
-      
-      // Get the original sender's email to reply to
+
+      // Use Reply All (Gmail default) - include all original To/CC recipients
       const lastMessage = thread?.messages[thread.messages.length - 1];
-      const replyTo = lastMessage?.from.email ? [lastMessage.from.email] : prev.to;
-      
+      let replyTo = lastMessage?.from.email ? [lastMessage.from.email] : prev.to;
+      let replyCc: string[] | undefined = undefined;
+
+      if (thread && lastMessage) {
+        const replyAll = computeReplyAllRecipients(thread, lastMessage, userEmail);
+        replyTo = replyAll.to;
+        replyCc = replyAll.cc.length > 0 ? replyAll.cc : undefined;
+      }
+
       return {
         ...prev,
         type: 'reply',
         subject: prev.subject.startsWith('Re: ') ? prev.subject : `Re: ${prev.subject.replace(/^Fwd:\s*/i, '')}`,
         to: replyTo,
+        cc: replyCc,
         quotedContent,
         attachments: userAddedAttachments?.length ? userAddedAttachments : undefined,
       };
@@ -544,9 +584,10 @@ export function DraftCard({ draft, thread, onSend, onSaveDraft, onDiscard, isSen
               editedDraft.type === 'forward' ? 'text-orange-300' :
               'text-slate-300'
             }`}>
-              {editedDraft.type === 'reply' ? 'Reply' : 
-               editedDraft.type === 'forward' ? 'Forward' : 
-               'New Email'}
+              {editedDraft.type === 'reply'
+                ? (editedDraft.to.length > 1 || (editedDraft.cc && editedDraft.cc.length > 0) ? 'Reply All' : 'Reply')
+                : editedDraft.type === 'forward' ? 'Forward'
+                : 'New Email'}
             </span>
             {editedDraft.type === 'new' && (
               <span className="text-xs text-amber-400/70 ml-2">(not a reply)</span>

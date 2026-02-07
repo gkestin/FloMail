@@ -1025,7 +1025,7 @@ export function ChatInterface({
             return m;
           }));
 
-          const newDraft = buildDraftFromToolCall(toolCall.arguments, thread);
+          const newDraft = buildDraftFromToolCall(toolCall.arguments, thread, user?.email);
           // Preserve gmailDraftId if we're modifying an existing draft
           const draft = existingDraft?.gmailDraftId
             ? { ...newDraft, gmailDraftId: existingDraft.gmailDraftId }
@@ -1319,9 +1319,9 @@ export function ChatInterface({
                 
                 // If it's a draft, build the full draft
                 if (event.data.name === 'prepare_draft') {
-                  const newDraft = buildDraftFromToolCall(event.data.arguments, thread);
+                  const newDraft = buildDraftFromToolCall(event.data.arguments, thread, user?.email);
                   // Preserve gmailDraftId if we're modifying an existing draft
-                  const finalDraft = draftAtStart?.gmailDraftId 
+                  const finalDraft = draftAtStart?.gmailDraftId
                     ? { ...newDraft, gmailDraftId: draftAtStart.gmailDraftId }
                     : newDraft;
                   setCurrentDraft(finalDraft);
@@ -2005,6 +2005,17 @@ export function ChatInterface({
     ));
   }, []);
 
+  // Handle draft changes from DraftCard (user edits synced back)
+  const handleDraftChange = useCallback((updatedDraft: EmailDraft) => {
+    setCurrentDraft(updatedDraft);
+    // Also update the draft in the message that owns it
+    setMessages(prev => prev.map(m =>
+      m.draft && !m.draftCancelled && !m.draftSaved && !m.draftSent
+        ? { ...m, draft: updatedDraft }
+        : m
+    ));
+  }, []);
+
   const handleDiscardDraft = async (draftToDiscard: EmailDraft) => {
     setIsDeleting(true);
     
@@ -2212,7 +2223,7 @@ export function ChatInterface({
       {/* Email Thread Preview */}
       {thread && (
         <ThreadPreview
-          key={thread.id} // Force remount when thread changes to reset all internal state
+          key={`${thread.id}-${thread.messages?.[0]?.bodyHtml ? 'full' : 'partial'}`} // Force remount on thread change AND when full content arrives
           thread={thread}
           folder={folder}
           defaultExpanded={false}
@@ -2686,79 +2697,6 @@ export function ChatInterface({
               </div>
             )}
 
-            {/* Action buttons shown immediately after sending */}
-            {message.draftSent && pendingSend && pendingSend.confirmMessageId === message.id && (
-              <div className="w-full flex flex-wrap items-center justify-center gap-2 py-2">
-                {/* Previous button with arrow */}
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={handleSentActionPrevious}
-                  disabled={!onPreviousEmail}
-                  className="p-2 rounded-lg transition-colors disabled:opacity-50"
-                  style={{
-                    background: 'var(--bg-interactive)',
-                    border: '1px solid var(--border-subtle)',
-                    color: 'var(--text-muted)'
-                  }}
-                  title="Previous email"
-                >
-                  <ChevronLeft className="w-5 h-5" />
-                </motion.button>
-
-                {/* Archive button with blue styling */}
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={(e) => {
-                    const btn = e.currentTarget;
-                    btn.classList.add('button-press-glow');
-                    setTimeout(() => btn.classList.remove('button-press-glow'), 300);
-                    handleSentActionArchiveNext();
-                  }}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 transition-colors text-sm font-medium"
-                  style={{ color: 'rgb(147, 197, 253)' }}
-                >
-                  <Archive className="w-4 h-4" />
-                  Archive & Next
-                </motion.button>
-
-                {/* Snooze button - icon only */}
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={() => onOpenSnoozePicker?.()}
-                  disabled={!onOpenSnoozePicker}
-                  className="p-2 rounded-lg transition-colors disabled:opacity-50"
-                  style={{
-                    background: 'var(--bg-interactive)',
-                    border: '1px solid var(--border-subtle)',
-                    color: 'var(--text-muted)'
-                  }}
-                  title="Snooze"
-                >
-                  <Clock className="w-5 h-5" />
-                </motion.button>
-
-                {/* Next button with arrow */}
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={handleSentActionNext}
-                  className="p-2 rounded-lg transition-colors"
-                  style={{
-                    background: 'var(--bg-interactive)',
-                    border: '1px solid var(--border-subtle)',
-                    color: 'var(--text-muted)'
-                  }}
-                  title="Next email"
-                >
-                  <ChevronRight className="w-5 h-5" />
-                </motion.button>
-              </div>
-            )}
-            
-
             {/* User message with edit/cancel controls */}
             {!message.isSystemMessage && message.role === 'user' && (
               <div className={`group relative ${editingMessageId === message.id ? 'w-[85%]' : 'max-w-[85%]'}`}>
@@ -2936,15 +2874,89 @@ export function ChatInterface({
                   <DraftCard
                     draft={message.draft}
                     thread={thread}
+                    userEmail={user?.email}
                     onSend={handleSendDraft}
                     onSaveDraft={onSaveDraft ? handleSaveDraft : undefined}
                     onDiscard={handleDiscardDraft}
+                    onDraftChange={handleDraftChange}
                     isSending={isSending}
                     isSaving={isSaving}
                     isDeleting={isDeleting}
                     isStreaming={message.isStreaming}
                   />
                 )}
+              </div>
+            )}
+
+            {/* Action buttons shown below sent confirmation - persist until user acts */}
+            {message.draftSent && message.draft && (
+              <div className="w-full flex flex-wrap items-center justify-center gap-2 py-2">
+                {/* Previous button with arrow */}
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleSentActionPrevious}
+                  disabled={!onPreviousEmail}
+                  className="p-2 rounded-lg transition-colors disabled:opacity-50"
+                  style={{
+                    background: 'var(--bg-interactive)',
+                    border: '1px solid var(--border-subtle)',
+                    color: 'var(--text-muted)'
+                  }}
+                  title="Previous email"
+                >
+                  <ChevronLeft className="w-5 h-5" />
+                </motion.button>
+
+                {/* Archive button */}
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={(e) => {
+                    const btn = e.currentTarget;
+                    btn.classList.add('button-press-glow');
+                    setTimeout(() => btn.classList.remove('button-press-glow'), 300);
+                    handleSentActionArchiveNext();
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 transition-colors text-sm font-medium"
+                  style={{ color: 'rgb(147, 197, 253)' }}
+                >
+                  <Archive className="w-4 h-4" />
+                  Archive
+                </motion.button>
+
+                {/* Snooze button - icon only */}
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => onOpenSnoozePicker?.()}
+                  disabled={!onOpenSnoozePicker}
+                  className="p-2 rounded-lg transition-colors disabled:opacity-50"
+                  style={{
+                    background: 'var(--bg-interactive)',
+                    border: '1px solid var(--border-subtle)',
+                    color: 'var(--text-muted)'
+                  }}
+                  title="Snooze"
+                >
+                  <Clock className="w-5 h-5" />
+                </motion.button>
+
+                {/* Next button with arrow */}
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleSentActionNext}
+                  className="p-2 rounded-lg transition-colors"
+                  style={{
+                    background: 'var(--bg-interactive)',
+                    border: '1px solid var(--border-subtle)',
+                    color: 'var(--text-muted)'
+                  }}
+                  title="Next email"
+                >
+                  <ChevronRight className="w-5 h-5" />
+                </motion.button>
               </div>
             )}
 
@@ -2975,9 +2987,11 @@ export function ChatInterface({
             <DraftCard
               draft={currentDraft}
               thread={thread}
+              userEmail={user?.email}
               onSend={handleSendDraft}
               onSaveDraft={onSaveDraft ? handleSaveDraft : undefined}
               onDiscard={handleDiscardDraft}
+              onDraftChange={handleDraftChange}
               isSending={isSending}
               isSaving={isSaving}
               isDeleting={isDeleting}

@@ -353,26 +353,100 @@ ${truncatedBody}`);
 }
 
 // Build draft from tool call arguments
+// Helper to compute Reply All recipients following Gmail conventions:
+// - "To" = sender of the last message + all original "To" recipients (minus the current user)
+// - "CC" = all original CC recipients (minus the current user)
+// The current user's email is identified by looking at thread participants who sent messages
+export function computeReplyAllRecipients(
+  thread: EmailThread,
+  lastMessage: { from: { email: string }; to: { email: string }[]; cc?: { email: string }[]; replyTo?: string },
+  userEmail?: string
+): { to: string[]; cc: string[] } {
+  // Build set of current user's email addresses
+  const currentUserEmails = new Set<string>();
+
+  // Primary: use explicitly passed user email (most reliable)
+  if (userEmail) {
+    currentUserEmails.add(userEmail.toLowerCase());
+  }
+
+  // Secondary: find messages with SENT label (user sent them)
+  for (const msg of thread.messages) {
+    if (msg.labels?.includes('SENT')) {
+      currentUserEmails.add(msg.from.email.toLowerCase());
+    }
+  }
+
+  // Tertiary: if still no user identified, check thread recipients who also sent messages
+  if (currentUserEmails.size === 0) {
+    for (const msg of thread.messages) {
+      for (const recipient of lastMessage.to) {
+        if (msg.from.email.toLowerCase() === recipient.email.toLowerCase() &&
+            msg.from.email.toLowerCase() !== lastMessage.from.email.toLowerCase()) {
+          currentUserEmails.add(recipient.email.toLowerCase());
+        }
+      }
+    }
+  }
+
+  const isCurrentUser = (email: string) => currentUserEmails.has(email.toLowerCase());
+
+  // Use Reply-To address if present (e.g., noreply@company.com → support@company.com)
+  const replyAddress = lastMessage.replyTo || lastMessage.from.email;
+
+  // Build "To" list: reply address + all original "To" recipients (minus current user)
+  const toSet = new Set<string>();
+  toSet.add(replyAddress);
+  for (const t of lastMessage.to) {
+    if (!isCurrentUser(t.email)) {
+      toSet.add(t.email);
+    }
+  }
+  // Also exclude current user from To if they ended up there (e.g., via replyAddress matching)
+  for (const email of currentUserEmails) {
+    // Don't remove if it's the only recipient (replying to self)
+    if (toSet.size > 1) {
+      toSet.delete(email);
+    }
+  }
+
+  // Build "CC" list: all original CC recipients (minus current user and To recipients)
+  const ccSet = new Set<string>();
+  if (lastMessage.cc) {
+    for (const c of lastMessage.cc) {
+      if (!isCurrentUser(c.email) && !toSet.has(c.email)) {
+        ccSet.add(c.email);
+      }
+    }
+  }
+
+  return {
+    to: Array.from(toSet),
+    cc: Array.from(ccSet),
+  };
+}
+
 export function buildDraftFromToolCall(
   args: Record<string, any>,
-  thread?: EmailThread
+  thread?: EmailThread,
+  userEmail?: string
 ): EmailDraft {
   // Log what the AI chose
   console.log('[buildDraftFromToolCall] AI args.type:', args.type, '| Has thread:', !!thread);
-  
+
   // Default to 'reply' if viewing a thread, otherwise 'new'
   const draftType = args.type || (thread ? 'reply' : 'new');
   console.log('[buildDraftFromToolCall] Final draftType:', draftType);
-  
+
   const lastMessage = thread?.messages[thread.messages.length - 1];
-  
+
   // For replies and forwards, set up proper threading
   let inReplyTo: string | undefined;
   let references: string | undefined;
   let threadId: string | undefined;
   let quotedContent: string | undefined;
   let attachments: DraftAttachment[] | undefined;
-  
+
   if (draftType === 'reply' && thread && lastMessage) {
     threadId = thread.id;
     // Use the Message-ID header for proper RFC 2822 threading
@@ -427,11 +501,28 @@ export function buildDraftFromToolCall(
     const forwardHeaderPattern = /\n*-{5,}\s*Forwarded message\s*-{5,}[\s\S]*$/i;
     body = body.replace(forwardHeaderPattern, '').trim();
   }
-  
+
+  // For replies, default to Reply All (Gmail convention)
+  // Use AI-provided recipients if explicitly set, otherwise compute Reply All
+  let toList = args.to?.split(',').map((e: string) => e.trim()).filter(Boolean) || [];
+  let ccList = args.cc?.split(',').map((e: string) => e.trim()).filter(Boolean) || [];
+
+  if (draftType === 'reply' && thread && lastMessage) {
+    // Check if AI explicitly provided CC (even empty string = intentional override)
+    const aiExplicitlySetCc = 'cc' in args && args.cc !== undefined;
+    const replyAll = computeReplyAllRecipients(thread, lastMessage, userEmail);
+    // If AI only provided the sender (or nothing) in "to" and didn't explicitly set CC,
+    // use Reply All recipients
+    if (toList.length <= 1 && !aiExplicitlySetCc) {
+      toList = replyAll.to;
+      ccList = replyAll.cc;
+    }
+  }
+
   return {
     threadId,
-    to: args.to?.split(',').map((e: string) => e.trim()) || [],
-    cc: args.cc?.split(',').map((e: string) => e.trim()).filter(Boolean),
+    to: toList,
+    cc: ccList.length > 0 ? ccList : undefined,
     bcc: args.bcc?.split(',').map((e: string) => e.trim()).filter(Boolean),
     subject: args.subject || '',
     body,

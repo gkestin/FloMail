@@ -183,6 +183,14 @@ export function ProfessionalEmailRenderer({
   const isHtml = !!(message.bodyHtml && message.bodyHtml.trim());
   const content = isHtml ? message.bodyHtml! : (message.body || '');
 
+  // Generate a stable key for the iframe based on content length + first/last chars
+  // This forces React to recreate the iframe when content actually changes
+  // (fixes issue where navigating between threads doesn't update iframe srcDoc)
+  const contentKey = useMemo(() => {
+    if (!content) return 'empty';
+    return `${message.id}-${content.length}-${content.charCodeAt(0)}-${content.charCodeAt(Math.min(100, content.length - 1))}`;
+  }, [message.id, content]);
+
   // Update refs when props change
   useEffect(() => {
     onNextEmailRef.current = onNextEmail;
@@ -327,6 +335,7 @@ export function ProfessionalEmailRenderer({
         <div className="email-content">
           {shouldUseIframe ? (
             <iframe
+              key={contentKey}
               ref={iframeRef}
               srcDoc={`
                 <!DOCTYPE html>

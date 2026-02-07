@@ -83,6 +83,12 @@ const FLOMAIL_AGENT_PROMPT = `You are FloMail, a voice-first email assistant age
 
 If user says "draft an email saying..." while viewing an email, that's a REPLY (type="reply"), not a new email!
 
+## REPLY ALL (Default for replies):
+Replies default to Reply All (like Gmail). The system automatically includes all original To/CC recipients.
+- You do NOT need to manually list CC recipients - they are computed automatically from the thread.
+- Just set "to" to the sender's email. The system will add other recipients.
+- If the user explicitly says "reply just to [person]" or "reply only to sender", set "to" to only that person and include "cc" as an empty value (cc: "") to override Reply All.
+
 ## FOLDER AWARENESS:
 The email context will tell you which folder the email is from (Inbox, Sent, Starred, All Mail, or Archive).
 - If from Archive: Cannot archive again, but can move_to_inbox
@@ -123,16 +129,86 @@ const FOLDER_NAMES: Record<string, string> = {
   archive: 'Archive',
 };
 
+// Extract readable text from HTML more robustly than convertHtmlToPlainText
+// Handles complex table-based layouts (e.g., Outlook emails with nested tables)
+function extractTextFromHtml(html: string): string {
+  if (!html) return '';
+
+  let text = html;
+
+  // Remove style and script blocks entirely
+  text = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+  text = text.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+
+  // Convert <br> tags to newlines
+  text = text.replace(/<br\s*\/?>/gi, '\n');
+
+  // Convert block-level closing tags to newlines
+  text = text.replace(/<\/(p|div|li|h[1-6]|blockquote|section|article|header|footer)>/gi, '\n');
+
+  // Convert </td> to tab and </tr> to newline for table cells
+  text = text.replace(/<\/td>/gi, '\t');
+  text = text.replace(/<\/tr>/gi, '\n');
+
+  // Remove all remaining HTML tags
+  text = text.replace(/<[^>]*>/g, '');
+
+  // Decode HTML entities
+  text = text.replace(/&nbsp;/gi, ' ');
+  text = text.replace(/&amp;/gi, '&');
+  text = text.replace(/&lt;/gi, '<');
+  text = text.replace(/&gt;/gi, '>');
+  text = text.replace(/&quot;/gi, '"');
+  text = text.replace(/&#39;/gi, "'");
+  text = text.replace(/&apos;/gi, "'");
+  text = text.replace(/&zwnj;/gi, '');
+  text = text.replace(/&zwj;/gi, '');
+  text = text.replace(/&#\d+;/gi, (match) => {
+    const num = parseInt(match.replace(/&#|;/g, ''), 10);
+    return num > 0 ? String.fromCharCode(num) : '';
+  });
+  text = text.replace(/&#x[0-9a-f]+;/gi, (match) => {
+    const num = parseInt(match.replace(/&#x|;/g, ''), 16);
+    return num > 0 ? String.fromCharCode(num) : '';
+  });
+
+  // Clean up excessive whitespace while preserving paragraph structure
+  text = text.replace(/\t+/g, ' '); // tabs to spaces
+  text = text.replace(/ +/g, ' '); // collapse multiple spaces
+  text = text.replace(/\n\s*\n\s*\n/g, '\n\n'); // max 2 consecutive newlines
+
+  return text.trim();
+}
+
 // Build context from email thread
 function buildEmailContext(thread: EmailThread, folder: string = 'inbox'): string {
   const messages = thread.messages.map((msg, i) => {
     const fromName = msg.from.name || msg.from.email;
+
+    // Use body, but if it's very short compared to bodyHtml, extract text from HTML
+    // This handles complex table-based HTML emails (e.g., Outlook) where
+    // convertHtmlToPlainText might lose content
+    let bodyText = msg.body || '';
+    if (msg.bodyHtml) {
+      const htmlText = extractTextFromHtml(msg.bodyHtml);
+      // Use the HTML-extracted text if it's significantly longer (more content recovered)
+      if (htmlText.length > bodyText.length * 1.5 || bodyText.length < 50) {
+        bodyText = htmlText;
+      }
+    }
+
+    // Build recipient info including CC
+    const toLine = `To: ${msg.to.map(t => t.email).join(', ')}`;
+    const ccLine = msg.cc && msg.cc.length > 0
+      ? `\nCC: ${msg.cc.map(c => c.email).join(', ')}`
+      : '';
+
     return `[${i + 1}] From: ${fromName} <${msg.from.email}>
-To: ${msg.to.map(t => t.email).join(', ')}
+${toLine}${ccLine}
 Date: ${new Date(msg.date).toLocaleString()}
 Subject: ${msg.subject}
 
-${msg.body}`;
+${bodyText}`;
   });
 
   const folderName = FOLDER_NAMES[folder] || folder;
