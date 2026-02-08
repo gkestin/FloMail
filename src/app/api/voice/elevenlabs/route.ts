@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { action = 'get_agent', voiceId, llmModel } = body;
+    const { action = 'get_agent', voiceId, llmModel, forceNew } = body;
 
     if (action === 'get_agent') {
       // Check for a pre-configured agent ID in env
@@ -37,13 +37,14 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ agentId: envAgentId });
       }
 
-      // Check cache
-      if (cachedAgentId && Date.now() - agentCreatedAt < AGENT_CACHE_TTL) {
+      // Check cache (skip if forceNew requested)
+      if (!forceNew && cachedAgentId && Date.now() - agentCreatedAt < AGENT_CACHE_TTL) {
         return NextResponse.json({ agentId: cachedAgentId });
       }
 
-      // Create a new agent
+      // Create a new agent with tool definitions
       const config = buildAgentConfig({ voiceId, llmModel });
+      console.log('[Voice] Creating agent with', (config.conversation_config.agent.prompt as any).tools?.length || 0, 'tools');
 
       const response = await fetch(`${ELEVENLABS_API_URL}/convai/agents/create`, {
         method: 'POST',
@@ -58,7 +59,7 @@ export async function POST(request: NextRequest) {
         const errorData = await response.text();
         console.error('[Voice] ElevenLabs agent creation failed:', response.status, errorData);
         return NextResponse.json(
-          { error: `Failed to create voice agent: ${response.statusText}` },
+          { error: `Failed to create voice agent: ${response.statusText}. Details: ${errorData}` },
           { status: response.status }
         );
       }

@@ -64,16 +64,18 @@ interface VoiceModeInterfaceProps {
 function VoiceOrb({
   status,
   isSpeaking,
+  isProcessing,
   inputVolume,
   outputVolume,
 }: {
   status: string;
   isSpeaking: boolean;
+  isProcessing: boolean;
   inputVolume: number;
   outputVolume: number;
 }) {
   const isConnected = status === 'connected';
-  const isListening = isConnected && !isSpeaking;
+  const isListening = isConnected && !isSpeaking && !isProcessing;
   const activeVolume = isSpeaking ? outputVolume : inputVolume;
   const pulseScale = 1 + activeVolume * 0.5;
 
@@ -87,13 +89,15 @@ function VoiceOrb({
           opacity: isConnected ? [0.3, 0.1, 0.3] : 0.05,
         }}
         transition={{
-          duration: isSpeaking ? 1.2 : 2.5,
+          duration: isProcessing ? 0.8 : isSpeaking ? 1.2 : 2.5,
           repeat: Infinity,
           ease: 'easeInOut',
         }}
         style={{
           background: isConnected
-            ? 'radial-gradient(circle, rgba(168,85,247,0.5) 0%, rgba(6,182,212,0.3) 50%, transparent 70%)'
+            ? isProcessing
+              ? 'radial-gradient(circle, rgba(192,132,252,0.5) 0%, rgba(168,85,247,0.3) 50%, transparent 70%)'
+              : 'radial-gradient(circle, rgba(168,85,247,0.5) 0%, rgba(6,182,212,0.3) 50%, transparent 70%)'
             : 'radial-gradient(circle, rgba(100,100,100,0.15) 0%, transparent 70%)',
         }}
       />
@@ -103,16 +107,20 @@ function VoiceOrb({
         className="absolute rounded-full"
         style={{ inset: 20 }}
         animate={{
-          scale: isConnected ? pulseScale : 1,
+          scale: isConnected ? (isProcessing ? [1, 1.1, 1] : pulseScale) : 1,
           opacity: isConnected ? 0.4 : 0.08,
         }}
-        transition={{ duration: 0.12, ease: 'easeOut' }}
+        transition={isProcessing
+          ? { duration: 1.2, repeat: Infinity, ease: 'easeInOut' }
+          : { duration: 0.12, ease: 'easeOut' }}
       >
         <div
           className="w-full h-full rounded-full"
           style={{
             background: isConnected
-              ? 'radial-gradient(circle, rgba(168,85,247,0.35) 0%, rgba(6,182,212,0.2) 100%)'
+              ? isProcessing
+                ? 'radial-gradient(circle, rgba(192,132,252,0.35) 0%, rgba(168,85,247,0.2) 100%)'
+                : 'radial-gradient(circle, rgba(168,85,247,0.35) 0%, rgba(6,182,212,0.2) 100%)'
               : 'radial-gradient(circle, rgba(100,100,100,0.2) 0%, transparent 100%)',
           }}
         />
@@ -123,27 +131,53 @@ function VoiceOrb({
         className="absolute rounded-full"
         style={{ inset: 38 }}
         animate={{
-          scale: isConnected ? 0.95 + activeVolume * 0.12 : 1,
+          scale: isConnected ? (isProcessing ? [0.95, 1.02, 0.95] : 0.95 + activeVolume * 0.12) : 1,
         }}
-        transition={{ duration: 0.08 }}
+        transition={isProcessing
+          ? { duration: 1.5, repeat: Infinity, ease: 'easeInOut' }
+          : { duration: 0.08 }}
       >
         <div
           className="w-full h-full rounded-full flex items-center justify-center"
           style={{
             background: isConnected
-              ? isSpeaking
-                ? 'linear-gradient(135deg, rgb(168,85,247) 0%, rgb(139,92,246) 40%, rgb(6,182,212) 100%)'
-                : 'linear-gradient(135deg, rgb(139,92,246) 0%, rgb(59,130,246) 40%, rgb(6,182,212) 100%)'
+              ? isProcessing
+                ? 'linear-gradient(135deg, rgb(192,132,252) 0%, rgb(168,85,247) 40%, rgb(139,92,246) 100%)'
+                : isSpeaking
+                  ? 'linear-gradient(135deg, rgb(168,85,247) 0%, rgb(139,92,246) 40%, rgb(6,182,212) 100%)'
+                  : 'linear-gradient(135deg, rgb(139,92,246) 0%, rgb(59,130,246) 40%, rgb(6,182,212) 100%)'
               : status === 'connecting'
               ? 'linear-gradient(135deg, rgb(168,85,247) 0%, rgb(107,114,128) 100%)'
               : 'linear-gradient(135deg, rgb(75,85,99) 0%, rgb(55,65,81) 100%)',
             boxShadow: isConnected
-              ? '0 0 40px rgba(168,85,247,0.3), 0 0 80px rgba(6,182,212,0.15)'
+              ? isProcessing
+                ? '0 0 40px rgba(192,132,252,0.4), 0 0 80px rgba(168,85,247,0.2)'
+                : '0 0 40px rgba(168,85,247,0.3), 0 0 80px rgba(6,182,212,0.15)'
               : 'none',
           }}
         >
           {status === 'connecting' ? (
             <Loader2 className="w-8 h-8 text-white/90 animate-spin" />
+          ) : isProcessing ? (
+            // Pulsing dots for processing
+            <div className="flex items-center gap-1.5">
+              {[0, 1, 2].map((i) => (
+                <motion.div
+                  key={i}
+                  className="w-2 h-2 rounded-full bg-white/90"
+                  animate={{
+                    scale: [1, 1.4, 1],
+                    opacity: [0.5, 1, 0.5],
+                  }}
+                  transition={{
+                    duration: 0.8,
+                    repeat: Infinity,
+                    ease: 'easeInOut',
+                    delay: i * 0.2,
+                  }}
+                />
+              ))}
+            </div>
           ) : isListening ? (
             <Mic className="w-8 h-8 text-white/90" />
           ) : isSpeaking ? (
@@ -210,6 +244,7 @@ export function VoiceModeInterface({
   const [agentId, setAgentId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(false);
+  const [processingTool, setProcessingTool] = useState<string | null>(null);
   const [inputVolume, setInputVolume] = useState(0);
   const [outputVolume, setOutputVolume] = useState(0);
   const [showTranscript, setShowTranscript] = useState(true);
@@ -231,44 +266,42 @@ export function VoiceModeInterface({
   // CLIENT TOOL HANDLERS
   // ============================================================
 
+  // Helper to add a tool action message to the transcript
+  const addToolMessage = useCallback((toolName: string, content: string) => {
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `tool-${toolName}-${Date.now()}`,
+        role: 'assistant',
+        content,
+        timestamp: new Date(),
+        isToolAction: true,
+        toolName,
+      },
+    ]);
+  }, []);
+
   const clientTools = useMemo(
     () => ({
       prepare_draft: async (params: any) => {
+        setProcessingTool('Drafting...');
         soundsRef.current.playDraftReady();
         const draft = buildDraftFromToolCall(params, thread, user?.email);
         setCurrentDraft(draft);
         onDraftCreated?.(draft);
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `tool-draft-${Date.now()}`,
-            role: 'assistant',
-            content: `Draft ${draft.type === 'reply' ? 'reply' : draft.type === 'forward' ? 'forward' : 'email'} prepared.`,
-            timestamp: new Date(),
-            isToolAction: true,
-            toolName: 'prepare_draft',
-          },
-        ]);
+        addToolMessage('prepare_draft', `Draft ${draft.type === 'reply' ? 'reply' : draft.type === 'forward' ? 'forward' : 'email'} prepared.`);
+        setProcessingTool(null);
         return `Draft prepared. Type: ${draft.type}, To: ${draft.to.join(', ')}, Subject: ${draft.subject}. The draft is now displayed to the user for review.`;
       },
 
       send_email: async (params: any) => {
         if (!currentDraft) return 'No draft to send.';
+        setProcessingTool('Sending...');
         soundsRef.current.playSend();
         setIsSending(true);
         try {
           await onSendEmail?.(currentDraft);
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `tool-send-${Date.now()}`,
-              role: 'assistant',
-              content: 'Email sent successfully.',
-              timestamp: new Date(),
-              isToolAction: true,
-              toolName: 'send_email',
-            },
-          ]);
+          addToolMessage('send_email', 'Email sent successfully.');
           setCurrentDraft(null);
           return 'Email sent successfully.';
         } catch (err: any) {
@@ -276,32 +309,46 @@ export function VoiceModeInterface({
           return `Failed to send: ${err.message}`;
         } finally {
           setIsSending(false);
+          setProcessingTool(null);
         }
       },
 
       archive_email: async () => {
+        setProcessingTool('Archiving...');
         soundsRef.current.playSend();
         onArchive?.();
+        addToolMessage('archive_email', 'Email archived.');
+        setProcessingTool(null);
         return 'Email archived.';
       },
 
       move_to_inbox: async () => {
+        setProcessingTool('Moving...');
+        soundsRef.current.playToolStart();
         onMoveToInbox?.();
+        addToolMessage('move_to_inbox', 'Moved to inbox.');
+        setProcessingTool(null);
         return 'Email moved to inbox.';
       },
 
       star_email: async () => {
+        soundsRef.current.playToolStart();
         onStar?.();
+        addToolMessage('star_email', 'Email starred.');
         return 'Email starred.';
       },
 
       unstar_email: async () => {
+        soundsRef.current.playToolStart();
         onUnstar?.();
+        addToolMessage('unstar_email', 'Star removed.');
         return 'Star removed.';
       },
 
       snooze_email: async (params: any) => {
         if (!onSnooze) return 'Snooze not available.';
+        setProcessingTool('Snoozing...');
+        soundsRef.current.playToolStart();
         const snoozeUntilArg = params.snooze_until as string;
         const customDate = params.custom_date as string | undefined;
 
@@ -339,31 +386,44 @@ export function VoiceModeInterface({
 
         try {
           await onSnooze(snoozeDate);
+          addToolMessage('snooze_email', `Snoozed until ${snoozeDate.toLocaleString()}.`);
           return `Email snoozed until ${snoozeDate.toLocaleString()}.`;
         } catch (err: any) {
+          soundsRef.current.playError();
           return `Failed to snooze: ${err.message}`;
+        } finally {
+          setProcessingTool(null);
         }
       },
 
       go_to_next_email: async () => {
+        soundsRef.current.playToolStart();
+        addToolMessage('go_to_next_email', 'Moving to next email...');
         onNextEmail?.();
         return 'Navigating to next email.';
       },
 
       go_to_inbox: async () => {
+        soundsRef.current.playToolStart();
+        addToolMessage('go_to_inbox', 'Returning to inbox...');
         onGoToInbox?.();
         return 'Returning to inbox.';
       },
 
       web_search: async (params: any) => {
+        setProcessingTool('Searching the web...');
         soundsRef.current.playToolStart();
+        addToolMessage('web_search', `Searching: "${params.query}"...`);
         try {
           const res = await fetch('/api/search', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query: params.query }),
           });
-          if (!res.ok) return 'Search failed.';
+          if (!res.ok) {
+            addToolMessage('web_search', 'Search failed.');
+            return 'Search failed.';
+          }
           const data = await res.json();
           const results = data.results
             ?.slice(0, 3)
@@ -372,11 +432,15 @@ export function VoiceModeInterface({
           return results || 'No results found.';
         } catch {
           return 'Search failed.';
+        } finally {
+          setProcessingTool(null);
         }
       },
 
       browse_url: async (params: any) => {
+        setProcessingTool('Fetching page...');
         soundsRef.current.playToolStart();
+        addToolMessage('browse_url', `Opening link...`);
         try {
           const res = await fetch('/api/browse', {
             method: 'POST',
@@ -388,11 +452,15 @@ export function VoiceModeInterface({
           return (data.content || '').slice(0, 1000) || 'No content found.';
         } catch {
           return 'Failed to fetch URL.';
+        } finally {
+          setProcessingTool(null);
         }
       },
 
       search_emails: async (params: any) => {
+        setProcessingTool('Searching emails...');
         soundsRef.current.playToolStart();
+        addToolMessage('search_emails', `Searching emails: "${params.query}"...`);
         try {
           const token = await getAccessToken();
           if (!token) return 'Not authenticated. Please sign in again.';
@@ -405,10 +473,12 @@ export function VoiceModeInterface({
           return `Found ${result.threads.length} emails. Top results: ${summaries}`;
         } catch {
           return 'Email search failed. Please try again.';
+        } finally {
+          setProcessingTool(null);
         }
       },
     }),
-    [thread, user?.email, currentDraft, onDraftCreated, onSendEmail, onArchive, onMoveToInbox, onStar, onUnstar, onSnooze, onNextEmail, onGoToInbox, getAccessToken]
+    [thread, user?.email, currentDraft, onDraftCreated, onSendEmail, onArchive, onMoveToInbox, onStar, onUnstar, onSnooze, onNextEmail, onGoToInbox, getAccessToken, addToolMessage]
   );
 
   // ============================================================
@@ -821,6 +891,7 @@ export function VoiceModeInterface({
           <VoiceOrb
             status={isConnecting ? 'connecting' : conversation.status}
             isSpeaking={conversation.isSpeaking}
+            isProcessing={!!processingTool}
             inputVolume={inputVolume}
             outputVolume={outputVolume}
           />
@@ -830,14 +901,16 @@ export function VoiceModeInterface({
         <motion.p
           className="text-xs mb-3 flex-shrink-0"
           animate={{ opacity: isConnected ? 0.7 : 0.4 }}
-          style={{ color: 'var(--text-muted)' }}
+          style={{ color: processingTool ? 'rgb(192,132,252)' : 'var(--text-muted)' }}
         >
           {isConnecting
             ? 'Connecting...'
             : isConnected
-            ? conversation.isSpeaking
-              ? 'Speaking...'
-              : 'Listening...'
+            ? processingTool
+              ? processingTool
+              : conversation.isSpeaking
+                ? 'Speaking...'
+                : 'Listening...'
             : 'Disconnected'}
         </motion.p>
 

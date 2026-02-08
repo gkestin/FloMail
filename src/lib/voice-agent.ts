@@ -264,20 +264,35 @@ export function buildVoiceAgentPrompt(
 // ============================================================
 
 /**
- * Convert FloMail agent tools to ElevenLabs agent tool format
+ * Convert FloMail agent tools to ElevenLabs client tool format.
+ * These go in the agent creation config so the LLM knows they exist.
+ * The client-side implementations are in VoiceModeInterface's clientTools.
  */
-export function getElevenLabsToolDefinitions() {
+function getElevenLabsToolDefinitions() {
   return AGENT_TOOLS.map(tool => ({
     type: 'client' as const,
     name: tool.name,
     description: tool.description,
     parameters: tool.parameters,
+    expects_response: true,
+    response_timeout_secs: tool.name === 'web_search' || tool.name === 'browse_url' || tool.name === 'search_emails'
+      ? 30  // async network tools need more time
+      : 20,
   }));
 }
 
 // ============================================================
 // ELEVENLABS AGENT CONFIGURATION
 // ============================================================
+
+export interface ElevenLabsClientTool {
+  type: 'client';
+  name: string;
+  description: string;
+  parameters: Record<string, any>;
+  expects_response: boolean;
+  response_timeout_secs?: number;
+}
 
 export interface ElevenLabsAgentConfig {
   conversation_config: {
@@ -290,6 +305,7 @@ export interface ElevenLabsAgentConfig {
         llm: string;
         temperature?: number;
         max_tokens?: number;
+        tools?: ElevenLabsClientTool[];
       };
     };
     tts?: {
@@ -308,9 +324,8 @@ export interface ElevenLabsAgentConfig {
 
 /**
  * Build the ElevenLabs agent creation config.
- * NOTE: Tools are NOT included here — they are passed client-side via
- * the `clientTools` option in `useConversation`. Including them in the
- * agent creation payload causes a 400 error.
+ * Tool DEFINITIONS are included here so the LLM knows they exist.
+ * Tool IMPLEMENTATIONS are provided client-side via clientTools in useConversation.
  */
 export function buildAgentConfig(options: {
   voiceId?: string;
@@ -325,6 +340,7 @@ export function buildAgentConfig(options: {
           prompt: VOICE_AGENT_BASE_PROMPT,
           llm: options.llmModel || 'gpt-4o',
           temperature: 0.7,
+          tools: getElevenLabsToolDefinitions(),
         },
       },
       tts: {
