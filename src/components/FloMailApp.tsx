@@ -1680,7 +1680,7 @@ export function FloMailApp() {
 
       {/* Top bar */}
       <div className="flex items-center justify-between px-3 pb-2.5 safe-top" style={{ background: 'var(--bg-sidebar)', borderBottom: '1px solid var(--border-subtle)' }}>
-        <div className="flex items-center gap-1">
+        <div className="@container flex-1 min-w-0 flex items-center gap-1">
           {/* FloMail logo - always visible, always clickable to go to inbox */}
           <button
             type="button"
@@ -1725,28 +1725,28 @@ export function FloMailApp() {
                 );
               })()}
               
-              {/* Previous/Next navigation - clear labeled buttons */}
+              {/* Previous/Next navigation - collapse to icons on narrow screens */}
               <div className="flex items-center gap-1 ml-1">
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handlePreviousEmail}
-                  className="flex items-center gap-1 px-2 py-1.5 rounded-lg transition-colors"
+                  className="flex items-center gap-1 px-1.5 @md:px-2 py-1.5 rounded-lg transition-colors"
                   style={{ background: 'var(--bg-interactive)', color: 'var(--text-secondary)' }}
                   title={`Previous in ${FOLDER_LABELS[currentMailFolder]}`}
                 >
                   <ChevronLeft className="w-4 h-4" />
-                  <span className="text-xs font-medium">Prev</span>
+                  <span className="text-xs font-medium hidden @md:inline">Prev</span>
                 </motion.button>
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handleNextEmail}
-                  className="flex items-center gap-1 px-2 py-1.5 rounded-lg transition-colors"
+                  className="flex items-center gap-1 px-1.5 @md:px-2 py-1.5 rounded-lg transition-colors"
                   style={{ background: 'var(--bg-interactive)', color: 'var(--text-secondary)' }}
                   title={`Next in ${FOLDER_LABELS[currentMailFolder]}`}
                 >
-                  <span className="text-xs font-medium">Next</span>
+                  <span className="text-xs font-medium hidden @md:inline">Next</span>
                   <ChevronRight className="w-4 h-4" />
                 </motion.button>
               </div>
