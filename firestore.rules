@@ -20,6 +20,11 @@ service cloud.firestore {
         allow read, write: if request.auth != null && request.auth.uid == userId;
       }
 
+      // Voice chat history subcollection
+      match /voiceChats/{threadId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+
       // Settings subcollection - stores user preferences
       match /settings/{document=**} {
         allow read, write: if request.auth != null && request.auth.uid == userId;

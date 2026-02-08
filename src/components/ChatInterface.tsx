@@ -1121,6 +1121,9 @@ export function ChatInterface({
             }]);
           }
           break;
+        case 'go_to_previous_email':
+          onPreviousEmail?.();
+          break;
         case 'go_to_next_email':
           onNextEmail?.();
           break;

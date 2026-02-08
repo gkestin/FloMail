@@ -17,6 +17,7 @@ import { DraftAttachment } from '@/types';
 import { SnoozePicker } from './SnoozePicker';
 import { FloatingTTSMiniPlayer } from './TTSController';
 import { VoiceModeInterface } from './VoiceModeInterface';
+import { hasVoiceHistory } from '@/lib/voice-chat-persistence';
 import { SnoozeOption } from '@/lib/snooze-persistence';
 import { getUserSettings, saveUserSettings, subscribeToUserSettings, migrateSettingsFromLocalStorage, TTSSettings } from '@/lib/user-settings-persistence';
 import { useThreadPreloader } from '@/hooks/useThreadPreloader';
@@ -74,6 +75,7 @@ export function FloMailApp() {
   const [selectedThread, setSelectedThread] = useState<EmailThread | null>(null);
   const [currentDraft, setCurrentDraft] = useState<EmailDraft | null>(null);
   const [isVoiceMode, setIsVoiceMode] = useState(false);
+  const [threadHasVoiceHistory, setThreadHasVoiceHistory] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
   // Track navigation direction with state
   const [navigationDirection, setNavigationDirection] = useState<'forward' | 'backward'>('forward');
@@ -551,6 +553,28 @@ export function FloMailApp() {
     window.history.pushState({}, '', '/');
   }, [triggerRefresh, selectedThread]);
 
+  // Check if the current thread has voice conversation history
+  useEffect(() => {
+    if (!selectedThread?.id || !user?.uid) {
+      setThreadHasVoiceHistory(false);
+      return;
+    }
+    let cancelled = false;
+    hasVoiceHistory(user.uid, selectedThread.id).then((has) => {
+      if (!cancelled) setThreadHasVoiceHistory(has);
+    });
+    return () => { cancelled = true; };
+  }, [selectedThread?.id, user?.uid]);
+
+  // Callback for VoiceModeInterface to notify when it saves history
+  const handleVoiceHistoryChange = useCallback(
+    (threadId: string, has: boolean) => {
+      if (threadId === selectedThread?.id) {
+        setThreadHasVoiceHistory(has);
+      }
+    },
+    [selectedThread?.id]
+  );
 
   const handleDraftCreated = useCallback((draft: EmailDraft) => {
     setCurrentDraft(draft);
@@ -1780,7 +1804,7 @@ export function FloMailApp() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={() => setIsVoiceMode(v => !v)}
-                className={`p-2 rounded-lg transition-colors ${
+                className={`relative p-2 rounded-lg transition-colors ${
                   isVoiceMode
                     ? 'bg-purple-500/20 text-purple-400 hover:bg-purple-500/30'
                     : 'hover:text-purple-400'
@@ -1789,6 +1813,13 @@ export function FloMailApp() {
                 title={isVoiceMode ? 'Switch to chat mode' : 'Switch to voice mode'}
               >
                 <AudioLines className="w-4 h-4" />
+                {/* Voice history indicator dot */}
+                {!isVoiceMode && threadHasVoiceHistory && (
+                  <span
+                    className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full"
+                    style={{ background: 'rgb(168,85,247)' }}
+                  />
+                )}
               </motion.button>
             </>
           )}
@@ -1917,9 +1948,11 @@ export function FloMailApp() {
               onStar={handleStar}
               onUnstar={handleUnstar}
               onSnooze={handleSnoozeFromChat}
+              onPreviousEmail={handlePreviousEmail}
               onNextEmail={handleNextEmail}
               onGoToInbox={handleGoToInbox}
               onExitVoiceMode={() => setIsVoiceMode(false)}
+              onVoiceHistoryChange={handleVoiceHistoryChange}
             />
           </div>
         )}

@@ -429,19 +429,27 @@ export async function fetchInbox(
   const threads: EmailThread[] = [];
 
   if (data.threads) {
-    // Fetch ALL thread metadata in parallel (not batched) - much faster!
-    // Use Promise.allSettled to handle individual thread errors gracefully
-    const threadResults = await Promise.allSettled(
-      data.threads.map((t: { id: string }) => fetchThreadMetadata(accessToken, t.id))
-    );
+    // Fetch thread metadata in batches to avoid Gmail API rate limits (429s)
+    const METADATA_BATCH_SIZE = 8;
+    const METADATA_BATCH_DELAY = 100; // ms between batches
 
-    // Only include successfully fetched threads
-    for (const result of threadResults) {
-      if (result.status === 'fulfilled') {
-        threads.push(result.value);
-      } else {
-        // Log the error but don't fail the entire inbox load
-        console.warn('Failed to fetch thread:', result.reason);
+    for (let i = 0; i < data.threads.length; i += METADATA_BATCH_SIZE) {
+      const batch = data.threads.slice(i, i + METADATA_BATCH_SIZE);
+      const batchResults = await Promise.allSettled(
+        batch.map((t: { id: string }) => fetchThreadMetadata(accessToken, t.id))
+      );
+
+      for (const result of batchResults) {
+        if (result.status === 'fulfilled') {
+          threads.push(result.value);
+        } else {
+          console.warn('Failed to fetch thread:', result.reason);
+        }
+      }
+
+      // Small delay between batches to stay under rate limits
+      if (i + METADATA_BATCH_SIZE < data.threads.length) {
+        await new Promise(resolve => setTimeout(resolve, METADATA_BATCH_DELAY));
       }
     }
   }

@@ -39,6 +39,7 @@ VOICE CONVERSATION GUIDELINES:
 - move_to_inbox: Unarchive an email. Only use for archived emails.
 - star_email: Star/flag the email.
 - unstar_email: Remove star.
+- go_to_previous_email: Navigate to previous email.
 - go_to_next_email: Navigate to next email.
 - go_to_inbox: Return to inbox view.
 - snooze_email: Snooze the email. Use snooze_until options: "later_today", "tomorrow", "this_weekend", "next_week", or "custom" with custom_date ISO string. ONLY call ONCE per request.
@@ -47,6 +48,9 @@ VOICE CONVERSATION GUIDELINES:
 - web_search: Search the web for current information.
 - browse_url: Fetch and read content from a URL.
 - search_emails: Search through the user's Gmail.
+
+### Reading Full Content:
+- get_email_content: Get the full verbatim text of the current email thread. Use when the user asks to read the email word-for-word, quote exact text, or needs complete unabridged content. The email context you receive is summarized — use this tool for the full text.
 
 ## DRAFT TYPE - CRITICAL:
 DEFAULT IS REPLY. When viewing an email thread, assume the user wants to reply unless they explicitly say "forward" or "new email".
@@ -87,7 +91,7 @@ const FOLDER_NAMES: Record<string, string> = {
 /**
  * Extract readable text from HTML (mirrors anthropic.ts logic)
  */
-function extractTextFromHtml(html: string): string {
+export function extractTextFromHtml(html: string): string {
   if (!html) return '';
   let text = html;
   text = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
@@ -268,8 +272,29 @@ export function buildVoiceAgentPrompt(
  * These go in the agent creation config so the LLM knows they exist.
  * The client-side implementations are in VoiceModeInterface's clientTools.
  */
+// Voice-specific tools not in the standard AGENT_TOOLS
+const VOICE_SPECIFIC_TOOLS: ElevenLabsClientTool[] = [
+  {
+    type: 'client',
+    name: 'get_email_content',
+    description: 'Get the full verbatim content of messages in the current email thread. Use when the user asks to read the email word-for-word, quote exact text, or needs the complete unabridged message content.',
+    parameters: {
+      type: 'object',
+      properties: {
+        message_number: {
+          type: 'string',
+          description: 'Which message to read: "1" for oldest, "2" for second, "last" for most recent. Omit to get all messages.',
+        },
+      },
+      required: [],
+    },
+    expects_response: true,
+    response_timeout_secs: 10,
+  },
+];
+
 function getElevenLabsToolDefinitions() {
-  return AGENT_TOOLS.map(tool => ({
+  const standardTools = AGENT_TOOLS.map(tool => ({
     type: 'client' as const,
     name: tool.name,
     description: tool.description,
@@ -279,6 +304,8 @@ function getElevenLabsToolDefinitions() {
       ? 30  // async network tools need more time
       : 20,
   }));
+
+  return [...standardTools, ...VOICE_SPECIFIC_TOOLS];
 }
 
 // ============================================================

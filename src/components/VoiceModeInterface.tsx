@@ -8,20 +8,27 @@ import {
   Loader2,
   X,
   AlertCircle,
-  MessageSquare,
-  ChevronDown,
   Send,
   Keyboard,
+  ArrowRight,
+  Pause,
+  Play,
 } from 'lucide-react';
 import { useConversation } from '@elevenlabs/react';
 import { DraftCard } from './DraftCard';
 import { EmailThread, EmailDraft, AIProvider, AIDraftingPreferences } from '@/types';
 import { buildDraftFromToolCall } from '@/lib/agent-tools';
-import { buildVoiceAgentPrompt } from '@/lib/voice-agent';
+import { buildVoiceAgentPrompt, extractTextFromHtml } from '@/lib/voice-agent';
 import { VoiceSoundEffects } from '@/lib/voice-agent';
 import { useAuth } from '@/contexts/AuthContext';
-import { fetchInbox } from '@/lib/gmail';
 import { MailFolder } from './InboxList';
+import {
+  generateSessionId,
+  loadVoiceChat,
+  saveVoiceChat,
+  segmentMessagesByThread,
+  PersistedVoiceMessage,
+} from '@/lib/voice-chat-persistence';
 
 // ============================================================
 // TYPES
@@ -34,7 +41,14 @@ interface VoiceMessage {
   timestamp: Date;
   isToolAction?: boolean;
   toolName?: string;
+  isContextSwitch?: boolean;
+  _threadId?: string; // Which thread this message belongs to (for segmentation)
+  isHistory?: boolean; // Loaded from Firestore (not from current session)
+  isSessionDivider?: boolean; // Visual divider between sessions
+  sessionDate?: string; // Human-readable date for session dividers
 }
+
+type VoiceStatus = 'disconnected' | 'connecting' | 'listening' | 'speaking' | 'processing' | 'paused';
 
 interface VoiceModeInterfaceProps {
   thread?: EmailThread;
@@ -52,158 +66,64 @@ interface VoiceModeInterfaceProps {
   onStar?: () => void;
   onUnstar?: () => void;
   onSnooze?: (snoozeUntil: Date) => Promise<void>;
+  onPreviousEmail?: () => void;
   onNextEmail?: () => void;
   onGoToInbox?: () => void;
   onExitVoiceMode: () => void;
+  onVoiceHistoryChange?: (threadId: string, hasHistory: boolean) => void;
 }
 
 // ============================================================
-// VOICE ORB - on-brand purple/cyan gradient
+// ANIMATED STATUS BAR — thin gradient line with mode-aware animation
 // ============================================================
 
-function VoiceOrb({
-  status,
-  isSpeaking,
-  isProcessing,
-  inputVolume,
-  outputVolume,
-}: {
-  status: string;
-  isSpeaking: boolean;
-  isProcessing: boolean;
-  inputVolume: number;
-  outputVolume: number;
-}) {
-  const isConnected = status === 'connected';
-  const isListening = isConnected && !isSpeaking && !isProcessing;
-  const activeVolume = isSpeaking ? outputVolume : inputVolume;
-  const pulseScale = 1 + activeVolume * 0.5;
+function StatusBar({ status }: { status: VoiceStatus }) {
+  const isActive = status !== 'disconnected';
+
+  // Color configs per mode
+  const colors: Record<VoiceStatus, { from: string; via: string; to: string }> = {
+    disconnected: { from: 'rgb(75,85,99)', via: 'rgb(107,114,128)', to: 'rgb(75,85,99)' },
+    connecting: { from: 'rgb(168,85,247)', via: 'rgb(139,92,246)', to: 'rgb(168,85,247)' },
+    listening: { from: 'rgba(6,182,212,0.3)', via: 'rgb(6,182,212)', to: 'rgba(6,182,212,0.3)' },
+    speaking: { from: 'rgb(168,85,247)', via: 'rgb(6,182,212)', to: 'rgb(168,85,247)' },
+    processing: { from: 'rgb(168,85,247)', via: 'rgb(251,191,36)', to: 'rgb(168,85,247)' },
+    paused: { from: 'rgb(107,114,128)', via: 'rgb(156,163,175)', to: 'rgb(107,114,128)' },
+  };
+
+  const c = colors[status];
+  const gradient = `linear-gradient(90deg, ${c.from} 0%, ${c.via} 50%, ${c.to} 100%)`;
+
+  const speed = status === 'processing' ? 1.2 : status === 'speaking' ? 2 : 3;
 
   return (
-    <div className="relative flex items-center justify-center" style={{ width: 180, height: 180 }}>
-      {/* Outer ambient glow */}
+    <div className="h-[2px] w-full relative overflow-hidden">
+      {/* Base bar */}
       <motion.div
-        className="absolute inset-0 rounded-full blur-xl"
+        className="absolute inset-0"
         animate={{
-          scale: isConnected ? [1, 1.2, 1] : 1,
-          opacity: isConnected ? [0.3, 0.1, 0.3] : 0.05,
+          opacity: isActive ? [0.5, 1, 0.5] : 0.2,
         }}
         transition={{
-          duration: isProcessing ? 0.8 : isSpeaking ? 1.2 : 2.5,
-          repeat: Infinity,
-          ease: 'easeInOut',
+          opacity: { duration: speed, repeat: Infinity, ease: 'easeInOut' },
         }}
-        style={{
-          background: isConnected
-            ? isProcessing
-              ? 'radial-gradient(circle, rgba(192,132,252,0.5) 0%, rgba(168,85,247,0.3) 50%, transparent 70%)'
-              : 'radial-gradient(circle, rgba(168,85,247,0.5) 0%, rgba(6,182,212,0.3) 50%, transparent 70%)'
-            : 'radial-gradient(circle, rgba(100,100,100,0.15) 0%, transparent 70%)',
-        }}
+        style={{ background: gradient }}
       />
-
-      {/* Middle volume-reactive ring */}
-      <motion.div
-        className="absolute rounded-full"
-        style={{ inset: 20 }}
-        animate={{
-          scale: isConnected ? (isProcessing ? [1, 1.1, 1] : pulseScale) : 1,
-          opacity: isConnected ? 0.4 : 0.08,
-        }}
-        transition={isProcessing
-          ? { duration: 1.2, repeat: Infinity, ease: 'easeInOut' }
-          : { duration: 0.12, ease: 'easeOut' }}
-      >
-        <div
-          className="w-full h-full rounded-full"
+      {/* Scanning highlight */}
+      {isActive && (
+        <motion.div
+          className="absolute inset-y-0 w-1/4"
+          animate={{ left: ['-25%', '100%'] }}
+          transition={{
+            duration: speed * 0.8,
+            repeat: Infinity,
+            ease: 'linear',
+          }}
           style={{
-            background: isConnected
-              ? isProcessing
-                ? 'radial-gradient(circle, rgba(192,132,252,0.35) 0%, rgba(168,85,247,0.2) 100%)'
-                : 'radial-gradient(circle, rgba(168,85,247,0.35) 0%, rgba(6,182,212,0.2) 100%)'
-              : 'radial-gradient(circle, rgba(100,100,100,0.2) 0%, transparent 100%)',
+            background: `linear-gradient(90deg, transparent, ${c.via}, transparent)`,
+            opacity: 0.8,
           }}
         />
-      </motion.div>
-
-      {/* Core orb with FloMail gradient */}
-      <motion.div
-        className="absolute rounded-full"
-        style={{ inset: 38 }}
-        animate={{
-          scale: isConnected ? (isProcessing ? [0.95, 1.02, 0.95] : 0.95 + activeVolume * 0.12) : 1,
-        }}
-        transition={isProcessing
-          ? { duration: 1.5, repeat: Infinity, ease: 'easeInOut' }
-          : { duration: 0.08 }}
-      >
-        <div
-          className="w-full h-full rounded-full flex items-center justify-center"
-          style={{
-            background: isConnected
-              ? isProcessing
-                ? 'linear-gradient(135deg, rgb(192,132,252) 0%, rgb(168,85,247) 40%, rgb(139,92,246) 100%)'
-                : isSpeaking
-                  ? 'linear-gradient(135deg, rgb(168,85,247) 0%, rgb(139,92,246) 40%, rgb(6,182,212) 100%)'
-                  : 'linear-gradient(135deg, rgb(139,92,246) 0%, rgb(59,130,246) 40%, rgb(6,182,212) 100%)'
-              : status === 'connecting'
-              ? 'linear-gradient(135deg, rgb(168,85,247) 0%, rgb(107,114,128) 100%)'
-              : 'linear-gradient(135deg, rgb(75,85,99) 0%, rgb(55,65,81) 100%)',
-            boxShadow: isConnected
-              ? isProcessing
-                ? '0 0 40px rgba(192,132,252,0.4), 0 0 80px rgba(168,85,247,0.2)'
-                : '0 0 40px rgba(168,85,247,0.3), 0 0 80px rgba(6,182,212,0.15)'
-              : 'none',
-          }}
-        >
-          {status === 'connecting' ? (
-            <Loader2 className="w-8 h-8 text-white/90 animate-spin" />
-          ) : isProcessing ? (
-            // Pulsing dots for processing
-            <div className="flex items-center gap-1.5">
-              {[0, 1, 2].map((i) => (
-                <motion.div
-                  key={i}
-                  className="w-2 h-2 rounded-full bg-white/90"
-                  animate={{
-                    scale: [1, 1.4, 1],
-                    opacity: [0.5, 1, 0.5],
-                  }}
-                  transition={{
-                    duration: 0.8,
-                    repeat: Infinity,
-                    ease: 'easeInOut',
-                    delay: i * 0.2,
-                  }}
-                />
-              ))}
-            </div>
-          ) : isListening ? (
-            <Mic className="w-8 h-8 text-white/90" />
-          ) : isSpeaking ? (
-            // Animated bars for speaking
-            <div className="flex items-end gap-1 h-8">
-              {[0, 1, 2, 3].map((i) => (
-                <motion.div
-                  key={i}
-                  className="w-1.5 rounded-full bg-white/90"
-                  animate={{
-                    height: [8, 20 + Math.random() * 12, 8],
-                  }}
-                  transition={{
-                    duration: 0.4 + i * 0.1,
-                    repeat: Infinity,
-                    ease: 'easeInOut',
-                    delay: i * 0.08,
-                  }}
-                />
-              ))}
-            </div>
-          ) : (
-            <Mic className="w-8 h-8 text-white/40" />
-          )}
-        </div>
-      </motion.div>
+      )}
     </div>
   );
 }
@@ -228,9 +148,11 @@ export function VoiceModeInterface({
   onStar,
   onUnstar,
   onSnooze,
+  onPreviousEmail,
   onNextEmail,
   onGoToInbox,
   onExitVoiceMode,
+  onVoiceHistoryChange,
 }: VoiceModeInterfaceProps) {
   const { user, getAccessToken } = useAuth();
 
@@ -238,6 +160,7 @@ export function VoiceModeInterface({
   const [messages, setMessages] = useState<VoiceMessage[]>([]);
   const [tentativeTranscript, setTentativeTranscript] = useState('');
   const [currentDraft, setCurrentDraft] = useState<EmailDraft | null>(null);
+  const [draftKey, setDraftKey] = useState(0);
   const [isSending, setIsSending] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -245,9 +168,9 @@ export function VoiceModeInterface({
   const [error, setError] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(false);
   const [processingTool, setProcessingTool] = useState<string | null>(null);
+  const [isPaused, setIsPaused] = useState(false);
   const [inputVolume, setInputVolume] = useState(0);
   const [outputVolume, setOutputVolume] = useState(0);
-  const [showTranscript, setShowTranscript] = useState(true);
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -255,6 +178,43 @@ export function VoiceModeInterface({
   const volumeIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const recognitionRef = useRef<any>(null);
   const hasAutoStarted = useRef(false);
+  const prevThreadIdRef = useRef<string | undefined>(thread?.id);
+
+  // Session tracking for persistence
+  const sessionIdRef = useRef(generateSessionId());
+  const initialThreadIdRef = useRef<string | undefined>(thread?.id);
+  const saveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastSavedCountRef = useRef(0);
+  const historyLoadedForRef = useRef<string | null>(null);
+  const saveCurrentSessionRef = useRef<() => Promise<void>>(() => Promise.resolve());
+
+  // Stale-closure protection — refs for values accessed inside tool handlers.
+  // useConversation holds the initial clientTools reference and doesn't update,
+  // so ALL values accessed inside handlers must go through refs.
+  const threadRef = useRef(thread);
+  const currentDraftRef = useRef(currentDraft);
+  const onArchiveRef = useRef(onArchive);
+  const onMoveToInboxRef = useRef(onMoveToInbox);
+  const onStarRef = useRef(onStar);
+  const onUnstarRef = useRef(onUnstar);
+  const onSnoozeRef = useRef(onSnooze);
+  const onPreviousEmailRef = useRef(onPreviousEmail);
+  const onNextEmailRef = useRef(onNextEmail);
+  const onGoToInboxRef = useRef(onGoToInbox);
+  const onDraftCreatedRef = useRef(onDraftCreated);
+  const onSendEmailRef = useRef(onSendEmail);
+  useEffect(() => { threadRef.current = thread; }, [thread]);
+  useEffect(() => { currentDraftRef.current = currentDraft; }, [currentDraft]);
+  useEffect(() => { onArchiveRef.current = onArchive; }, [onArchive]);
+  useEffect(() => { onMoveToInboxRef.current = onMoveToInbox; }, [onMoveToInbox]);
+  useEffect(() => { onStarRef.current = onStar; }, [onStar]);
+  useEffect(() => { onUnstarRef.current = onUnstar; }, [onUnstar]);
+  useEffect(() => { onSnoozeRef.current = onSnooze; }, [onSnooze]);
+  useEffect(() => { onPreviousEmailRef.current = onPreviousEmail; }, [onPreviousEmail]);
+  useEffect(() => { onNextEmailRef.current = onNextEmail; }, [onNextEmail]);
+  useEffect(() => { onGoToInboxRef.current = onGoToInbox; }, [onGoToInbox]);
+  useEffect(() => { onDraftCreatedRef.current = onDraftCreated; }, [onDraftCreated]);
+  useEffect(() => { onSendEmailRef.current = onSendEmail; }, [onSendEmail]);
 
   // Build the dynamic prompt for this thread
   const voicePrompt = useMemo(
@@ -266,7 +226,6 @@ export function VoiceModeInterface({
   // CLIENT TOOL HANDLERS
   // ============================================================
 
-  // Helper to add a tool action message to the transcript
   const addToolMessage = useCallback((toolName: string, content: string) => {
     setMessages((prev) => [
       ...prev,
@@ -277,30 +236,43 @@ export function VoiceModeInterface({
         timestamp: new Date(),
         isToolAction: true,
         toolName,
+        _threadId: threadRef.current?.id,
       },
     ]);
   }, []);
 
   const clientTools = useMemo(
     () => ({
+      // ── Draft ────────────────────────────────────────────
       prepare_draft: async (params: any) => {
         setProcessingTool('Drafting...');
         soundsRef.current.playDraftReady();
-        const draft = buildDraftFromToolCall(params, thread, user?.email);
-        setCurrentDraft(draft);
-        onDraftCreated?.(draft);
-        addToolMessage('prepare_draft', `Draft ${draft.type === 'reply' ? 'reply' : draft.type === 'forward' ? 'forward' : 'email'} prepared.`);
+        const draft = buildDraftFromToolCall(params, threadRef.current, user?.email);
+
+        // Clean draft transition: clear → re-key → set new
+        setCurrentDraft(null);
+        setDraftKey((k) => k + 1);
+        requestAnimationFrame(() => {
+          setCurrentDraft(draft);
+          onDraftCreatedRef.current?.(draft);
+        });
+
+        addToolMessage(
+          'prepare_draft',
+          `Draft ${draft.type === 'reply' ? 'reply' : draft.type === 'forward' ? 'forward' : 'email'} prepared.`
+        );
         setProcessingTool(null);
         return `Draft prepared. Type: ${draft.type}, To: ${draft.to.join(', ')}, Subject: ${draft.subject}. The draft is now displayed to the user for review.`;
       },
 
       send_email: async (params: any) => {
-        if (!currentDraft) return 'No draft to send.';
+        const draft = currentDraftRef.current;
+        if (!draft) return 'No draft to send.';
         setProcessingTool('Sending...');
         soundsRef.current.playSend();
         setIsSending(true);
         try {
-          await onSendEmail?.(currentDraft);
+          await onSendEmailRef.current?.(draft);
           addToolMessage('send_email', 'Email sent successfully.');
           setCurrentDraft(null);
           return 'Email sent successfully.';
@@ -313,19 +285,20 @@ export function VoiceModeInterface({
         }
       },
 
+      // ── Thread actions ───────────────────────────────────
       archive_email: async () => {
         setProcessingTool('Archiving...');
         soundsRef.current.playSend();
-        onArchive?.();
+        onArchiveRef.current?.();
         addToolMessage('archive_email', 'Email archived.');
         setProcessingTool(null);
-        return 'Email archived.';
+        return 'Email archived. The next email is now loading.';
       },
 
       move_to_inbox: async () => {
         setProcessingTool('Moving...');
         soundsRef.current.playToolStart();
-        onMoveToInbox?.();
+        onMoveToInboxRef.current?.();
         addToolMessage('move_to_inbox', 'Moved to inbox.');
         setProcessingTool(null);
         return 'Email moved to inbox.';
@@ -333,20 +306,20 @@ export function VoiceModeInterface({
 
       star_email: async () => {
         soundsRef.current.playToolStart();
-        onStar?.();
+        onStarRef.current?.();
         addToolMessage('star_email', 'Email starred.');
         return 'Email starred.';
       },
 
       unstar_email: async () => {
         soundsRef.current.playToolStart();
-        onUnstar?.();
+        onUnstarRef.current?.();
         addToolMessage('unstar_email', 'Star removed.');
         return 'Star removed.';
       },
 
       snooze_email: async (params: any) => {
-        if (!onSnooze) return 'Snooze not available.';
+        if (!onSnoozeRef.current) return 'Snooze not available.';
         setProcessingTool('Snoozing...');
         soundsRef.current.playToolStart();
         const snoozeUntilArg = params.snooze_until as string;
@@ -385,7 +358,7 @@ export function VoiceModeInterface({
         }
 
         try {
-          await onSnooze(snoozeDate);
+          await onSnoozeRef.current!(snoozeDate);
           addToolMessage('snooze_email', `Snoozed until ${snoozeDate.toLocaleString()}.`);
           return `Email snoozed until ${snoozeDate.toLocaleString()}.`;
         } catch (err: any) {
@@ -396,20 +369,29 @@ export function VoiceModeInterface({
         }
       },
 
+      // ── Navigation ───────────────────────────────────────
+      go_to_previous_email: async () => {
+        soundsRef.current.playToolStart();
+        addToolMessage('go_to_previous_email', 'Going to previous email...');
+        onPreviousEmailRef.current?.();
+        return 'Navigating to previous email.';
+      },
+
       go_to_next_email: async () => {
         soundsRef.current.playToolStart();
         addToolMessage('go_to_next_email', 'Moving to next email...');
-        onNextEmail?.();
+        onNextEmailRef.current?.();
         return 'Navigating to next email.';
       },
 
       go_to_inbox: async () => {
         soundsRef.current.playToolStart();
         addToolMessage('go_to_inbox', 'Returning to inbox...');
-        onGoToInbox?.();
+        onGoToInboxRef.current?.();
         return 'Returning to inbox.';
       },
 
+      // ── Search & Browse ──────────────────────────────────
       web_search: async (params: any) => {
         setProcessingTool('Searching the web...');
         soundsRef.current.playToolStart();
@@ -425,11 +407,18 @@ export function VoiceModeInterface({
             return 'Search failed.';
           }
           const data = await res.json();
-          const results = data.results
+
+          // Build result text — include Tavily AI summary + top results
+          let resultText = '';
+          if (data.answer) {
+            resultText = `Summary: ${data.answer}\n\n`;
+          }
+          const snippets = data.results
             ?.slice(0, 3)
-            .map((r: any) => `${r.title}: ${r.content?.slice(0, 200)}`)
+            .map((r: any) => `${r.title}: ${r.snippet?.slice(0, 200) || r.content?.slice(0, 200) || ''}`)
             .join('\n');
-          return results || 'No results found.';
+          resultText += snippets || 'No results found.';
+          return resultText || 'No results found.';
         } catch {
           return 'Search failed.';
         } finally {
@@ -440,7 +429,7 @@ export function VoiceModeInterface({
       browse_url: async (params: any) => {
         setProcessingTool('Fetching page...');
         soundsRef.current.playToolStart();
-        addToolMessage('browse_url', `Opening link...`);
+        addToolMessage('browse_url', 'Opening link...');
         try {
           const res = await fetch('/api/browse', {
             method: 'POST',
@@ -449,7 +438,7 @@ export function VoiceModeInterface({
           });
           if (!res.ok) return 'Failed to fetch URL.';
           const data = await res.json();
-          return (data.content || '').slice(0, 1000) || 'No content found.';
+          return (data.content || '').slice(0, 2000) || 'No content found.';
         } catch {
           return 'Failed to fetch URL.';
         } finally {
@@ -464,29 +453,72 @@ export function VoiceModeInterface({
         try {
           const token = await getAccessToken();
           if (!token) return 'Not authenticated. Please sign in again.';
-          const result = await fetchInbox(token, { query: params.query, maxResults: 5 });
-          if (!result?.threads?.length) return 'No emails found matching that search.';
-          const summaries = result.threads
-            .slice(0, 5)
-            .map((t: any, i: number) => `${i + 1}. "${t.subject}" from ${t.participants?.[0]?.name || t.participants?.[0]?.email || 'unknown'}`)
-            .join('. ');
-          return `Found ${result.threads.length} emails. Top results: ${summaries}`;
+          const maxResults = params.max_results ? parseInt(params.max_results) : 5;
+          const res = await fetch('/api/gmail/search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: params.query, accessToken: token, maxResults }),
+          });
+          if (!res.ok) return 'Email search failed.';
+          const data = await res.json();
+          if (!data.threads?.length) return `No emails found matching: "${params.query}"`;
+          // Return the full formatted results with body content so the agent can verify matches
+          return data.formatted || 'No results found.';
         } catch {
           return 'Email search failed. Please try again.';
         } finally {
           setProcessingTool(null);
         }
       },
+
+      // ── Full email content (voice-only) ──────────────────
+      get_email_content: async (params: any) => {
+        const currentThread = threadRef.current;
+        if (!currentThread) return 'No email thread is currently open.';
+
+        setProcessingTool('Reading email...');
+        soundsRef.current.playToolStart();
+
+        let targetMessages = currentThread.messages;
+        const msgNum = params.message_number;
+
+        if (msgNum === 'last') {
+          targetMessages = [currentThread.messages[currentThread.messages.length - 1]];
+        } else if (msgNum && !isNaN(parseInt(msgNum))) {
+          const idx = parseInt(msgNum) - 1;
+          if (idx >= 0 && idx < currentThread.messages.length) {
+            targetMessages = [currentThread.messages[idx]];
+          }
+        }
+
+        const content = targetMessages
+          .map((msg, i) => {
+            let bodyText = msg.body || '';
+            if (msg.bodyHtml) {
+              const htmlText = extractTextFromHtml(msg.bodyHtml);
+              if (htmlText.length > bodyText.length * 1.5 || bodyText.length < 50) {
+                bodyText = htmlText;
+              }
+            }
+            return `[Message ${i + 1}] From: ${msg.from.name || msg.from.email}\nDate: ${new Date(msg.date).toLocaleString()}\n\n${bodyText}`;
+          })
+          .join('\n\n---\n\n');
+
+        addToolMessage('get_email_content', 'Reading full email content...');
+        setProcessingTool(null);
+        return content || 'No content found.';
+      },
     }),
-    [thread, user?.email, currentDraft, onDraftCreated, onSendEmail, onArchive, onMoveToInbox, onStar, onUnstar, onSnooze, onNextEmail, onGoToInbox, getAccessToken, addToolMessage]
+    // All callback props and thread/draft are accessed via refs — clientTools stays stable
+    // so the ElevenLabs SDK always calls the latest handlers
+    [user?.email, getAccessToken, addToolMessage]
   );
 
   // ============================================================
   // ELEVENLABS CONVERSATION
   // ============================================================
 
-  // Catch unhandled SDK errors (e.g. malformed error events from server)
-  // that crash inside BaseConversation.handleErrorEvent before reaching onError
+  // Suppress unhandled SDK errors (e.g. malformed error events from server)
   useEffect(() => {
     const handler = (event: PromiseRejectionEvent) => {
       if (
@@ -531,20 +563,41 @@ export function VoiceModeInterface({
       }
 
       if (content?.trim()) {
-        setMessages((prev) => [
-          ...prev,
-          {
+        setMessages((prev) => {
+          const newMsg: VoiceMessage = {
             id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             role: source === 'user' ? 'user' : 'assistant',
             content,
             timestamp: new Date(),
-          },
-        ]);
+            _threadId: threadRef.current?.id,
+          };
+
+          // FIX: Message ordering — when a user message arrives, ensure it
+          // appears before any recent tool-action messages that the SDK may
+          // have delivered out of order (tool call firing before transcript).
+          if (source === 'user') {
+            const now = Date.now();
+            let insertIdx = prev.length;
+            // Walk backwards to find tool messages from the last 3 seconds
+            for (let i = prev.length - 1; i >= 0; i--) {
+              if (prev[i].isToolAction && now - prev[i].timestamp.getTime() < 3000) {
+                insertIdx = i;
+              } else {
+                break;
+              }
+            }
+            if (insertIdx < prev.length) {
+              // Insert user message before the trailing tool messages
+              return [...prev.slice(0, insertIdx), newMsg, ...prev.slice(insertIdx)];
+            }
+          }
+
+          return [...prev, newMsg];
+        });
       }
     },
     onError: (err: any) => {
       const errorMessage = typeof err === 'string' ? err : err?.message || 'Unknown error';
-      // Don't show transient server errors that don't kill the connection
       if (errorMessage.includes('Server error') && conversation.status === 'connected') {
         console.warn('[Voice] Non-fatal server error:', errorMessage);
         return;
@@ -700,7 +753,6 @@ export function VoiceModeInterface({
       });
 
       // Send email context after connection is established
-      // (overrides for firstMessage/prompt are not allowed by the agent config)
       if (voicePrompt) {
         conversation.sendContextualUpdate(voicePrompt);
       }
@@ -716,12 +768,45 @@ export function VoiceModeInterface({
   const endSession = useCallback(async () => {
     stopBrowserRecognition();
     setTentativeTranscript('');
+    setIsPaused(false);
     soundsRef.current.playDisconnect();
+
+    // Save conversation before disconnecting
+    saveCurrentSessionRef.current();
 
     if (conversation.status === 'connected') {
       await conversation.endSession();
     }
   }, [conversation, stopBrowserRecognition]);
+
+  // ============================================================
+  // PAUSE / RESUME
+  // ============================================================
+
+  const pauseConversation = useCallback(() => {
+    if (conversation.status !== 'connected') return;
+    setIsPaused(true);
+    // Mute mic so agent stops hearing us
+    // @ts-ignore - setMicMuted exists at runtime
+    conversation.setMicMuted?.(true);
+    // Silence agent output so it stops talking
+    // @ts-ignore - setVolume exists at runtime
+    conversation.setVolume?.({ volume: 0 });
+    stopBrowserRecognition();
+    setTentativeTranscript('');
+  }, [conversation, stopBrowserRecognition]);
+
+  const resumeConversation = useCallback(() => {
+    if (conversation.status !== 'connected') return;
+    setIsPaused(false);
+    // Unmute mic
+    // @ts-ignore - setMicMuted exists at runtime
+    conversation.setMicMuted?.(false);
+    // Restore agent output volume
+    // @ts-ignore - setVolume exists at runtime
+    conversation.setVolume?.({ volume: 1 });
+    startBrowserRecognition();
+  }, [conversation, startBrowserRecognition]);
 
   // ============================================================
   // AUTO-START: connect immediately when voice mode opens
@@ -741,6 +826,202 @@ export function VoiceModeInterface({
       if (volumeIntervalRef.current) clearInterval(volumeIntervalRef.current);
     };
   }, []);
+
+  // ============================================================
+  // THREAD CHANGE DETECTION — update context when navigating
+  // ============================================================
+
+  useEffect(() => {
+    if (!thread?.id || thread.id === prevThreadIdRef.current) return;
+
+    const wasFirstThread = !prevThreadIdRef.current;
+    prevThreadIdRef.current = thread.id;
+
+    // Don't add divider for the initial thread
+    if (wasFirstThread) return;
+
+    // Save before switching threads (fire-and-forget)
+    saveCurrentSessionRef.current();
+
+    // Clear old draft
+    setCurrentDraft(null);
+
+    // Load history for the new thread
+    loadHistoryForThread(thread.id);
+
+    // Add a visual context-switch divider in the transcript
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `switch-${Date.now()}`,
+        role: 'assistant',
+        content: `Now viewing: ${thread.subject}`,
+        timestamp: new Date(),
+        isContextSwitch: true,
+        isToolAction: true,
+        toolName: 'context_switch',
+        _threadId: thread.id, // Tag with the NEW thread
+      },
+    ]);
+
+    // Send the updated email context to the ElevenLabs agent
+    if (conversation.status === 'connected') {
+      const newPrompt = buildVoiceAgentPrompt(thread, folder, draftingPreferences);
+      conversation.sendContextualUpdate(newPrompt);
+    }
+  }, [thread?.id, thread?.subject, folder, draftingPreferences, conversation.status]);
+
+  // ============================================================
+  // VOICE CHAT PERSISTENCE — auto-save & load
+  // ============================================================
+
+  /**
+   * Save current session messages, segmented by thread.
+   * Only saves non-history messages (new ones from this session).
+   */
+  const saveCurrentSession = useCallback(async () => {
+    if (!user?.uid) return;
+
+    // Get only messages from this session (not loaded history)
+    const sessionMessages = messages.filter((m) => !m.isHistory && !m.isSessionDivider);
+    if (sessionMessages.length === 0) return;
+    if (sessionMessages.length === lastSavedCountRef.current) return; // Nothing new
+
+    const segments = segmentMessagesByThread(
+      sessionMessages,
+      initialThreadIdRef.current,
+      sessionIdRef.current
+    );
+
+    // Save each thread's segment
+    const savePromises: Promise<void>[] = [];
+    segments.forEach((msgs, threadId) => {
+      if (msgs.length > 0) {
+        savePromises.push(
+          saveVoiceChat(user.uid, threadId, msgs).then(() => {
+            onVoiceHistoryChange?.(threadId, true);
+          })
+        );
+      }
+    });
+
+    await Promise.all(savePromises);
+    lastSavedCountRef.current = sessionMessages.length;
+  }, [user?.uid, messages, onVoiceHistoryChange]);
+
+  // Keep ref in sync so endSession (defined earlier) can call it
+  useEffect(() => { saveCurrentSessionRef.current = saveCurrentSession; }, [saveCurrentSession]);
+
+  /**
+   * Load voice history for a thread and prepend to messages.
+   */
+  const loadHistoryForThread = useCallback(
+    async (threadId: string) => {
+      if (!user?.uid || historyLoadedForRef.current === threadId) return;
+      historyLoadedForRef.current = threadId;
+
+      const history = await loadVoiceChat(user.uid, threadId);
+      if (history.length === 0) return;
+
+      // Group by sessionId for session dividers
+      const sessionGroups: { sessionId: string; date: Date; msgs: PersistedVoiceMessage[] }[] = [];
+      let currentGroup: (typeof sessionGroups)[0] | null = null;
+
+      for (const msg of history) {
+        if (!currentGroup || currentGroup.sessionId !== msg.sessionId) {
+          currentGroup = { sessionId: msg.sessionId, date: new Date(msg.timestamp), msgs: [] };
+          sessionGroups.push(currentGroup);
+        }
+        currentGroup.msgs.push(msg);
+      }
+
+      // Convert to VoiceMessage format with session dividers
+      const historyMessages: VoiceMessage[] = [];
+
+      for (const group of sessionGroups) {
+        // Add session divider
+        const dateStr = group.date.toLocaleDateString('en-US', {
+          weekday: 'short',
+          month: 'short',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+        });
+        historyMessages.push({
+          id: `divider-${group.sessionId}`,
+          role: 'assistant',
+          content: dateStr,
+          timestamp: group.date,
+          isSessionDivider: true,
+          isHistory: true,
+          sessionDate: dateStr,
+        });
+
+        // Add the session's messages
+        for (const pm of group.msgs) {
+          historyMessages.push({
+            id: pm.id,
+            role: pm.role,
+            content: pm.content,
+            timestamp: new Date(pm.timestamp),
+            isToolAction: pm.isToolAction,
+            toolName: pm.toolName,
+            isHistory: true,
+            _threadId: threadId,
+          });
+        }
+      }
+
+      if (historyMessages.length > 0) {
+        // Add a "current session" divider
+        historyMessages.push({
+          id: `divider-current-${Date.now()}`,
+          role: 'assistant',
+          content: 'Now',
+          timestamp: new Date(),
+          isSessionDivider: true,
+          sessionDate: 'Now',
+        });
+
+        setMessages((prev) => {
+          // Remove any existing history (in case of reload)
+          const nonHistory = prev.filter((m) => !m.isHistory && !m.isSessionDivider);
+          return [...historyMessages, ...nonHistory];
+        });
+      }
+    },
+    [user?.uid]
+  );
+
+  // Load history when component mounts or thread changes
+  useEffect(() => {
+    if (thread?.id) {
+      loadHistoryForThread(thread.id);
+    }
+  }, [thread?.id, loadHistoryForThread]);
+
+  // Auto-save every 30 seconds during active session
+  useEffect(() => {
+    if (conversation.status === 'connected') {
+      saveTimerRef.current = setInterval(() => {
+        saveCurrentSession();
+      }, 30000);
+    }
+    return () => {
+      if (saveTimerRef.current) {
+        clearInterval(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+    };
+  }, [conversation.status, saveCurrentSession]);
+
+  // Save on unmount (session end)
+  useEffect(() => {
+    return () => {
+      // Fire-and-forget save on cleanup
+      saveCurrentSession();
+    };
+  }, [saveCurrentSession]);
 
   // ============================================================
   // AUTO-SCROLL
@@ -809,11 +1090,51 @@ export function VoiceModeInterface({
   }, []);
 
   // ============================================================
-  // RENDER
+  // COMPUTED STATUS
   // ============================================================
 
   const isConnected = conversation.status === 'connected';
   const isConnecting = conversation.status === 'connecting' || isInitializing;
+
+  const voiceStatus: VoiceStatus = isConnecting
+    ? 'connecting'
+    : !isConnected
+    ? 'disconnected'
+    : isPaused
+    ? 'paused'
+    : processingTool
+    ? 'processing'
+    : conversation.isSpeaking
+    ? 'speaking'
+    : 'listening';
+
+  const statusLabel =
+    voiceStatus === 'connecting'
+      ? 'Connecting...'
+      : voiceStatus === 'disconnected'
+      ? 'Disconnected'
+      : voiceStatus === 'paused'
+      ? 'Paused'
+      : processingTool
+      ? processingTool
+      : conversation.isSpeaking
+      ? 'Speaking...'
+      : 'Listening...';
+
+  const statusColor =
+    voiceStatus === 'paused'
+      ? 'rgb(156,163,175)'
+      : voiceStatus === 'processing'
+      ? 'rgb(192,132,252)'
+      : voiceStatus === 'speaking'
+      ? 'rgb(168,85,247)'
+      : voiceStatus === 'listening'
+      ? 'rgb(6,182,212)'
+      : 'var(--text-muted)';
+
+  // ============================================================
+  // RENDER
+  // ============================================================
 
   return (
     <motion.div
@@ -823,22 +1144,61 @@ export function VoiceModeInterface({
       className="flex flex-col h-full"
       style={{ background: 'var(--bg-primary)' }}
     >
-      {/* Minimal header - just subject context and close */}
+      {/* ── Header ─────────────────────────────────────────── */}
       <div
         className="flex items-center justify-between px-4 py-2.5 flex-shrink-0"
         style={{ borderBottom: '1px solid var(--border-subtle)' }}
       >
-        <div className="flex items-center gap-2 min-w-0">
-          {/* FloMail gradient dot */}
-          <div
+        <div className="flex items-center gap-2.5 min-w-0">
+          {/* Animated status dot */}
+          <motion.div
             className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+            animate={{
+              scale:
+                voiceStatus === 'paused'
+                  ? 1
+                  : voiceStatus === 'listening'
+                  ? [1, 1.3, 1]
+                  : voiceStatus === 'speaking'
+                  ? [1, 1.2, 1]
+                  : voiceStatus === 'processing'
+                  ? [1, 1.4, 1]
+                  : 1,
+              opacity: voiceStatus === 'disconnected' ? 0.4 : voiceStatus === 'paused' ? 0.6 : 1,
+            }}
+            transition={{
+              scale: {
+                duration: voiceStatus === 'processing' ? 0.8 : voiceStatus === 'speaking' ? 0.8 : 2,
+                repeat: Infinity,
+                ease: 'easeInOut',
+              },
+            }}
             style={{
-              background: isConnected
-                ? 'linear-gradient(135deg, rgb(168,85,247), rgb(6,182,212))'
-                : isConnecting
-                ? 'rgb(168,85,247)'
-                : 'rgb(107,114,128)',
-              boxShadow: isConnected ? '0 0 8px rgba(168,85,247,0.5)' : 'none',
+              background:
+                voiceStatus === 'paused'
+                  ? 'rgb(156,163,175)'
+                  : voiceStatus === 'listening'
+                  ? 'rgb(6,182,212)'
+                  : voiceStatus === 'speaking'
+                  ? 'rgb(168,85,247)'
+                  : voiceStatus === 'processing'
+                  ? 'rgb(251,191,36)'
+                  : voiceStatus === 'connecting'
+                  ? 'rgb(168,85,247)'
+                  : 'rgb(107,114,128)',
+              boxShadow:
+                voiceStatus === 'disconnected' || voiceStatus === 'paused'
+                  ? 'none'
+                  : `0 0 8px ${
+                      voiceStatus === 'listening'
+                        ? 'rgba(6,182,212,0.5)'
+                        : voiceStatus === 'speaking'
+                        ? 'rgba(168,85,247,0.5)'
+                        : voiceStatus === 'processing'
+                        ? 'rgba(251,191,36,0.5)'
+                        : 'rgba(168,85,247,0.3)'
+                    }`,
+              transition: 'background 0.6s ease, box-shadow 0.6s ease',
             }}
           />
           {thread ? (
@@ -864,7 +1224,7 @@ export function VoiceModeInterface({
         </button>
       </div>
 
-      {/* Error banner */}
+      {/* ── Error banner ───────────────────────────────────── */}
       <AnimatePresence>
         {error && (
           <motion.div
@@ -884,227 +1244,271 @@ export function VoiceModeInterface({
         )}
       </AnimatePresence>
 
-      {/* Main content */}
-      <div className="flex-1 flex flex-col items-center overflow-hidden">
-        {/* Voice Orb */}
-        <div className="flex-shrink-0 pt-6 pb-2">
-          <VoiceOrb
-            status={isConnecting ? 'connecting' : conversation.status}
-            isSpeaking={conversation.isSpeaking}
-            isProcessing={!!processingTool}
-            inputVolume={inputVolume}
-            outputVolume={outputVolume}
-          />
-        </div>
+      {/* ── Transcript (fills all available space) ─────────── */}
+      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2.5">
+        {messages.length === 0 && !tentativeTranscript && (
+          <div className="flex items-center justify-center h-full">
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+              {voiceStatus === 'listening'
+                ? 'Just start speaking...'
+                : voiceStatus === 'connecting'
+                ? 'Getting ready...'
+                : 'Voice mode is off'}
+            </p>
+          </div>
+        )}
 
-        {/* Status text below orb */}
-        <motion.p
-          className="text-xs mb-3 flex-shrink-0"
-          animate={{ opacity: isConnected ? 0.7 : 0.4 }}
-          style={{ color: processingTool ? 'rgb(192,132,252)' : 'var(--text-muted)' }}
-        >
-          {isConnecting
-            ? 'Connecting...'
-            : isConnected
-            ? processingTool
-              ? processingTool
-              : conversation.isSpeaking
-                ? 'Speaking...'
-                : 'Listening...'
-            : 'Disconnected'}
-        </motion.p>
-
-        {/* Transcript area */}
-        <div className="flex-1 w-full overflow-hidden flex flex-col">
-          {/* Toggle */}
-          <button
-            onClick={() => setShowTranscript(!showTranscript)}
-            className="flex items-center gap-1.5 px-3 py-1 mx-auto rounded-full text-xs transition-colors hover:bg-white/5 flex-shrink-0"
-            style={{ color: 'var(--text-muted)' }}
+        {messages.map((msg) => (
+          <motion.div
+            key={msg.id}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.15 }}
+            className={`flex ${
+              msg.isSessionDivider || msg.isContextSwitch
+                ? 'justify-center'
+                : msg.role === 'user'
+                ? 'justify-end'
+                : 'justify-start'
+            }`}
           >
-            <MessageSquare className="w-3 h-3" />
-            <span>Transcript</span>
-            <ChevronDown
-              className={`w-3 h-3 transition-transform ${showTranscript ? 'rotate-180' : ''}`}
-            />
-          </button>
-
-          <AnimatePresence>
-            {showTranscript && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                className="flex-1 w-full overflow-hidden"
-              >
-                <div
-                  className="h-full overflow-y-auto px-4 py-2 space-y-2.5"
-                  style={{ maxHeight: currentDraft ? '25vh' : '40vh' }}
+            {msg.isSessionDivider ? (
+              /* Session divider (history) */
+              <div className="flex items-center gap-3 py-1.5 w-full">
+                <div className="h-px flex-1" style={{ background: 'var(--border-subtle)', opacity: 0.5 }} />
+                <span
+                  className="text-[11px] font-medium px-2"
+                  style={{ color: 'var(--text-muted)', opacity: 0.7 }}
                 >
-                  {messages.length === 0 && !tentativeTranscript && (
-                    <div className="text-center py-6">
-                      <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-                        {isConnected
-                          ? 'Just start speaking...'
-                          : isConnecting
-                          ? 'Getting ready...'
-                          : 'Voice mode is off'}
-                      </p>
-                    </div>
-                  )}
-
-                  {messages.map((msg) => (
-                    <motion.div
-                      key={msg.id}
-                      initial={{ opacity: 0, y: 6 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ duration: 0.15 }}
-                      className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                    >
-                      <div
-                        className={`max-w-[85%] px-3 py-1.5 rounded-2xl text-sm ${
-                          msg.isToolAction
-                            ? 'border'
-                            : msg.role === 'user'
-                            ? 'border'
-                            : 'border'
-                        }`}
-                        style={{
-                          borderColor: msg.isToolAction
-                            ? 'rgba(168,85,247,0.3)'
-                            : msg.role === 'user'
-                            ? 'rgba(6,182,212,0.3)'
-                            : 'var(--border-subtle)',
-                          color: msg.isToolAction
-                            ? 'rgb(192,132,252)'
-                            : 'var(--text-primary)',
-                          background: msg.isToolAction
-                            ? 'rgba(168,85,247,0.08)'
-                            : msg.role === 'user'
-                            ? 'rgba(6,182,212,0.08)'
-                            : 'var(--bg-elevated)',
-                        }}
-                      >
-                        <p className="leading-relaxed">{msg.content}</p>
-                      </div>
-                    </motion.div>
-                  ))}
-
-                  {/* Tentative transcript */}
-                  {tentativeTranscript?.trim() && (
-                    <motion.div
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      className="flex justify-end"
-                    >
-                      <div
-                        className="max-w-[85%] px-3 py-1.5 rounded-2xl text-sm border"
-                        style={{
-                          borderColor: 'rgba(6,182,212,0.2)',
-                          background: 'rgba(6,182,212,0.05)',
-                        }}
-                      >
-                        <p className="italic" style={{ color: 'rgba(6,182,212,0.7)' }}>
-                          {tentativeTranscript}...
-                        </p>
-                      </div>
-                    </motion.div>
-                  )}
-
-                  <div ref={messagesEndRef} />
+                  {msg.sessionDate}
+                </span>
+                <div className="h-px flex-1" style={{ background: 'var(--border-subtle)', opacity: 0.5 }} />
+              </div>
+            ) : msg.isContextSwitch ? (
+              /* Context-switch divider */
+              <div className="flex items-center gap-2 py-1 w-full">
+                <div className="h-px flex-1" style={{ background: 'var(--border-subtle)' }} />
+                <div
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-full flex-shrink-0"
+                  style={{
+                    background: 'rgba(168,85,247,0.1)',
+                    border: '1px solid rgba(168,85,247,0.2)',
+                  }}
+                >
+                  <ArrowRight className="w-3 h-3 text-purple-400" />
+                  <span className="text-xs text-purple-300 truncate max-w-[200px]">
+                    {msg.content}
+                  </span>
                 </div>
-              </motion.div>
+                <div className="h-px flex-1" style={{ background: 'var(--border-subtle)' }} />
+              </div>
+            ) : (
+              /* Normal message bubble */
+              <div
+                className={`max-w-[85%] px-3 py-1.5 rounded-2xl text-sm border ${
+                  msg.isHistory ? 'opacity-60' : ''
+                }`}
+                style={{
+                  borderColor: msg.isToolAction
+                    ? 'rgba(168,85,247,0.3)'
+                    : msg.role === 'user'
+                    ? 'rgba(6,182,212,0.3)'
+                    : 'var(--border-subtle)',
+                  color: msg.isToolAction ? 'rgb(192,132,252)' : 'var(--text-primary)',
+                  background: msg.isToolAction
+                    ? 'rgba(168,85,247,0.08)'
+                    : msg.role === 'user'
+                    ? 'rgba(6,182,212,0.08)'
+                    : 'var(--bg-elevated)',
+                }}
+              >
+                <p className="leading-relaxed">{msg.content}</p>
+              </div>
             )}
-          </AnimatePresence>
-        </div>
+          </motion.div>
+        ))}
 
-        {/* Draft Card */}
-        <AnimatePresence>
-          {currentDraft && (
-            <motion.div
-              initial={{ y: 20, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: 20, opacity: 0 }}
-              className="w-full px-4 py-2 flex-shrink-0"
+        {/* Tentative transcript */}
+        {tentativeTranscript?.trim() && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-end">
+            <div
+              className="max-w-[85%] px-3 py-1.5 rounded-2xl text-sm border"
+              style={{
+                borderColor: 'rgba(6,182,212,0.2)',
+                background: 'rgba(6,182,212,0.05)',
+              }}
             >
-              <DraftCard
-                draft={currentDraft}
-                thread={thread}
-                userEmail={user?.email}
-                onSend={handleSendDraft}
-                onSaveDraft={onSaveDraft ? handleSaveDraft : undefined}
-                onDiscard={handleDiscardDraft}
-                onDraftChange={handleDraftChange}
-                isSending={isSending}
-                isSaving={isSaving}
-                isDeleting={isDeleting}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
+              <p className="italic" style={{ color: 'rgba(6,182,212,0.7)' }}>
+                {tentativeTranscript}...
+              </p>
+            </div>
+          </motion.div>
+        )}
+
+        <div ref={messagesEndRef} />
       </div>
 
-      {/* Bottom controls - minimal, on-brand */}
-      <div
-        className="flex items-center justify-center gap-3 px-4 py-3 flex-shrink-0"
-        style={{ borderTop: '1px solid var(--border-subtle)' }}
-      >
-        {isConnected && (
-          <>
-            {/* Mute toggle */}
-            <motion.button
-              whileTap={{ scale: 0.95 }}
-              onClick={() => {
-                // Toggle mic mute via the conversation API
-                if (conversation.status === 'connected') {
-                  // @ts-ignore - setMicMuted exists at runtime
-                  conversation.setMicMuted?.(!conversation.micMuted);
-                }
-              }}
-              className="p-2.5 rounded-full transition-colors"
-              style={{
-                background: conversation.micMuted ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.05)',
-                color: conversation.micMuted ? 'rgb(248,113,113)' : 'var(--text-secondary)',
-              }}
-              title={conversation.micMuted ? 'Unmute' : 'Mute'}
-            >
-              {conversation.micMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
-            </motion.button>
-
-            {/* Type a message */}
-            <TextInputButton conversation={conversation} />
-
-            {/* End voice mode */}
-            <motion.button
-              whileTap={{ scale: 0.95 }}
-              onClick={() => {
-                endSession();
-                onExitVoiceMode();
-              }}
-              className="px-4 py-2 rounded-full text-xs font-medium transition-colors"
-              style={{
-                background: 'rgba(255,255,255,0.05)',
-                color: 'var(--text-secondary)',
-                border: '1px solid var(--border-subtle)',
-              }}
-            >
-              End
-            </motion.button>
-          </>
-        )}
-
-        {!isConnected && !isConnecting && (
-          <motion.button
-            whileTap={{ scale: 0.98 }}
-            onClick={startSession}
-            className="px-5 py-2.5 rounded-full text-sm font-medium text-white transition-colors"
-            style={{
-              background: 'linear-gradient(135deg, rgb(168,85,247), rgb(6,182,212))',
-            }}
+      {/* ── Draft Card ─────────────────────────────────────── */}
+      <AnimatePresence mode="wait">
+        {currentDraft && (
+          <motion.div
+            key={`draft-${draftKey}`}
+            initial={{ y: 20, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 20, opacity: 0 }}
+            className="w-full px-4 py-2 flex-shrink-0"
           >
-            Reconnect
-          </motion.button>
+            <DraftCard
+              draft={currentDraft}
+              thread={thread}
+              userEmail={user?.email}
+              onSend={handleSendDraft}
+              onSaveDraft={onSaveDraft ? handleSaveDraft : undefined}
+              onDiscard={handleDiscardDraft}
+              onDraftChange={handleDraftChange}
+              isSending={isSending}
+              isSaving={isSaving}
+              isDeleting={isDeleting}
+            />
+          </motion.div>
         )}
+      </AnimatePresence>
+
+      {/* ── Bottom section: ambient glow + status bar + controls */}
+      <div className="flex-shrink-0 relative">
+        {/* Ambient glow — subtle upward gradient matching current mode */}
+        <motion.div
+          className="absolute inset-x-0 bottom-full h-12 pointer-events-none"
+          animate={{
+            opacity: isConnected ? 1 : 0,
+          }}
+          transition={{ duration: 0.8 }}
+          style={{
+            background: `linear-gradient(to top, ${
+              voiceStatus === 'paused'
+                ? 'transparent'
+                : voiceStatus === 'listening'
+                ? 'rgba(6,182,212,0.06)'
+                : voiceStatus === 'speaking'
+                ? 'rgba(168,85,247,0.06)'
+                : voiceStatus === 'processing'
+                ? 'rgba(251,191,36,0.04)'
+                : 'transparent'
+            } 0%, transparent 100%)`,
+            transition: 'background 0.8s ease',
+          }}
+        />
+
+        {/* Animated status bar */}
+        <StatusBar status={voiceStatus} />
+
+        {/* Controls */}
+        <div
+          className="flex items-center px-4 py-3"
+          style={{ borderTop: '1px solid var(--border-subtle)' }}
+        >
+          {isConnected && (
+            <>
+              <div className="flex items-center gap-2">
+                {/* Pause / Resume toggle */}
+                <motion.button
+                  whileTap={{ scale: 0.95 }}
+                  onClick={isPaused ? resumeConversation : pauseConversation}
+                  className="p-2.5 rounded-full transition-colors"
+                  style={{
+                    background: isPaused
+                      ? 'rgba(6,182,212,0.15)'
+                      : 'rgba(255,255,255,0.05)',
+                    color: isPaused ? 'rgb(6,182,212)' : 'var(--text-secondary)',
+                  }}
+                  title={isPaused ? 'Resume' : 'Pause'}
+                >
+                  {isPaused ? (
+                    <Play className="w-5 h-5" />
+                  ) : (
+                    <Pause className="w-5 h-5" />
+                  )}
+                </motion.button>
+
+                {/* Mute toggle (only when not paused) */}
+                {!isPaused && (
+                  <motion.button
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => {
+                      if (conversation.status === 'connected') {
+                        // @ts-ignore - setMicMuted exists at runtime
+                        conversation.setMicMuted?.(!conversation.micMuted);
+                      }
+                    }}
+                    className="p-2.5 rounded-full transition-colors"
+                    style={{
+                      background: conversation.micMuted
+                        ? 'rgba(239,68,68,0.15)'
+                        : 'rgba(255,255,255,0.05)',
+                      color: conversation.micMuted ? 'rgb(248,113,113)' : 'var(--text-secondary)',
+                    }}
+                    title={conversation.micMuted ? 'Unmute' : 'Mute'}
+                  >
+                    {conversation.micMuted ? (
+                      <MicOff className="w-5 h-5" />
+                    ) : (
+                      <Mic className="w-5 h-5" />
+                    )}
+                  </motion.button>
+                )}
+
+                {/* Type a message */}
+                {!isPaused && <TextInputButton conversation={conversation} />}
+              </div>
+
+              {/* Status label — centered */}
+              <motion.span
+                className="flex-1 text-center text-xs font-medium"
+                animate={{ opacity: 0.7 }}
+                style={{ color: statusColor, transition: 'color 0.5s ease' }}
+              >
+                {statusLabel}
+              </motion.span>
+
+              {/* End voice mode */}
+              <motion.button
+                whileTap={{ scale: 0.95 }}
+                onClick={() => {
+                  endSession();
+                  onExitVoiceMode();
+                }}
+                className="px-4 py-2 rounded-full text-xs font-medium transition-colors"
+                style={{
+                  background: 'rgba(255,255,255,0.05)',
+                  color: 'var(--text-secondary)',
+                  border: '1px solid var(--border-subtle)',
+                }}
+              >
+                End
+              </motion.button>
+            </>
+          )}
+
+          {!isConnected && !isConnecting && (
+            <motion.button
+              whileTap={{ scale: 0.98 }}
+              onClick={startSession}
+              className="w-full px-5 py-2.5 rounded-full text-sm font-medium text-white transition-colors"
+              style={{
+                background: 'linear-gradient(135deg, rgb(168,85,247), rgb(6,182,212))',
+              }}
+            >
+              Reconnect
+            </motion.button>
+          )}
+
+          {isConnecting && (
+            <div className="w-full flex items-center justify-center gap-2 py-2.5">
+              <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
+              <span className="text-sm text-purple-300">Connecting...</span>
+            </div>
+          )}
+        </div>
       </div>
     </motion.div>
   );
@@ -1171,7 +1575,10 @@ function TextInputButton({ conversation }: { conversation: any }) {
         <Send className="w-4 h-4" />
       </button>
       <button
-        onClick={() => { setShowInput(false); setText(''); }}
+        onClick={() => {
+          setShowInput(false);
+          setText('');
+        }}
         className="p-2 rounded-full hover:bg-white/5 transition-colors"
         style={{ color: 'var(--text-muted)' }}
       >

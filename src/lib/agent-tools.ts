@@ -128,6 +128,15 @@ export const AGENT_TOOLS: AgentTool[] = [
     },
   },
   {
+    name: 'go_to_previous_email',
+    description: 'Navigate to the previous email in the current folder. Call when user says "previous", "previous email", "go back", "last one", or similar.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
     name: 'go_to_next_email',
     description: 'Navigate to the next email in the current folder. Call when user says "next", "next email", "move on", or similar.',
     parameters: {
