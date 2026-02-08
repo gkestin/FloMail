@@ -10,8 +10,9 @@ WORKDIR /app
 # Install dependencies needed for native modules
 RUN apk add --no-cache libc6-compat
 
-# Copy package files
+# Copy package files and postinstall scripts
 COPY package.json package-lock.json ./
+COPY scripts/ ./scripts/
 
 # Install all dependencies (including devDependencies for build)
 RUN npm ci
