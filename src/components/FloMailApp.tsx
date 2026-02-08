@@ -8,7 +8,7 @@ import { LoginScreen } from './LoginScreen';
 import { InboxList, MailFolder } from './InboxList';
 import { ChatInterface } from './ChatInterface';
 import { EmailThread, EmailDraft, AIProvider, AIDraftingPreferences, DraftTone, DraftLength, SignOffStyle } from '@/types';
-import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock, ChevronDown, Settings, Plus, Pencil, Edit3, Volume2 } from 'lucide-react';
+import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock, ChevronDown, Settings, Plus, Pencil, Edit3, Volume2, AudioLines } from 'lucide-react';
 import { OPENAI_MODELS } from '@/lib/openai';
 import { CLAUDE_MODELS } from '@/lib/anthropic';
 import { sendEmail, archiveThread, getAttachment, createGmailDraft, updateGmailDraft, hasSnoozedLabel, fetchThread, fetchInbox, markAsRead } from '@/lib/gmail';
@@ -16,6 +16,7 @@ import { emailCache } from '@/lib/email-cache';
 import { DraftAttachment } from '@/types';
 import { SnoozePicker } from './SnoozePicker';
 import { FloatingTTSMiniPlayer } from './TTSController';
+import { VoiceModeInterface } from './VoiceModeInterface';
 import { SnoozeOption } from '@/lib/snooze-persistence';
 import { getUserSettings, saveUserSettings, subscribeToUserSettings, migrateSettingsFromLocalStorage, TTSSettings } from '@/lib/user-settings-persistence';
 import { useThreadPreloader } from '@/hooks/useThreadPreloader';
@@ -72,6 +73,7 @@ export function FloMailApp() {
   });
   const [selectedThread, setSelectedThread] = useState<EmailThread | null>(null);
   const [currentDraft, setCurrentDraft] = useState<EmailDraft | null>(null);
+  const [isVoiceMode, setIsVoiceMode] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
   // Track navigation direction with state
   const [navigationDirection, setNavigationDirection] = useState<'forward' | 'backward'>('forward');
@@ -528,6 +530,7 @@ export function FloMailApp() {
   const handleBackToList = useCallback(() => {
     setSelectedThread(null);
     setCurrentDraft(null);
+    setIsVoiceMode(false);
     setCurrentView('inbox');
     // DON'T reset currentMailFolder - preserve where user came from
     // Clear search only if going back to a different folder
@@ -539,6 +542,7 @@ export function FloMailApp() {
   const handleGoToInbox = useCallback(() => {
     setSelectedThread(null);
     setCurrentDraft(null);
+    setIsVoiceMode(false);
     setCurrentView('inbox');
     setCurrentMailFolder('inbox'); // Reset to inbox folder
     setSearchQuery(''); // Clear any search
@@ -1770,6 +1774,22 @@ export function FloMailApp() {
               >
                 <Archive className="w-4 h-4" />
               </motion.button>
+
+              {/* Voice mode toggle */}
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => setIsVoiceMode(v => !v)}
+                className={`p-2 rounded-lg transition-colors ${
+                  isVoiceMode
+                    ? 'bg-purple-500/20 text-purple-400 hover:bg-purple-500/30'
+                    : 'hover:text-purple-400'
+                }`}
+                style={{ color: isVoiceMode ? undefined : 'var(--text-muted)' }}
+                title={isVoiceMode ? 'Switch to chat mode' : 'Switch to voice mode'}
+              >
+                <AudioLines className="w-4 h-4" />
+              </motion.button>
             </>
           )}
         </div>
@@ -1833,13 +1853,13 @@ export function FloMailApp() {
           </div>
         )}
 
-        {currentView === 'chat' && !selectedThread && (
+        {currentView === 'chat' && !selectedThread && !isVoiceMode && (
           <div className="absolute inset-0 flex items-center justify-center">
             <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
           </div>
         )}
 
-        {currentView === 'chat' && selectedThread && (
+        {currentView === 'chat' && selectedThread && !isVoiceMode && (
           <AnimatePresence mode="popLayout" initial={false}>
             <motion.div
               key={selectedThread.id}
@@ -1877,6 +1897,31 @@ export function FloMailApp() {
               />
             </motion.div>
           </AnimatePresence>
+        )}
+
+        {currentView === 'chat' && isVoiceMode && (
+          <div className="absolute inset-0">
+            <VoiceModeInterface
+              thread={selectedThread || undefined}
+              folder={currentMailFolder}
+              threadLabels={selectedThread?.labels}
+              provider={aiProvider}
+              model={aiModel}
+              draftingPreferences={aiDraftingPreferences}
+              onDraftCreated={handleDraftCreated}
+              onSendEmail={handleSendEmail}
+              onSaveDraft={handleSaveDraft}
+              onDeleteDraft={handleDeleteDraft}
+              onArchive={handleArchive}
+              onMoveToInbox={handleMoveToInbox}
+              onStar={handleStar}
+              onUnstar={handleUnstar}
+              onSnooze={handleSnoozeFromChat}
+              onNextEmail={handleNextEmail}
+              onGoToInbox={handleGoToInbox}
+              onExitVoiceMode={() => setIsVoiceMode(false)}
+            />
+          </div>
         )}
       </div>
 
