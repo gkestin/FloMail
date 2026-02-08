@@ -55,6 +55,14 @@ else
     echo "⚠️  TAVILY_API_KEY not set - web search will be disabled"
 fi
 
+# Add optional ELEVENLABS_API_KEY if set
+if [ -n "$ELEVENLABS_API_KEY" ]; then
+    SUBSTITUTIONS="$SUBSTITUTIONS,_ELEVENLABS_API_KEY=$ELEVENLABS_API_KEY"
+    echo "✅ ELEVENLABS_API_KEY found - voice mode enabled"
+else
+    echo "⚠️  ELEVENLABS_API_KEY not set - voice mode will be disabled"
+fi
+
 # Run Cloud Build with substitutions
 gcloud builds submit \
   --config=cloudbuild.yaml \
