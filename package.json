@@ -6,10 +6,13 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "postinstall": "node scripts/patch-elevenlabs.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
+    "@elevenlabs/client": "^0.13.0",
+    "@elevenlabs/react": "^0.13.0",
     "@types/dompurify": "^3.0.5",
     "dompurify": "^3.3.1",
     "firebase": "^12.7.0",
