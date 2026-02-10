@@ -8,6 +8,14 @@ export interface TTSSettings {
   useNaturalVoice: boolean;
 }
 
+export interface VoiceModeSettings {
+  voiceId: string;
+  voiceLabel: string;
+  speed: number;
+  stability: number;
+  llmModel: string;
+}
+
 export interface UserSettings {
   // AI Settings
   aiProvider: AIProvider;
@@ -16,6 +24,9 @@ export interface UserSettings {
 
   // TTS Settings
   ttsSettings: TTSSettings;
+
+  // Voice Mode Settings (ElevenLabs)
+  voiceModeSettings: VoiceModeSettings;
 
   // Metadata
   lastUpdated: Date;
@@ -37,6 +48,13 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
     voice: 'nova',
     speed: 1.0,
     useNaturalVoice: true,
+  },
+  voiceModeSettings: {
+    voiceId: '21m00Tcm4TlvDq8ikWAM', // Rachel
+    voiceLabel: 'Rachel',
+    speed: 1.0,
+    stability: 0.5,
+    llmModel: 'gpt-4o',
   },
   lastUpdated: new Date(),
 };
@@ -108,6 +126,10 @@ export async function saveUserSettings(userId: string, settings: Partial<UserSet
       ttsSettings: {
         ...current.ttsSettings,
         ...(settings.ttsSettings || {}),
+      },
+      voiceModeSettings: {
+        ...current.voiceModeSettings,
+        ...(settings.voiceModeSettings || {}),
       },
       lastUpdated: new Date(),
     };

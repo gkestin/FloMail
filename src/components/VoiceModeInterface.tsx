@@ -71,6 +71,12 @@ interface VoiceModeInterfaceProps {
   onGoToInbox?: () => void;
   onExitVoiceMode: () => void;
   onVoiceHistoryChange?: (threadId: string, hasHistory: boolean) => void;
+  voiceModeSettings?: {
+    voiceId?: string;
+    speed?: number;
+    stability?: number;
+    llmModel?: string;
+  };
 }
 
 // ============================================================
@@ -153,6 +159,7 @@ export function VoiceModeInterface({
   onGoToInbox,
   onExitVoiceMode,
   onVoiceHistoryChange,
+  voiceModeSettings,
 }: VoiceModeInterfaceProps) {
   const { user, getAccessToken } = useAuth();
 
@@ -171,12 +178,14 @@ export function VoiceModeInterface({
   const [isPaused, setIsPaused] = useState(false);
   const [inputVolume, setInputVolume] = useState(0);
   const [outputVolume, setOutputVolume] = useState(0);
+  const [speechRecognitionWorking, setSpeechRecognitionWorking] = useState(false);
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const soundsRef = useRef<VoiceSoundEffects>(new VoiceSoundEffects());
   const volumeIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const recognitionRef = useRef<any>(null);
+  const accumulatedFinalTranscriptRef = useRef('');
   const hasAutoStarted = useRef(false);
   const prevThreadIdRef = useRef<string | undefined>(thread?.id);
 
@@ -549,6 +558,8 @@ export function VoiceModeInterface({
     },
     onMessage: ({ message, source }: any) => {
       if (source === 'user') {
+        // ElevenLabs captured the full user transcript - clear browser interim display
+        accumulatedFinalTranscriptRef.current = '';
         setTentativeTranscript('');
       }
 
@@ -615,6 +626,19 @@ export function VoiceModeInterface({
         }
       }
     },
+    // Capture tentative_user_transcript events from ElevenLabs ASR
+    // These arrive via onDebug since the SDK doesn't have a dedicated callback
+    // This is the primary interim transcript source (works on mobile where browser SpeechRecognition fails)
+    onDebug: (event: any) => {
+      if (event?.type === 'tentative_user_transcript') {
+        const text = event.tentative_user_transcription_event?.user_transcript;
+        if (text?.trim()) {
+          // ElevenLabs ASR is providing tentative transcripts — mark as working
+          if (!speechRecognitionWorking) setSpeechRecognitionWorking(true);
+          setTentativeTranscript(text.trim());
+        }
+      }
+    },
   });
 
   // ============================================================
@@ -633,19 +657,28 @@ export function VoiceModeInterface({
     recognition.lang = 'en-US';
 
     recognition.onresult = (event: any) => {
+      // Browser SpeechRecognition is producing results — mark as working
+      if (!speechRecognitionWorking) setSpeechRecognitionWorking(true);
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        if (!event.results[i].isFinal) {
+        if (event.results[i].isFinal) {
+          // Accumulate finalized chunks so they don't disappear
+          accumulatedFinalTranscriptRef.current += event.results[i][0].transcript;
+        } else {
           interim += event.results[i][0].transcript;
         }
       }
-      if (interim) {
-        setTentativeTranscript(interim);
+      // Show accumulated finals + current interim together
+      const full = (accumulatedFinalTranscriptRef.current + interim).trim();
+      if (full) {
+        setTentativeTranscript(full);
       }
     };
 
-    recognition.onerror = () => {
-      if (conversation.status === 'connected') {
+    recognition.onerror = (e: any) => {
+      // On mobile, 'no-speech' and 'aborted' errors are common and recoverable
+      const ignorable = ['no-speech', 'aborted', 'network'];
+      if (conversation.status === 'connected' && (!e.error || ignorable.includes(e.error))) {
         setTimeout(() => {
           try { recognition.start(); } catch {}
         }, 500);
@@ -653,7 +686,9 @@ export function VoiceModeInterface({
     };
 
     recognition.onend = () => {
-      if (conversation.status === 'connected' && !conversation.isSpeaking) {
+      // Always restart while connected (mobile fires onend frequently)
+      // Don't gate on isSpeaking - we want to capture user speech during agent TTS too
+      if (conversation.status === 'connected') {
         setTimeout(() => {
           try { recognition.start(); } catch {}
         }, 50);
@@ -717,7 +752,11 @@ export function VoiceModeInterface({
       const res = await fetch('/api/voice/elevenlabs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'get_agent' }),
+        body: JSON.stringify({
+          action: 'get_agent',
+          voiceId: voiceModeSettings?.voiceId,
+          llmModel: voiceModeSettings?.llmModel,
+        }),
       });
 
       if (!res.ok) {
@@ -767,6 +806,7 @@ export function VoiceModeInterface({
 
   const endSession = useCallback(async () => {
     stopBrowserRecognition();
+    accumulatedFinalTranscriptRef.current = '';
     setTentativeTranscript('');
     setIsPaused(false);
     soundsRef.current.playDisconnect();
@@ -793,7 +833,9 @@ export function VoiceModeInterface({
     // @ts-ignore - setVolume exists at runtime
     conversation.setVolume?.({ volume: 0 });
     stopBrowserRecognition();
-    setTentativeTranscript('');
+    // Keep tentativeTranscript visible while paused (don't clear it)
+    // But clear accumulated finals so resume starts fresh
+    accumulatedFinalTranscriptRef.current = '';
   }, [conversation, stopBrowserRecognition]);
 
   const resumeConversation = useCallback(() => {
@@ -1042,8 +1084,10 @@ export function VoiceModeInterface({
         await onSendEmail?.(draft);
         soundsRef.current.playSend();
         setCurrentDraft(null);
+        // Notify the AI and show in conversation
+        addToolMessage('send_email', 'Email sent.');
         if (conversation.status === 'connected') {
-          conversation.sendContextualUpdate('The user just sent the draft email successfully.');
+          conversation.sendContextualUpdate('The user just sent the draft email successfully via the UI.');
         }
       } catch (err: any) {
         soundsRef.current.playError();
@@ -1052,7 +1096,7 @@ export function VoiceModeInterface({
         setIsSending(false);
       }
     },
-    [onSendEmail, conversation]
+    [onSendEmail, conversation, addToolMessage]
   );
 
   const handleSaveDraft = useCallback(
@@ -1061,13 +1105,18 @@ export function VoiceModeInterface({
       try {
         const saved = await onSaveDraft?.(draft);
         if (saved) setCurrentDraft(saved);
+        // Notify the AI and show in conversation
+        addToolMessage('save_draft', 'Draft saved.');
+        if (conversation.status === 'connected') {
+          conversation.sendContextualUpdate('The user saved the draft via the UI.');
+        }
       } catch (err: any) {
         setError(`Save failed: ${err.message}`);
       } finally {
         setIsSaving(false);
       }
     },
-    [onSaveDraft]
+    [onSaveDraft, conversation, addToolMessage]
   );
 
   const handleDiscardDraft = useCallback(
@@ -1078,11 +1127,13 @@ export function VoiceModeInterface({
         setIsDeleting(false);
       }
       setCurrentDraft(null);
+      // Notify the AI and show in conversation
+      addToolMessage('discard_draft', 'Draft discarded.');
       if (conversation.status === 'connected') {
-        conversation.sendContextualUpdate('The user discarded the draft.');
+        conversation.sendContextualUpdate('The user discarded the draft via the UI.');
       }
     },
-    [onDeleteDraft, conversation]
+    [onDeleteDraft, conversation, addToolMessage]
   );
 
   const handleDraftChange = useCallback((draft: EmailDraft) => {
@@ -1107,6 +1158,15 @@ export function VoiceModeInterface({
     : conversation.isSpeaking
     ? 'speaking'
     : 'listening';
+
+  // Detect user speaking via volume when no text transcript source is available (mobile fallback)
+  const userSpeakingByVolume =
+    isConnected &&
+    !isPaused &&
+    !conversation.isSpeaking &&
+    !speechRecognitionWorking &&
+    !tentativeTranscript &&
+    inputVolume > 0.05;
 
   const statusLabel =
     voiceStatus === 'connecting'
@@ -1327,6 +1387,43 @@ export function VoiceModeInterface({
             )}
           </motion.div>
         ))}
+
+        {/* Volume-based speaking indicator (mobile fallback when no text transcript available) */}
+        {userSpeakingByVolume && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="flex justify-end"
+          >
+            <div
+              className="px-4 py-2 rounded-2xl border flex items-center gap-1.5"
+              style={{
+                borderColor: 'rgba(6,182,212,0.2)',
+                background: 'rgba(6,182,212,0.05)',
+              }}
+            >
+              {/* Animated volume dots */}
+              {[0, 1, 2].map((i) => (
+                <motion.div
+                  key={i}
+                  className="w-1.5 h-1.5 rounded-full"
+                  style={{ background: 'rgb(6,182,212)' }}
+                  animate={{
+                    scale: [1, 1.2 + inputVolume * 3, 1],
+                    opacity: [0.4, 0.6 + inputVolume * 2, 0.4],
+                  }}
+                  transition={{
+                    duration: 0.5,
+                    repeat: Infinity,
+                    ease: 'easeInOut',
+                    delay: i * 0.15,
+                  }}
+                />
+              ))}
+            </div>
+          </motion.div>
+        )}
 
         {/* Tentative transcript */}
         {tentativeTranscript?.trim() && (

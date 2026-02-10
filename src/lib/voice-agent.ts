@@ -346,6 +346,9 @@ export interface ElevenLabsAgentConfig {
       quality?: 'high';
       provider?: 'elevenlabs' | 'scribe_realtime';
     };
+    conversation?: {
+      client_events?: string[];
+    };
   };
 }
 
@@ -380,6 +383,20 @@ export function buildAgentConfig(options: {
       asr: {
         quality: 'high',
         provider: 'scribe_realtime',
+      },
+      conversation: {
+        client_events: [
+          'audio',
+          'agent_response',
+          'agent_response_correction',
+          'user_transcript',
+          'tentative_user_transcript',
+          'interruption',
+          'client_tool_call',
+          'conversation_initiation_metadata',
+          'ping',
+          'vad_score',
+        ],
       },
     },
   };

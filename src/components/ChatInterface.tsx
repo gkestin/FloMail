@@ -567,9 +567,13 @@ export function ChatInterface({
     loadChat();
   }, [thread?.id, user?.uid, isIncognito]);
 
-  // Auto-scroll to bottom
+  // Auto-scroll to bottom only when new messages are added (not on draft edits which update in-place)
+  const prevMessageCountRef = useRef(0);
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (messages.length > prevMessageCountRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+    prevMessageCountRef.current = messages.length;
   }, [messages]);
 
   // Track if we've already auto-expanded for the current thread to avoid re-collapsing

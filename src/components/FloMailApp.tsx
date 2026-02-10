@@ -8,7 +8,7 @@ import { LoginScreen } from './LoginScreen';
 import { InboxList, MailFolder } from './InboxList';
 import { ChatInterface } from './ChatInterface';
 import { EmailThread, EmailDraft, AIProvider, AIDraftingPreferences, DraftTone, DraftLength, SignOffStyle } from '@/types';
-import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock, ChevronDown, Settings, Plus, Pencil, Edit3, Volume2, AudioLines } from 'lucide-react';
+import { Loader2, LogOut, User, ArrowLeft, ChevronLeft, ChevronRight, Archive, Search, X, Clock, ChevronDown, Pencil, Edit3, Volume2, AudioLines, Mic, Bot } from 'lucide-react';
 import { OPENAI_MODELS } from '@/lib/openai';
 import { CLAUDE_MODELS } from '@/lib/anthropic';
 import { sendEmail, archiveThread, getAttachment, createGmailDraft, updateGmailDraft, hasSnoozedLabel, fetchThread, fetchInbox, markAsRead } from '@/lib/gmail';
@@ -19,7 +19,7 @@ import { FloatingTTSMiniPlayer } from './TTSController';
 import { VoiceModeInterface } from './VoiceModeInterface';
 import { hasVoiceHistory } from '@/lib/voice-chat-persistence';
 import { SnoozeOption } from '@/lib/snooze-persistence';
-import { getUserSettings, saveUserSettings, subscribeToUserSettings, migrateSettingsFromLocalStorage, TTSSettings } from '@/lib/user-settings-persistence';
+import { getUserSettings, saveUserSettings, subscribeToUserSettings, migrateSettingsFromLocalStorage, TTSSettings, VoiceModeSettings } from '@/lib/user-settings-persistence';
 import { useThreadPreloader } from '@/hooks/useThreadPreloader';
 
 import { User as UserType } from '@/types';
@@ -140,14 +140,25 @@ export function FloMailApp() {
   };
   
   const [aiDraftingPreferences, setAiDraftingPreferences] = useState<AIDraftingPreferences>(defaultPreferences);
+  const [showAIModelSettings, setShowAIModelSettings] = useState(false);
   const [showDraftingSettings, setShowDraftingSettings] = useState(false);
-  
+
   // TTS Settings
   const [showTTSSettings, setShowTTSSettings] = useState(false);
   const [ttsSettings, setTtsSettings] = useState<TTSSettings>({
     voice: 'nova',
     speed: 1.0,
     useNaturalVoice: true,
+  });
+
+  // Voice Mode Settings (ElevenLabs)
+  const [showVoiceModeSettings, setShowVoiceModeSettings] = useState(false);
+  const [voiceModeSettings, setVoiceModeSettings] = useState<VoiceModeSettings>({
+    voiceId: '21m00Tcm4TlvDq8ikWAM',
+    voiceLabel: 'Rachel',
+    speed: 1.0,
+    stability: 0.5,
+    llmModel: 'gpt-4o',
   });
 
   // Settings have been moved up to avoid "used before declaration" error
@@ -166,6 +177,7 @@ export function FloMailApp() {
         setAiModel(settings.aiModel);
         setAiDraftingPreferences({ ...defaultPreferences, ...settings.aiDraftingPreferences });
         setTtsSettings(settings.ttsSettings);
+        if (settings.voiceModeSettings) setVoiceModeSettings(settings.voiceModeSettings);
         setSettingsLoaded(true);
 
         // Subscribe to real-time updates
@@ -174,6 +186,7 @@ export function FloMailApp() {
           setAiModel(updatedSettings.aiModel);
           setAiDraftingPreferences({ ...defaultPreferences, ...updatedSettings.aiDraftingPreferences });
           setTtsSettings(updatedSettings.ttsSettings);
+          if (updatedSettings.voiceModeSettings) setVoiceModeSettings(updatedSettings.voiceModeSettings);
         });
       });
     });
@@ -224,6 +237,20 @@ export function FloMailApp() {
       return updated;
     });
   }, [user?.uid]);
+
+  // Save Voice Mode settings to Firestore
+  const updateVoiceModeSettings = useCallback((updates: Partial<VoiceModeSettings>) => {
+    if (!user?.uid) return;
+
+    setVoiceModeSettings(prev => {
+      const updated = { ...prev, ...updates };
+      saveUserSettings(user.uid, { voiceModeSettings: updated }).catch(error => {
+        console.error('Failed to save voice mode settings:', error);
+      });
+      return updated;
+    });
+  }, [user?.uid]);
+
   const currentThreadIndexRef = useRef(0);
   const archiveHandlerRef = useRef<(() => void) | null>(null);
   const isUpdatingFromUrl = useRef(false); // Prevent URL update loops
@@ -874,6 +901,7 @@ export function FloMailApp() {
       setSelectedThread(null);
       setCurrentDraft(null);
       setCurrentView('inbox');
+      setIsTransitioning(false);
       return;
     }
 
@@ -924,20 +952,25 @@ export function FloMailApp() {
                         // Update selectedThread to reflect read status
                         setSelectedThread(prev => prev ? { ...prev, isRead: true } : prev);
                       }
-                      return;
                     }
                   } catch (e) {
                     console.error('Failed to fetch full thread:', e);
                   }
                 }
-                setSelectedThread(newThread);
+                setSelectedThread(prev => prev ?? newThread);
+                setIsTransitioning(false);
               });
+            } else {
+              setIsTransitioning(false);
             }
+          } else {
+            setIsTransitioning(false);
           }
         }, 100);
         return;
       }
       // No more to load, stay at last
+      setIsTransitioning(false);
       return;
     }
 
@@ -970,6 +1003,8 @@ export function FloMailApp() {
             }
           });
         }
+        // In voice mode, animation won't fire so reset here
+        if (isVoiceMode) setIsTransitioning(false);
       } else {
         // No cached version, fetch it (but still set view immediately to show transition)
         setSelectedThread(nextThread); // Use partial data for immediate transition
@@ -999,9 +1034,14 @@ export function FloMailApp() {
         } catch (e) {
           console.error('Failed to fetch full thread:', e);
         }
+        // In voice mode, animation won't fire so reset here
+        if (isVoiceMode) setIsTransitioning(false);
       }
+    } else {
+      // nextThread is same as current or doesn't exist - reset
+      setIsTransitioning(false);
     }
-  }, [folderThreads, allThreads, selectedThread, getAccessToken, getCachedThread, isTransitioning]);
+  }, [folderThreads, allThreads, selectedThread, getAccessToken, getCachedThread, isTransitioning, isVoiceMode]);
 
   const handlePreviousEmail = useCallback(async () => {
     // Prevent rapid navigation during transitions
@@ -1020,6 +1060,7 @@ export function FloMailApp() {
 
     if (prevIndex < 0 || navThreads.length === 0) {
       // No previous emails in this folder, stay where we are
+      setIsTransitioning(false);
       return;
     }
 
@@ -1052,6 +1093,8 @@ export function FloMailApp() {
             }
           });
         }
+        // In voice mode, animation won't fire so reset here
+        if (isVoiceMode) setIsTransitioning(false);
       } else {
         // No cached version, fetch it (but still set view immediately to show transition)
         setSelectedThread(prevThread); // Use partial data for immediate transition
@@ -1081,9 +1124,13 @@ export function FloMailApp() {
         } catch (e) {
           console.error('Failed to fetch full thread:', e);
         }
+        // In voice mode, animation won't fire so reset here
+        if (isVoiceMode) setIsTransitioning(false);
       }
+    } else {
+      setIsTransitioning(false);
     }
-  }, [folderThreads, allThreads, getAccessToken, getCachedThread, isTransitioning]);
+  }, [folderThreads, allThreads, getAccessToken, getCachedThread, isTransitioning, isVoiceMode]);
 
   // Handler for snooze from the draft card page header
   const handleSnooze = useCallback(async (option: SnoozeOption, customDate?: Date) => {
@@ -1224,6 +1271,7 @@ export function FloMailApp() {
               className="absolute top-16 right-4 z-50 w-80 max-h-[calc(100vh-100px)] rounded-xl shadow-2xl overflow-y-auto"
               style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)' }}
             >
+              {/* User profile header */}
               <div className="p-4" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
                 <div className="flex items-center gap-3">
                   {user.photoURL ? (
@@ -1245,457 +1293,611 @@ export function FloMailApp() {
                   </div>
                 </div>
               </div>
-              {/* AI Model Settings */}
-              <div className="p-4 space-y-4" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                <div className="flex items-center gap-2 mb-3">
-                  <Settings className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
-                  <span className="text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>AI Model</span>
-                </div>
-                
-                <div className="flex gap-2">
+
+              {/* Settings sections - all collapsible with uniform style */}
+              <div className="py-1">
+
+                {/* ── AI Model ─────────────────────────────────────── */}
+                <div style={{ borderBottom: '1px solid var(--border-subtle)' }}>
                   <button
                     type="button"
-                    onClick={() => {
-                      setAiProvider('anthropic');
-                      if (user?.uid) {
-                        saveUserSettings(user.uid, { aiProvider: 'anthropic' });
-                      }
-                    }}
-                    className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all"
-                    style={aiProvider === 'anthropic' ? {
-                      background: 'rgba(168, 85, 247, 0.2)',
-                      color: 'rgb(216, 180, 254)',
-                      border: '1px solid rgba(168, 85, 247, 0.5)'
-                    } : {
-                      background: 'var(--bg-interactive)',
-                      color: 'var(--text-secondary)',
-                      border: '1px solid transparent'
-                    }}
+                    onClick={() => setShowAIModelSettings(!showAIModelSettings)}
+                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/5 transition-colors"
                   >
-                    Claude
+                    <div className="flex items-center gap-2.5">
+                      <Bot className="w-4 h-4" style={{ color: 'rgb(99, 102, 241)' }} />
+                      <span className="text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>AI Model</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                        {aiProvider === 'anthropic' ? 'Claude' : 'GPT'}
+                      </span>
+                      <ChevronDown
+                        className={`w-4 h-4 transition-transform ${showAIModelSettings ? 'rotate-180' : ''}`}
+                        style={{ color: 'var(--text-muted)' }}
+                      />
+                    </div>
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAiProvider('openai');
-                      if (user?.uid) {
-                        saveUserSettings(user.uid, { aiProvider: 'openai' });
-                      }
-                    }}
-                    className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all"
-                    style={aiProvider === 'openai' ? {
-                      background: 'rgba(6, 182, 212, 0.2)',
-                      color: 'rgb(103, 232, 249)',
-                      border: '1px solid rgba(6, 182, 212, 0.5)'
-                    } : {
-                      background: 'var(--bg-interactive)',
-                      color: 'var(--text-secondary)',
-                      border: '1px solid transparent'
-                    }}
-                  >
-                    GPT
-                  </button>
+
+                  <AnimatePresence>
+                    {showAIModelSettings && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="px-4 pb-3 space-y-3">
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAiProvider('anthropic');
+                                if (user?.uid) saveUserSettings(user.uid, { aiProvider: 'anthropic' });
+                              }}
+                              className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all"
+                              style={aiProvider === 'anthropic' ? {
+                                background: 'rgba(99, 102, 241, 0.2)',
+                                color: 'rgb(165, 180, 252)',
+                                border: '1px solid rgba(99, 102, 241, 0.5)'
+                              } : {
+                                background: 'var(--bg-interactive)',
+                                color: 'var(--text-secondary)',
+                                border: '1px solid transparent'
+                              }}
+                            >
+                              Claude
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAiProvider('openai');
+                                if (user?.uid) saveUserSettings(user.uid, { aiProvider: 'openai' });
+                              }}
+                              className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all"
+                              style={aiProvider === 'openai' ? {
+                                background: 'rgba(99, 102, 241, 0.2)',
+                                color: 'rgb(165, 180, 252)',
+                                border: '1px solid rgba(99, 102, 241, 0.5)'
+                              } : {
+                                background: 'var(--bg-interactive)',
+                                color: 'var(--text-secondary)',
+                                border: '1px solid transparent'
+                              }}
+                            >
+                              GPT
+                            </button>
+                          </div>
+                          <div className="relative">
+                            <select
+                              value={aiModel}
+                              onChange={(e) => {
+                                setAiModel(e.target.value);
+                                if (user?.uid) saveUserSettings(user.uid, { aiModel: e.target.value });
+                              }}
+                              className="w-full px-3 py-2 rounded-lg text-sm appearance-none cursor-pointer focus:outline-none"
+                              style={{
+                                background: 'var(--bg-interactive)',
+                                border: '1px solid var(--border-subtle)',
+                                color: 'var(--text-primary)'
+                              }}
+                            >
+                              {Object.entries(availableModels).map(([id, name]) => (
+                                <option key={id} value={id}>{name}</option>
+                              ))}
+                            </select>
+                            <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none" style={{ color: 'var(--text-muted)' }} />
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
 
-                <div className="relative">
-                  <select
-                    value={aiModel}
-                    onChange={(e) => {
-                      setAiModel(e.target.value);
-                      if (user?.uid) {
-                        saveUserSettings(user.uid, { aiModel: e.target.value });
-                      }
-                    }}
-                    className="w-full px-3 py-2 rounded-lg text-sm appearance-none cursor-pointer focus:outline-none"
-                    style={{ 
-                      background: 'var(--bg-interactive)', 
-                      border: '1px solid var(--border-subtle)',
-                      color: 'var(--text-primary)'
-                    }}
+                {/* ── Drafting Preferences ─────────────────────────── */}
+                <div style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowDraftingSettings(!showDraftingSettings)}
+                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/5 transition-colors"
                   >
-                    {Object.entries(availableModels).map(([id, name]) => (
-                      <option key={id} value={id}>{name}</option>
-                    ))}
-                  </select>
-                  <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none" style={{ color: 'var(--text-muted)' }} />
-                </div>
-              </div>
-              
-              {/* AI Drafting Preferences - Distinct section with gradient border */}
-              <div 
-                className="m-2 rounded-lg overflow-hidden"
-                style={{ 
-                  background: 'linear-gradient(135deg, rgba(168, 85, 247, 0.1), rgba(6, 182, 212, 0.1))',
-                  border: '1px solid rgba(168, 85, 247, 0.3)'
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => setShowDraftingSettings(!showDraftingSettings)}
-                  className="w-full flex items-center justify-between p-3"
-                >
-                  <div className="flex items-center gap-2">
-                    <Edit3 className="w-4 h-4" style={{ color: 'rgb(168, 85, 247)' }} />
-                    <span className="text-xs font-medium uppercase tracking-wide" style={{ color: 'rgb(168, 85, 247)' }}>Drafting Preferences</span>
-                  </div>
-                  <ChevronDown 
-                    className={`w-4 h-4 transition-transform ${showDraftingSettings ? 'rotate-180' : ''}`} 
-                    style={{ color: 'rgb(168, 85, 247)' }} 
-                  />
-                </button>
-                
-                <AnimatePresence>
-                  {showDraftingSettings && (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="overflow-hidden"
-                    >
-                      <div className="px-3 pb-3 space-y-4">
-                        {/* User Identity */}
-                        <div className="space-y-2">
-                          <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-                            Your Name <span className="font-normal" style={{ color: 'var(--text-muted)' }}>(for sign-offs)</span>
-                          </label>
-                          <input
-                            type="text"
-                            value={aiDraftingPreferences.userName}
-                            onChange={(e) => updateDraftingPreferences({ userName: e.target.value })}
-                            placeholder="e.g., Greg Kestin"
-                            className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-1"
-                            style={{ 
-                              background: 'var(--bg-interactive)', 
-                              border: '1px solid var(--border-subtle)',
-                              color: 'var(--text-primary)'
-                            }}
-                          />
-                        </div>
-                        
-                        {/* Tone - Multiple selection */}
-                        <div className="space-y-2">
-                          <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-                            Tone <span className="font-normal" style={{ color: 'var(--text-muted)' }}>(select any that apply)</span>
-                          </label>
-                          <div className="grid grid-cols-2 gap-1.5">
-                            {(['professional', 'friendly', 'casual', 'formal'] as DraftTone[]).map((t) => {
-                              const isSelected = aiDraftingPreferences.tones?.includes(t);
-                              return (
+                    <div className="flex items-center gap-2.5">
+                      <Edit3 className="w-4 h-4" style={{ color: 'rgb(168, 85, 247)' }} />
+                      <span className="text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>Drafting Preferences</span>
+                    </div>
+                    <ChevronDown
+                      className={`w-4 h-4 transition-transform ${showDraftingSettings ? 'rotate-180' : ''}`}
+                      style={{ color: 'var(--text-muted)' }}
+                    />
+                  </button>
+
+                  <AnimatePresence>
+                    {showDraftingSettings && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="px-4 pb-3 space-y-4">
+                          {/* User Identity */}
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                              Your Name <span className="font-normal" style={{ color: 'var(--text-muted)' }}>(for sign-offs)</span>
+                            </label>
+                            <input
+                              type="text"
+                              value={aiDraftingPreferences.userName}
+                              onChange={(e) => updateDraftingPreferences({ userName: e.target.value })}
+                              placeholder="e.g., Greg Kestin"
+                              className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-1"
+                              style={{
+                                background: 'var(--bg-interactive)',
+                                border: '1px solid var(--border-subtle)',
+                                color: 'var(--text-primary)'
+                              }}
+                            />
+                          </div>
+
+                          {/* Tone */}
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                              Tone <span className="font-normal" style={{ color: 'var(--text-muted)' }}>(select any)</span>
+                            </label>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              {(['professional', 'friendly', 'casual', 'formal'] as DraftTone[]).map((t) => {
+                                const isSelected = aiDraftingPreferences.tones?.includes(t);
+                                return (
+                                  <button
+                                    key={t}
+                                    type="button"
+                                    title={toneTooltips[t]}
+                                    onClick={() => {
+                                      const currentTones = aiDraftingPreferences.tones || [];
+                                      const newTones = isSelected
+                                        ? currentTones.filter(tone => tone !== t)
+                                        : [...currentTones, t];
+                                      updateDraftingPreferences({ tones: newTones });
+                                    }}
+                                    className="px-2 py-1.5 rounded-lg text-xs font-medium transition-all capitalize"
+                                    style={isSelected ? {
+                                      background: 'rgba(168, 85, 247, 0.2)',
+                                      color: 'rgb(216, 180, 254)',
+                                      border: '1px solid rgba(168, 85, 247, 0.5)'
+                                    } : {
+                                      background: 'var(--bg-interactive)',
+                                      color: 'var(--text-secondary)',
+                                      border: '1px solid transparent'
+                                    }}
+                                  >
+                                    {t}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* Length */}
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                              Message Length
+                            </label>
+                            <div className="flex gap-1.5">
+                              {(['brief', 'moderate', 'detailed'] as DraftLength[]).map((l) => (
                                 <button
-                                  key={t}
+                                  key={l}
                                   type="button"
-                                  title={toneTooltips[t]}
+                                  title={lengthTooltips[l]}
                                   onClick={() => {
-                                    const currentTones = aiDraftingPreferences.tones || [];
-                                    const newTones = isSelected
-                                      ? currentTones.filter(tone => tone !== t)
-                                      : [...currentTones, t];
-                                    updateDraftingPreferences({ tones: newTones });
+                                    const newLength = aiDraftingPreferences.length === l ? undefined : l;
+                                    updateDraftingPreferences({ length: newLength });
                                   }}
-                                  className="px-2 py-1.5 rounded-lg text-xs font-medium transition-all capitalize"
-                                  style={isSelected ? {
-                                    background: 'rgba(168, 85, 247, 0.2)',
-                                    color: 'rgb(216, 180, 254)',
-                                    border: '1px solid rgba(168, 85, 247, 0.5)'
+                                  className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all capitalize"
+                                  style={aiDraftingPreferences.length === l ? {
+                                    background: 'rgba(6, 182, 212, 0.2)',
+                                    color: 'rgb(103, 232, 249)',
+                                    border: '1px solid rgba(6, 182, 212, 0.5)'
                                   } : {
                                     background: 'var(--bg-interactive)',
                                     color: 'var(--text-secondary)',
                                     border: '1px solid transparent'
                                   }}
                                 >
-                                  {t}
+                                  {l}
                                 </button>
-                              );
-                            })}
+                              ))}
+                            </div>
                           </div>
-                        </div>
-                        
-                        {/* Length - Toggle selection */}
-                        <div className="space-y-2">
-                          <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-                            Message Length <span className="font-normal" style={{ color: 'var(--text-muted)' }}>(click again to deselect)</span>
-                          </label>
-                          <div className="flex gap-1.5">
-                            {(['brief', 'moderate', 'detailed'] as DraftLength[]).map((l) => (
+
+                          {/* Exclamations */}
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                              Exclamation Marks
+                            </label>
+                            <div className="flex gap-1.5">
                               <button
-                                key={l}
                                 type="button"
-                                title={lengthTooltips[l]}
-                                onClick={() => {
-                                  // Toggle: click again to deselect
-                                  const newLength = aiDraftingPreferences.length === l ? undefined : l;
-                                  updateDraftingPreferences({ length: newLength });
-                                }}
-                                className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all capitalize"
-                                style={aiDraftingPreferences.length === l ? {
-                                  background: 'rgba(6, 182, 212, 0.2)',
-                                  color: 'rgb(103, 232, 249)',
-                                  border: '1px solid rgba(6, 182, 212, 0.5)'
+                                title='Prompt: "You may use exclamation marks where appropriate to convey enthusiasm or warmth."'
+                                onClick={() => updateDraftingPreferences({ useExclamations: aiDraftingPreferences.useExclamations === true ? undefined : true })}
+                                className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all"
+                                style={aiDraftingPreferences.useExclamations === true ? {
+                                  background: 'rgba(34, 197, 94, 0.2)',
+                                  color: 'rgb(134, 239, 172)',
+                                  border: '1px solid rgba(34, 197, 94, 0.5)'
                                 } : {
                                   background: 'var(--bg-interactive)',
                                   color: 'var(--text-secondary)',
                                   border: '1px solid transparent'
                                 }}
                               >
-                                {l}
+                                Use them!
                               </button>
-                            ))}
+                              <button
+                                type="button"
+                                title='Prompt: "Avoid using exclamation marks. Keep punctuation understated."'
+                                onClick={() => updateDraftingPreferences({ useExclamations: aiDraftingPreferences.useExclamations === false ? undefined : false })}
+                                className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all"
+                                style={aiDraftingPreferences.useExclamations === false ? {
+                                  background: 'rgba(239, 68, 68, 0.2)',
+                                  color: 'rgb(252, 165, 165)',
+                                  border: '1px solid rgba(239, 68, 68, 0.5)'
+                                } : {
+                                  background: 'var(--bg-interactive)',
+                                  color: 'var(--text-secondary)',
+                                  border: '1px solid transparent'
+                                }}
+                              >
+                                Avoid
+                              </button>
+                            </div>
                           </div>
-                        </div>
-                        
-                        {/* Exclamations - 3-state toggle */}
-                        <div className="space-y-2">
-                          <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-                            Exclamation Marks
-                          </label>
-                          <div className="flex gap-1.5">
-                            <button
-                              type="button"
-                              title='Prompt: "You may use exclamation marks where appropriate to convey enthusiasm or warmth."'
-                              onClick={() => updateDraftingPreferences({ useExclamations: aiDraftingPreferences.useExclamations === true ? undefined : true })}
-                              className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all"
-                              style={aiDraftingPreferences.useExclamations === true ? {
-                                background: 'rgba(34, 197, 94, 0.2)',
-                                color: 'rgb(134, 239, 172)',
-                                border: '1px solid rgba(34, 197, 94, 0.5)'
-                              } : {
-                                background: 'var(--bg-interactive)',
-                                color: 'var(--text-secondary)',
-                                border: '1px solid transparent'
-                              }}
-                            >
-                              Use them!
-                            </button>
-                            <button
-                              type="button"
-                              title='Prompt: "Avoid using exclamation marks. Keep punctuation understated."'
-                              onClick={() => updateDraftingPreferences({ useExclamations: aiDraftingPreferences.useExclamations === false ? undefined : false })}
-                              className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all"
-                              style={aiDraftingPreferences.useExclamations === false ? {
-                                background: 'rgba(239, 68, 68, 0.2)',
-                                color: 'rgb(252, 165, 165)',
-                                border: '1px solid rgba(239, 68, 68, 0.5)'
-                              } : {
-                                background: 'var(--bg-interactive)',
-                                color: 'var(--text-secondary)',
-                                border: '1px solid transparent'
-                              }}
-                            >
-                              Avoid
-                            </button>
-                          </div>
-                        </div>
-                        
-                        {/* Sign-off style */}
-                        <div className="space-y-2">
-                          <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-                            Sign-off Style
-                          </label>
-                          <div className="relative">
-                            <select
-                              value={aiDraftingPreferences.signOffStyle}
-                              onChange={(e) => updateDraftingPreferences({ signOffStyle: e.target.value as SignOffStyle })}
-                              className="w-full px-2 py-1.5 rounded-lg text-xs appearance-none cursor-pointer focus:outline-none"
-                              style={{ 
-                                background: 'var(--bg-interactive)', 
-                                border: '1px solid var(--border-subtle)',
-                                color: 'var(--text-primary)'
-                              }}
-                            >
-                              <option value="none">No sign-off</option>
-                              <option value="best">Best, [Name]</option>
-                              <option value="thanks">Thanks, [Name]</option>
-                              <option value="regards">Regards, [Name]</option>
-                              <option value="cheers">Cheers, [Name]</option>
-                              <option value="custom">Custom...</option>
-                            </select>
-                            <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none" style={{ color: 'var(--text-muted)' }} />
-                          </div>
-                          {aiDraftingPreferences.signOffStyle === 'custom' && (
-                            <input
-                              type="text"
-                              value={aiDraftingPreferences.customSignOff || ''}
-                              onChange={(e) => updateDraftingPreferences({ customSignOff: e.target.value })}
-                              placeholder="e.g., Warmly, Greg"
-                              className="w-full px-2 py-1.5 rounded-lg text-xs focus:outline-none focus:ring-1"
-                              style={{ 
-                                background: 'var(--bg-interactive)', 
-                                border: '1px solid var(--border-subtle)',
-                                color: 'var(--text-primary)'
-                              }}
-                            />
-                          )}
-                        </div>
-                        
-                        {/* Custom Instructions */}
-                        <div className="space-y-2">
-                          <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-                            Custom Instructions
-                          </label>
-                          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                            Free-form instructions added to the AI prompt
-                          </p>
-                          <textarea
-                            value={aiDraftingPreferences.customInstructions || ''}
-                            onChange={(e) => updateDraftingPreferences({ customInstructions: e.target.value })}
-                            placeholder="e.g., Always be concise. Never use 'per our conversation'. Include relevant context from the thread."
-                            rows={3}
-                            className="w-full px-2 py-1.5 rounded-lg text-xs focus:outline-none focus:ring-1 resize-none"
-                            style={{ 
-                              background: 'var(--bg-interactive)', 
-                              border: '1px solid var(--border-subtle)',
-                              color: 'var(--text-primary)'
-                            }}
-                          />
-                        </div>
-                        
-                        <p className="text-xs italic" style={{ color: 'var(--text-muted)' }}>
-                          💡 Hover over options to see the exact prompt text
-                        </p>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-              
-              {/* Text-to-Speech Settings */}
-              <div 
-                className="overflow-hidden"
-                style={{ borderBottom: '1px solid var(--border-subtle)' }}
-              >
-                <button
-                  type="button"
-                  onClick={() => setShowTTSSettings(!showTTSSettings)}
-                  className="w-full flex items-center justify-between p-3"
-                >
-                  <div className="flex items-center gap-2">
-                    <Volume2 className="w-4 h-4" style={{ color: 'rgb(34, 197, 94)' }} />
-                    <span className="text-xs font-medium uppercase tracking-wide" style={{ color: 'rgb(34, 197, 94)' }}>Text-to-Speech</span>
-                  </div>
-                  <ChevronDown 
-                    className={`w-4 h-4 transition-transform ${showTTSSettings ? 'rotate-180' : ''}`} 
-                    style={{ color: 'rgb(34, 197, 94)' }} 
-                  />
-                </button>
-                
-                <AnimatePresence>
-                  {showTTSSettings && (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2, ease: 'easeInOut' }}
-                      className="overflow-hidden"
-                    >
-                      <div className="px-3 pb-3 space-y-4">
-                        {/* Natural Voice Toggle */}
-                        <div className="space-y-2">
-                          <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-                            Voice Quality
-                          </label>
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => updateTTSSettings({ useNaturalVoice: true })}
-                              className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all"
-                              style={ttsSettings.useNaturalVoice ? {
-                                background: 'rgba(34, 197, 94, 0.2)',
-                                color: 'rgb(134, 239, 172)',
-                                border: '1px solid rgba(34, 197, 94, 0.5)'
-                              } : {
-                                background: 'var(--bg-interactive)',
-                                color: 'var(--text-secondary)',
-                                border: '1px solid transparent'
-                              }}
-                            >
-                              Natural (AI)
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => updateTTSSettings({ useNaturalVoice: false })}
-                              className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all"
-                              style={!ttsSettings.useNaturalVoice ? {
-                                background: 'rgba(34, 197, 94, 0.2)',
-                                color: 'rgb(134, 239, 172)',
-                                border: '1px solid rgba(34, 197, 94, 0.5)'
-                              } : {
-                                background: 'var(--bg-interactive)',
-                                color: 'var(--text-secondary)',
-                                border: '1px solid transparent'
-                              }}
-                            >
-                              System
-                            </button>
-                          </div>
-                        </div>
-                        
-                        {/* Voice Selection (only for Natural) */}
-                        {ttsSettings.useNaturalVoice && (
+
+                          {/* Sign-off style */}
                           <div className="space-y-2">
                             <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-                              Voice
+                              Sign-off Style
                             </label>
                             <div className="relative">
                               <select
-                                value={ttsSettings.voice}
-                                onChange={(e) => updateTTSSettings({ voice: e.target.value })}
+                                value={aiDraftingPreferences.signOffStyle}
+                                onChange={(e) => updateDraftingPreferences({ signOffStyle: e.target.value as SignOffStyle })}
                                 className="w-full px-2 py-1.5 rounded-lg text-xs appearance-none cursor-pointer focus:outline-none"
-                                style={{ 
-                                  background: 'var(--bg-interactive)', 
+                                style={{
+                                  background: 'var(--bg-interactive)',
                                   border: '1px solid var(--border-subtle)',
                                   color: 'var(--text-primary)'
                                 }}
                               >
-                                <option value="alloy">Alloy (Neutral)</option>
-                                <option value="echo">Echo (Male)</option>
-                                <option value="fable">Fable (Expressive)</option>
-                                <option value="onyx">Onyx (Deep Male)</option>
-                                <option value="nova">Nova (Female)</option>
-                                <option value="shimmer">Shimmer (Soft Female)</option>
+                                <option value="none">No sign-off</option>
+                                <option value="best">Best, [Name]</option>
+                                <option value="thanks">Thanks, [Name]</option>
+                                <option value="regards">Regards, [Name]</option>
+                                <option value="cheers">Cheers, [Name]</option>
+                                <option value="custom">Custom...</option>
+                              </select>
+                              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none" style={{ color: 'var(--text-muted)' }} />
+                            </div>
+                            {aiDraftingPreferences.signOffStyle === 'custom' && (
+                              <input
+                                type="text"
+                                value={aiDraftingPreferences.customSignOff || ''}
+                                onChange={(e) => updateDraftingPreferences({ customSignOff: e.target.value })}
+                                placeholder="e.g., Warmly, Greg"
+                                className="w-full px-2 py-1.5 rounded-lg text-xs focus:outline-none focus:ring-1"
+                                style={{
+                                  background: 'var(--bg-interactive)',
+                                  border: '1px solid var(--border-subtle)',
+                                  color: 'var(--text-primary)'
+                                }}
+                              />
+                            )}
+                          </div>
+
+                          {/* Custom Instructions */}
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                              Custom Instructions
+                            </label>
+                            <textarea
+                              value={aiDraftingPreferences.customInstructions || ''}
+                              onChange={(e) => updateDraftingPreferences({ customInstructions: e.target.value })}
+                              placeholder="e.g., Always be concise. Never use 'per our conversation'."
+                              rows={3}
+                              className="w-full px-2 py-1.5 rounded-lg text-xs focus:outline-none focus:ring-1 resize-none"
+                              style={{
+                                background: 'var(--bg-interactive)',
+                                border: '1px solid var(--border-subtle)',
+                                color: 'var(--text-primary)'
+                              }}
+                            />
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+                {/* ── Text-to-Speech ───────────────────────────────── */}
+                <div style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowTTSSettings(!showTTSSettings)}
+                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/5 transition-colors"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Volume2 className="w-4 h-4" style={{ color: 'rgb(34, 197, 94)' }} />
+                      <span className="text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>Text-to-Speech</span>
+                    </div>
+                    <ChevronDown
+                      className={`w-4 h-4 transition-transform ${showTTSSettings ? 'rotate-180' : ''}`}
+                      style={{ color: 'var(--text-muted)' }}
+                    />
+                  </button>
+
+                  <AnimatePresence>
+                    {showTTSSettings && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="px-4 pb-3 space-y-4">
+                          {/* Natural Voice Toggle */}
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                              Voice Quality
+                            </label>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => updateTTSSettings({ useNaturalVoice: true })}
+                                className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all"
+                                style={ttsSettings.useNaturalVoice ? {
+                                  background: 'rgba(34, 197, 94, 0.2)',
+                                  color: 'rgb(134, 239, 172)',
+                                  border: '1px solid rgba(34, 197, 94, 0.5)'
+                                } : {
+                                  background: 'var(--bg-interactive)',
+                                  color: 'var(--text-secondary)',
+                                  border: '1px solid transparent'
+                                }}
+                              >
+                                Natural (AI)
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => updateTTSSettings({ useNaturalVoice: false })}
+                                className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all"
+                                style={!ttsSettings.useNaturalVoice ? {
+                                  background: 'rgba(34, 197, 94, 0.2)',
+                                  color: 'rgb(134, 239, 172)',
+                                  border: '1px solid rgba(34, 197, 94, 0.5)'
+                                } : {
+                                  background: 'var(--bg-interactive)',
+                                  color: 'var(--text-secondary)',
+                                  border: '1px solid transparent'
+                                }}
+                              >
+                                System
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Voice Selection */}
+                          {ttsSettings.useNaturalVoice && (
+                            <div className="space-y-2">
+                              <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                                Voice
+                              </label>
+                              <div className="relative">
+                                <select
+                                  value={ttsSettings.voice}
+                                  onChange={(e) => updateTTSSettings({ voice: e.target.value })}
+                                  className="w-full px-2 py-1.5 rounded-lg text-xs appearance-none cursor-pointer focus:outline-none"
+                                  style={{
+                                    background: 'var(--bg-interactive)',
+                                    border: '1px solid var(--border-subtle)',
+                                    color: 'var(--text-primary)'
+                                  }}
+                                >
+                                  <option value="alloy">Alloy (Neutral)</option>
+                                  <option value="echo">Echo (Male)</option>
+                                  <option value="fable">Fable (Expressive)</option>
+                                  <option value="onyx">Onyx (Deep Male)</option>
+                                  <option value="nova">Nova (Female)</option>
+                                  <option value="shimmer">Shimmer (Soft Female)</option>
+                                </select>
+                                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none" style={{ color: 'var(--text-muted)' }} />
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Speed */}
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                              Speed: {ttsSettings.speed.toFixed(1)}x
+                            </label>
+                            <input
+                              type="range"
+                              min="0.5"
+                              max="2.0"
+                              step="0.1"
+                              value={ttsSettings.speed}
+                              onChange={(e) => updateTTSSettings({ speed: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 rounded-lg appearance-none cursor-pointer"
+                              style={{
+                                background: `linear-gradient(to right, rgb(34, 197, 94) 0%, rgb(34, 197, 94) ${((ttsSettings.speed - 0.5) / 1.5) * 100}%, var(--bg-interactive) ${((ttsSettings.speed - 0.5) / 1.5) * 100}%, var(--bg-interactive) 100%)`,
+                                accentColor: 'rgb(34, 197, 94)'
+                              }}
+                            />
+                            <div className="flex justify-between text-xs" style={{ color: 'var(--text-muted)' }}>
+                              <span>0.5x</span>
+                              <span>1.0x</span>
+                              <span>2.0x</span>
+                            </div>
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+                {/* ── Voice Mode (ElevenLabs) ──────────────────────── */}
+                <div style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowVoiceModeSettings(!showVoiceModeSettings)}
+                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/5 transition-colors"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Mic className="w-4 h-4" style={{ color: 'rgb(6, 182, 212)' }} />
+                      <span className="text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>Voice Mode</span>
+                    </div>
+                    <ChevronDown
+                      className={`w-4 h-4 transition-transform ${showVoiceModeSettings ? 'rotate-180' : ''}`}
+                      style={{ color: 'var(--text-muted)' }}
+                    />
+                  </button>
+
+                  <AnimatePresence>
+                    {showVoiceModeSettings && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="px-4 pb-3 space-y-4">
+                          {/* Voice selection */}
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                              Assistant Voice
+                            </label>
+                            <div className="relative">
+                              <select
+                                value={voiceModeSettings.voiceId}
+                                onChange={(e) => {
+                                  const opt = e.target.selectedOptions[0];
+                                  updateVoiceModeSettings({ voiceId: e.target.value, voiceLabel: opt?.text?.split(' (')[0] || e.target.value });
+                                }}
+                                className="w-full px-2 py-1.5 rounded-lg text-xs appearance-none cursor-pointer focus:outline-none"
+                                style={{
+                                  background: 'var(--bg-interactive)',
+                                  border: '1px solid var(--border-subtle)',
+                                  color: 'var(--text-primary)'
+                                }}
+                              >
+                                <option value="21m00Tcm4TlvDq8ikWAM">Rachel (Calm Female)</option>
+                                <option value="EXAVITQu4vr4xnSDxMaL">Bella (Warm Female)</option>
+                                <option value="ErXwobaYiN019PkySvjV">Antoni (Warm Male)</option>
+                                <option value="VR6AewLTigWG4xSOukaG">Arnold (Deep Male)</option>
+                                <option value="pNInz6obpgDQGcFmaJgB">Adam (Clear Male)</option>
+                                <option value="yoZ06aMxZJJ28mfd3POQ">Sam (Raspy Male)</option>
+                                <option value="jBpfuIE2acCO8z3wKNLl">Gigi (Animated Female)</option>
+                                <option value="onwK4e9ZLuTAKqWW03F9">Daniel (Authoritative)</option>
                               </select>
                               <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none" style={{ color: 'var(--text-muted)' }} />
                             </div>
                           </div>
-                        )}
-                        
-                        {/* Speed Control */}
-                        <div className="space-y-2">
-                          <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-                            Speed: {ttsSettings.speed.toFixed(1)}x
-                          </label>
-                          <input
-                            type="range"
-                            min="0.5"
-                            max="2.0"
-                            step="0.1"
-                            value={ttsSettings.speed}
-                            onChange={(e) => updateTTSSettings({ speed: parseFloat(e.target.value) })}
-                            className="w-full h-1.5 rounded-lg appearance-none cursor-pointer"
-                            style={{ 
-                              background: `linear-gradient(to right, rgb(34, 197, 94) 0%, rgb(34, 197, 94) ${((ttsSettings.speed - 0.5) / 1.5) * 100}%, var(--bg-interactive) ${((ttsSettings.speed - 0.5) / 1.5) * 100}%, var(--bg-interactive) 100%)`,
-                              accentColor: 'rgb(34, 197, 94)'
-                            }}
-                          />
-                          <div className="flex justify-between text-xs" style={{ color: 'var(--text-muted)' }}>
-                            <span>0.5x</span>
-                            <span>1.0x</span>
-                            <span>2.0x</span>
+
+                          {/* Speed */}
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                              Speaking Speed: {voiceModeSettings.speed.toFixed(1)}x
+                            </label>
+                            <input
+                              type="range"
+                              min="0.7"
+                              max="1.5"
+                              step="0.1"
+                              value={voiceModeSettings.speed}
+                              onChange={(e) => updateVoiceModeSettings({ speed: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 rounded-lg appearance-none cursor-pointer"
+                              style={{
+                                background: `linear-gradient(to right, rgb(6, 182, 212) 0%, rgb(6, 182, 212) ${((voiceModeSettings.speed - 0.7) / 0.8) * 100}%, var(--bg-interactive) ${((voiceModeSettings.speed - 0.7) / 0.8) * 100}%, var(--bg-interactive) 100%)`,
+                                accentColor: 'rgb(6, 182, 212)'
+                              }}
+                            />
+                            <div className="flex justify-between text-xs" style={{ color: 'var(--text-muted)' }}>
+                              <span>0.7x</span>
+                              <span>1.0x</span>
+                              <span>1.5x</span>
+                            </div>
                           </div>
+
+                          {/* Stability */}
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                              Voice Stability: {(voiceModeSettings.stability * 100).toFixed(0)}%
+                            </label>
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.05"
+                              value={voiceModeSettings.stability}
+                              onChange={(e) => updateVoiceModeSettings({ stability: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 rounded-lg appearance-none cursor-pointer"
+                              style={{
+                                background: `linear-gradient(to right, rgb(6, 182, 212) 0%, rgb(6, 182, 212) ${voiceModeSettings.stability * 100}%, var(--bg-interactive) ${voiceModeSettings.stability * 100}%, var(--bg-interactive) 100%)`,
+                                accentColor: 'rgb(6, 182, 212)'
+                              }}
+                            />
+                            <div className="flex justify-between text-xs" style={{ color: 'var(--text-muted)' }}>
+                              <span>Expressive</span>
+                              <span>Stable</span>
+                            </div>
+                          </div>
+
+                          {/* LLM Model */}
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                              Voice AI Model
+                            </label>
+                            <div className="relative">
+                              <select
+                                value={voiceModeSettings.llmModel}
+                                onChange={(e) => updateVoiceModeSettings({ llmModel: e.target.value })}
+                                className="w-full px-2 py-1.5 rounded-lg text-xs appearance-none cursor-pointer focus:outline-none"
+                                style={{
+                                  background: 'var(--bg-interactive)',
+                                  border: '1px solid var(--border-subtle)',
+                                  color: 'var(--text-primary)'
+                                }}
+                              >
+                                <option value="gpt-4o">GPT-4o (Recommended)</option>
+                                <option value="gpt-4o-mini">GPT-4o Mini (Faster)</option>
+                                <option value="gpt-4.1">GPT-4.1</option>
+                                <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
+                              </select>
+                              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none" style={{ color: 'var(--text-muted)' }} />
+                            </div>
+                          </div>
+
+                          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                            Changes apply on next voice session.
+                          </p>
                         </div>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
               </div>
 
+              {/* Sign out */}
               <button
                 onClick={signOut}
-                className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors hover:opacity-80"
+                className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/5"
                 style={{ color: 'var(--text-secondary)' }}
               >
-                <LogOut className="w-5 h-5" style={{ color: 'var(--text-muted)' }} />
-                Sign out
+                <LogOut className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+                <span className="text-sm">Sign out</span>
               </button>
             </motion.div>
           </>
@@ -1953,6 +2155,7 @@ export function FloMailApp() {
               onGoToInbox={handleGoToInbox}
               onExitVoiceMode={() => setIsVoiceMode(false)}
               onVoiceHistoryChange={handleVoiceHistoryChange}
+              voiceModeSettings={voiceModeSettings}
             />
           </div>
         )}
