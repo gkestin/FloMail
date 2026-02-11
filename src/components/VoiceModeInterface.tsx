@@ -3,8 +3,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Mic,
-  MicOff,
   Loader2,
   X,
   AlertCircle,
@@ -13,11 +11,15 @@ import {
   ArrowRight,
   Pause,
   Play,
+  Ghost,
+  Trash2,
+  Clock,
 } from 'lucide-react';
 import { useConversation } from '@elevenlabs/react';
 import { DraftCard } from './DraftCard';
 import { EmailThread, EmailDraft, AIProvider, AIDraftingPreferences } from '@/types';
 import { buildDraftFromToolCall } from '@/lib/agent-tools';
+import { getDraftForThread } from '@/lib/gmail';
 import { buildVoiceAgentPrompt, buildDynamicFirstMessage, extractTextFromHtml } from '@/lib/voice-agent';
 import { VoiceSoundEffects } from '@/lib/voice-agent';
 import { useAuth } from '@/contexts/AuthContext';
@@ -26,6 +28,7 @@ import {
   generateSessionId,
   loadVoiceChat,
   saveVoiceChat,
+  clearVoiceChat,
   segmentMessagesByThread,
   PersistedVoiceMessage,
 } from '@/lib/voice-chat-persistence';
@@ -178,16 +181,18 @@ export function VoiceModeInterface({
   const [processingTool, setProcessingTool] = useState<string | null>(null);
   const [isPaused, setIsPaused] = useState(false);
   const isPausedRef = useRef(false);
-  const [userMicMuted, setUserMicMuted] = useState(false); // User's manual mic mute
   const [isAgentSpeaking, setIsAgentSpeaking] = useState(false); // Track agent speech for echo prevention
   const [inputVolume, setInputVolume] = useState(0);
   const [outputVolume, setOutputVolume] = useState(0);
   const [speechRecognitionWorking, setSpeechRecognitionWorking] = useState(false);
+  const [isIncognito, setIsIncognito] = useState(false);
+  const [collapsedHistory, setCollapsedHistory] = useState<VoiceMessage[]>([]);
+  const isIncognitoRef = useRef(false);
 
-  // Computed mic mute: muted if user chose to, or paused, or agent is speaking (echo prevention).
+  // Computed mic mute: muted when paused or agent is speaking (echo prevention).
   // Auto-muting during agent speech prevents the mic from picking up TTS audio from speakers
-  // and causing the AI to reply to itself (echo loop). User can still interrupt via tap.
-  const effectiveMicMuted = userMicMuted || isPaused || isAgentSpeaking;
+  // and causing the AI to reply to itself (echo loop).
+  const effectiveMicMuted = isPaused || isAgentSpeaking;
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -234,6 +239,7 @@ export function VoiceModeInterface({
   useEffect(() => { onGoToInboxRef.current = onGoToInbox; }, [onGoToInbox]);
   useEffect(() => { onDraftCreatedRef.current = onDraftCreated; }, [onDraftCreated]);
   useEffect(() => { onSendEmailRef.current = onSendEmail; }, [onSendEmail]);
+  useEffect(() => { isIncognitoRef.current = isIncognito; }, [isIncognito]);
 
   // Track whether the user has already discussed this thread (for opening behavior)
   const threadHasHistoryRef = useRef<Set<string>>(new Set());
@@ -909,7 +915,6 @@ export function VoiceModeInterface({
     accumulatedFinalTranscriptRef.current = '';
     setTentativeTranscript('');
     setIsPaused(false);
-    setUserMicMuted(false);
     soundsRef.current.playDisconnect();
 
     // Save conversation before disconnecting
@@ -936,8 +941,9 @@ export function VoiceModeInterface({
     conversation.sendContextualUpdate(
       '[SYSTEM] The user has PAUSED the conversation. STOP talking immediately. Do NOT say anything until they resume. Wait silently.'
     );
-    // Clear accumulated finals so resume starts fresh
+    // Clear transcripts so nothing lingers while paused
     accumulatedFinalTranscriptRef.current = '';
+    setTentativeTranscript('');
   }, [conversation, stopBrowserRecognition]);
 
   const resumeConversation = useCallback(() => {
@@ -1035,7 +1041,7 @@ export function VoiceModeInterface({
    * Only saves non-history messages (new ones from this session).
    */
   const saveCurrentSession = useCallback(async () => {
-    if (!user?.uid) return;
+    if (!user?.uid || isIncognitoRef.current) return;
 
     // Get only messages from this session (not loaded history)
     const sessionMessages = messages.filter((m) => !m.isHistory && !m.isSessionDivider);
@@ -1048,12 +1054,15 @@ export function VoiceModeInterface({
       sessionIdRef.current
     );
 
-    // Save each thread's segment
+    // Save each thread's segment, including the latest email message ID for new-email detection
     const savePromises: Promise<void>[] = [];
     segments.forEach((msgs, threadId) => {
       if (msgs.length > 0) {
+        const lastEmailMsgId = threadRef.current?.id === threadId
+          ? threadRef.current.messages?.[threadRef.current.messages.length - 1]?.id
+          : undefined;
         savePromises.push(
-          saveVoiceChat(user.uid, threadId, msgs).then(() => {
+          saveVoiceChat(user.uid, threadId, msgs, lastEmailMsgId).then(() => {
             onVoiceHistoryChange?.(threadId, true);
           })
         );
@@ -1072,11 +1081,16 @@ export function VoiceModeInterface({
    */
   const loadHistoryForThread = useCallback(
     async (threadId: string) => {
-      if (!user?.uid || historyLoadedForRef.current === threadId) return;
+      if (!user?.uid || isIncognitoRef.current || historyLoadedForRef.current === threadId) return;
       historyLoadedForRef.current = threadId;
 
-      const history = await loadVoiceChat(user.uid, threadId);
+      const { messages: history, lastEmailMessageId: savedEmailMsgId } = await loadVoiceChat(user.uid, threadId);
       if (history.length === 0) return;
+
+      // Detect whether new emails have arrived since the last voice chat
+      const currentThread = threadRef.current;
+      const latestEmailMsgId = currentThread?.messages?.[currentThread.messages.length - 1]?.id;
+      const hasNewEmailsSinceChat = savedEmailMsgId && latestEmailMsgId && savedEmailMsgId !== latestEmailMsgId;
 
       // Group by sessionId for session dividers
       const sessionGroups: { sessionId: string; date: Date; msgs: PersistedVoiceMessage[] }[] = [];
@@ -1131,21 +1145,27 @@ export function VoiceModeInterface({
         // Mark this thread as having prior discussion (so opening greeting is brief)
         threadHasHistoryRef.current.add(threadId);
 
-        // Add a "current session" divider
-        historyMessages.push({
-          id: `divider-current-${Date.now()}`,
-          role: 'assistant',
-          content: 'Now',
-          timestamp: new Date(),
-          isSessionDivider: true,
-          sessionDate: 'Now',
-        });
+        if (hasNewEmailsSinceChat) {
+          // New emails arrived since last voice chat — collapse old history
+          // behind a "Load earlier messages" button (matches ChatInterface behavior)
+          setCollapsedHistory(historyMessages);
+        } else {
+          // No new emails — show history inline with a "Now" divider
+          historyMessages.push({
+            id: `divider-current-${Date.now()}`,
+            role: 'assistant',
+            content: 'Now',
+            timestamp: new Date(),
+            isSessionDivider: true,
+            sessionDate: 'Now',
+          });
 
-        setMessages((prev) => {
-          // Remove any existing history (in case of reload)
-          const nonHistory = prev.filter((m) => !m.isHistory && !m.isSessionDivider);
-          return [...historyMessages, ...nonHistory];
-        });
+          setMessages((prev) => {
+            // Remove any existing history (in case of reload)
+            const nonHistory = prev.filter((m) => !m.isHistory && !m.isSessionDivider);
+            return [...historyMessages, ...nonHistory];
+          });
+        }
       }
     },
     [user?.uid]
@@ -1157,6 +1177,51 @@ export function VoiceModeInterface({
       loadHistoryForThread(thread.id);
     }
   }, [thread?.id, loadHistoryForThread]);
+
+  // Restore unsent Gmail drafts for the current thread (matches ChatInterface behavior)
+  useEffect(() => {
+    if (!thread?.id || currentDraft) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getAccessToken();
+        if (!token || cancelled) return;
+        const gmailDraft = await getDraftForThread(token, thread.id);
+        if (!gmailDraft || cancelled) return;
+        // Strip quoted content from reply bodies to avoid showing the full chain
+        let cleanBody = gmailDraft.body;
+        if (gmailDraft.type === 'reply' && thread) {
+          const quoteIdx = cleanBody.indexOf('<div class="gmail_quote">');
+          if (quoteIdx > 0) cleanBody = cleanBody.slice(0, quoteIdx).trim();
+          const onWroteIdx = cleanBody.search(/\nOn .+ wrote:\n/);
+          if (onWroteIdx > 0) cleanBody = cleanBody.slice(0, onWroteIdx).trim();
+        }
+        const restoredDraft: EmailDraft = {
+          to: gmailDraft.to,
+          cc: gmailDraft.cc,
+          bcc: gmailDraft.bcc,
+          subject: gmailDraft.subject,
+          body: cleanBody,
+          type: gmailDraft.type,
+          threadId: gmailDraft.threadId,
+          inReplyTo: gmailDraft.inReplyTo,
+          references: gmailDraft.references,
+          gmailDraftId: gmailDraft.id,
+        };
+        setCurrentDraft(restoredDraft);
+        addToolMessage('restore_draft', 'Restored unsent draft from Gmail.');
+        // Let the AI know about the restored draft
+        if (conversation.status === 'connected') {
+          conversation.sendContextualUpdate(
+            `[SYSTEM] An unsent draft has been restored from Gmail for this thread. The user can review and send it, or ask you to modify it.`
+          );
+        }
+      } catch {
+        // Silently fail — draft restoration is best-effort
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [thread?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-save every 30 seconds during active session
   useEffect(() => {
@@ -1391,17 +1456,85 @@ export function VoiceModeInterface({
           )}
         </div>
 
-        <button
-          onClick={() => {
-            endSession();
-            onExitVoiceMode();
-          }}
-          className="p-1.5 rounded-lg hover:bg-white/5 transition-colors flex-shrink-0"
-          style={{ color: 'var(--text-muted)' }}
-        >
-          <X className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {/* Incognito toggle */}
+          <button
+            onClick={() => setIsIncognito((v) => !v)}
+            className="p-1.5 rounded-lg hover:bg-white/5 transition-colors"
+            style={{
+              color: isIncognito ? 'rgb(139,92,246)' : 'var(--text-muted)',
+              background: isIncognito ? 'rgba(139,92,246,0.2)' : 'transparent',
+            }}
+            title={isIncognito ? 'Incognito mode ON' : 'Enable incognito mode'}
+          >
+            <Ghost className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Clear chat */}
+          {messages.length > 0 && (
+            <button
+              onClick={() => {
+                if (confirm('Clear all voice chat messages?')) {
+                  setMessages([]);
+                  setCollapsedHistory([]);
+                  setCurrentDraft(null);
+                  lastSavedCountRef.current = 0;
+                  // Also clear from Firestore if not incognito
+                  if (!isIncognito && thread?.id && user?.uid) {
+                    clearVoiceChat(user.uid, thread.id);
+                    onVoiceHistoryChange?.(thread.id, false);
+                  }
+                }
+              }}
+              className="p-1.5 rounded-lg hover:bg-red-500/10 transition-colors group"
+              style={{ color: 'var(--text-muted)' }}
+              title="Clear chat"
+            >
+              <Trash2 className="w-3.5 h-3.5 group-hover:text-red-400 transition-colors" />
+            </button>
+          )}
+
+          {/* Close voice mode */}
+          <button
+            onClick={() => {
+              endSession();
+              onExitVoiceMode();
+            }}
+            className="p-1.5 rounded-lg hover:bg-white/5 transition-colors"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
+
+      {/* Incognito indicator bar */}
+      <AnimatePresence>
+        {isIncognito && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="overflow-hidden flex-shrink-0"
+          >
+            <div className="px-4 py-1.5 flex items-center justify-center gap-1.5"
+              style={{
+                background: 'rgba(139,92,246,0.08)',
+                borderBottom: '1px solid rgba(139,92,246,0.15)',
+              }}
+            >
+              <Ghost className="w-3 h-3 text-purple-400" />
+              <span className="text-[11px] text-purple-400 font-medium">Incognito — chat won&apos;t be saved</span>
+              <button
+                onClick={() => setIsIncognito(false)}
+                className="ml-1 text-purple-400 hover:text-purple-300"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ── Error banner ───────────────────────────────────── */}
       <AnimatePresence>
@@ -1425,7 +1558,45 @@ export function VoiceModeInterface({
 
       {/* ── Transcript (fills all available space) ─────────── */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2.5">
-        {messages.length === 0 && !tentativeTranscript && (
+        {/* Load earlier messages — shown when history is collapsed due to new emails */}
+        {collapsedHistory.length > 0 && (
+          <motion.button
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            onClick={() => {
+              // Prepend collapsed history + "Now" divider to current messages
+              const withDivider = [
+                ...collapsedHistory,
+                {
+                  id: `divider-current-${Date.now()}`,
+                  role: 'assistant' as const,
+                  content: 'Now',
+                  timestamp: new Date(),
+                  isSessionDivider: true,
+                  sessionDate: 'Now',
+                },
+              ];
+              setMessages((prev) => [...withDivider, ...prev]);
+              setCollapsedHistory([]);
+            }}
+            className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs transition-colors"
+            style={{
+              background: 'rgba(147,197,253,0.08)',
+              border: '1px solid rgba(147,197,253,0.15)',
+              color: 'rgba(147,197,253,0.7)',
+            }}
+          >
+            <Clock className="w-3.5 h-3.5" />
+            Load earlier messages
+            {collapsedHistory.find((m) => m.isSessionDivider) && (
+              <span className="opacity-60">
+                ({collapsedHistory.find((m) => m.isSessionDivider)?.sessionDate})
+              </span>
+            )}
+          </motion.button>
+        )}
+
+        {messages.length === 0 && !tentativeTranscript && collapsedHistory.length === 0 && (
           <div className="flex items-center justify-center h-full">
             <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
               {voiceStatus === 'listening'
@@ -1517,7 +1688,7 @@ export function VoiceModeInterface({
         ))}
 
         {/* Volume-based speaking indicator (mobile fallback when no text transcript available) */}
-        {userSpeakingByVolume && (
+        {userSpeakingByVolume && !isPaused && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -1553,8 +1724,8 @@ export function VoiceModeInterface({
           </motion.div>
         )}
 
-        {/* Tentative transcript */}
-        {tentativeTranscript?.trim() && (
+        {/* Tentative transcript (hidden while paused) */}
+        {tentativeTranscript?.trim() && !isPaused && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-end">
             <div
               className="max-w-[85%] px-3 py-1.5 rounded-2xl text-sm border"
@@ -1655,28 +1826,6 @@ export function VoiceModeInterface({
                     <Pause className="w-5 h-5" />
                   )}
                 </motion.button>
-
-                {/* Mute toggle (only when not paused) */}
-                {!isPaused && (
-                  <motion.button
-                    whileTap={{ scale: 0.95 }}
-                    onClick={() => setUserMicMuted(prev => !prev)}
-                    className="p-2.5 rounded-full transition-colors"
-                    style={{
-                      background: userMicMuted
-                        ? 'rgba(239,68,68,0.15)'
-                        : 'rgba(255,255,255,0.05)',
-                      color: userMicMuted ? 'rgb(248,113,113)' : 'var(--text-secondary)',
-                    }}
-                    title={userMicMuted ? 'Unmute' : 'Mute'}
-                  >
-                    {userMicMuted ? (
-                      <MicOff className="w-5 h-5" />
-                    ) : (
-                      <Mic className="w-5 h-5" />
-                    )}
-                  </motion.button>
-                )}
 
                 {/* Type a message */}
                 {!isPaused && <TextInputButton conversation={conversation} />}

@@ -5,6 +5,7 @@ import {
   doc,
   getDoc,
   setDoc,
+  deleteDoc,
   Timestamp,
 } from 'firebase/firestore';
 
@@ -37,6 +38,7 @@ export interface VoiceChatDocument {
   messageCount: number;
   lastMessagePreview: string;
   lastSessionId: string;
+  lastEmailMessageId?: string; // Tracks the latest Gmail message ID to detect new emails
 }
 
 // ============================================================================
@@ -59,25 +61,33 @@ export function generateSessionId(): string {
 // FIRESTORE OPERATIONS
 // ============================================================================
 
+export interface VoiceChatLoadResult {
+  messages: PersistedVoiceMessage[];
+  lastEmailMessageId?: string;
+}
+
 /**
  * Load voice chat history for a specific thread.
  */
 export async function loadVoiceChat(
   userId: string,
   threadId: string
-): Promise<PersistedVoiceMessage[]> {
+): Promise<VoiceChatLoadResult> {
   try {
     const docRef = getVoiceChatDocRef(userId, threadId);
     const docSnap = await getDoc(docRef);
 
     if (docSnap.exists()) {
       const data = docSnap.data() as VoiceChatDocument;
-      return data.messages || [];
+      return {
+        messages: data.messages || [],
+        lastEmailMessageId: data.lastEmailMessageId,
+      };
     }
-    return [];
+    return { messages: [] };
   } catch (error) {
     console.error('[VoiceChat] Failed to load:', error);
-    return [];
+    return { messages: [] };
   }
 }
 
@@ -89,7 +99,8 @@ export async function loadVoiceChat(
 export async function saveVoiceChat(
   userId: string,
   threadId: string,
-  newMessages: PersistedVoiceMessage[]
+  newMessages: PersistedVoiceMessage[],
+  lastEmailMessageId?: string
 ): Promise<void> {
   if (!newMessages.length) return;
 
@@ -119,10 +130,28 @@ export async function saveVoiceChat(
       lastMessagePreview: preview,
       lastSessionId: lastMsg?.sessionId || '',
     };
+    if (lastEmailMessageId) {
+      chatDoc.lastEmailMessageId = lastEmailMessageId;
+    }
 
     await setDoc(docRef, chatDoc);
   } catch (error) {
     console.error('[VoiceChat] Failed to save:', error);
+  }
+}
+
+/**
+ * Clear voice chat history for a specific thread.
+ */
+export async function clearVoiceChat(
+  userId: string,
+  threadId: string
+): Promise<void> {
+  try {
+    const docRef = getVoiceChatDocRef(userId, threadId);
+    await deleteDoc(docRef);
+  } catch (error) {
+    console.error('[VoiceChat] Failed to clear:', error);
   }
 }
 
