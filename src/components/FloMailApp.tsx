@@ -75,6 +75,7 @@ export function FloMailApp() {
   const [selectedThread, setSelectedThread] = useState<EmailThread | null>(null);
   const [currentDraft, setCurrentDraft] = useState<EmailDraft | null>(null);
   const [isVoiceMode, setIsVoiceMode] = useState(false);
+  const [isComposeMode, setIsComposeMode] = useState(false);
   const [threadHasVoiceHistory, setThreadHasVoiceHistory] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
   // Track navigation direction with state
@@ -82,6 +83,7 @@ export function FloMailApp() {
   const [showProfile, setShowProfile] = useState(false);
   const [allThreads, setAllThreads] = useState<EmailThread[]>([]);
   const [folderThreads, setFolderThreads] = useState<EmailThread[]>([]); // Threads in current folder for navigation
+  const [inboxUnreadCount, setInboxUnreadCount] = useState(0); // Unread count for tab title
   // Keep ref in sync with state for use in callbacks
   useEffect(() => { folderThreadsRef.current = folderThreads; }, [folderThreads]);
   const [currentMailFolder, setCurrentMailFolder] = useState<MailFolder>('inbox');
@@ -158,7 +160,6 @@ export function FloMailApp() {
     voiceLabel: 'Rachel',
     speed: 1.0,
     stability: 0.5,
-    llmModel: 'gpt-4o',
   });
 
   // Settings have been moved up to avoid "used before declaration" error
@@ -282,7 +283,21 @@ export function FloMailApp() {
         return [...prev, ...newThreads];
       });
     }
+    // Track inbox unread count for tab title
+    if (folder === 'inbox') {
+      const unread = threads.filter(t => !t.isRead).length;
+      setInboxUnreadCount(unread);
+    }
   }, [currentMailFolder]);
+
+  // Update browser tab title with unread count
+  useEffect(() => {
+    if (inboxUnreadCount > 0) {
+      document.title = `(${inboxUnreadCount}) FloMail`;
+    } else {
+      document.title = 'FloMail';
+    }
+  }, [inboxUnreadCount]);
 
   // === URL STATE SYNC ===
   // Parse URL params helper
@@ -501,6 +516,7 @@ export function FloMailApp() {
 
     // Set thread immediately for fast UI response (shows metadata)
     setSelectedThread(thread);
+    setIsComposeMode(false);
     setCurrentMailFolder(folder);
 
     // Store the folder's threads for navigation
@@ -572,6 +588,7 @@ export function FloMailApp() {
     setSelectedThread(null);
     setCurrentDraft(null);
     setIsVoiceMode(false);
+    setIsComposeMode(false);
     setCurrentView('inbox');
     setCurrentMailFolder('inbox'); // Reset to inbox folder
     setSearchQuery(''); // Clear any search
@@ -1854,33 +1871,8 @@ export function FloMailApp() {
                             </div>
                           </div>
 
-                          {/* LLM Model */}
-                          <div className="space-y-2">
-                            <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-                              Voice AI Model
-                            </label>
-                            <div className="relative">
-                              <select
-                                value={voiceModeSettings.llmModel}
-                                onChange={(e) => updateVoiceModeSettings({ llmModel: e.target.value })}
-                                className="w-full px-2 py-1.5 rounded-lg text-xs appearance-none cursor-pointer focus:outline-none"
-                                style={{
-                                  background: 'var(--bg-interactive)',
-                                  border: '1px solid var(--border-subtle)',
-                                  color: 'var(--text-primary)'
-                                }}
-                              >
-                                <option value="gpt-4o">GPT-4o (Recommended)</option>
-                                <option value="gpt-4o-mini">GPT-4o Mini (Faster)</option>
-                                <option value="gpt-4.1">GPT-4.1</option>
-                                <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
-                              </select>
-                              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none" style={{ color: 'var(--text-muted)' }} />
-                            </div>
-                          </div>
-
                           <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                            Changes apply on next voice session.
+                            Voice mode uses the AI model selected above. Changes apply on next voice session.
                           </p>
                         </div>
                       </motion.div>
@@ -2086,9 +2078,25 @@ export function FloMailApp() {
           </div>
         )}
 
-        {currentView === 'chat' && !selectedThread && !isVoiceMode && (
+        {currentView === 'chat' && !selectedThread && !isVoiceMode && !isComposeMode && (
           <div className="absolute inset-0 flex items-center justify-center">
             <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
+          </div>
+        )}
+
+        {currentView === 'chat' && !selectedThread && !isVoiceMode && isComposeMode && (
+          <div className="absolute inset-0">
+            <ChatInterface
+              folder={currentMailFolder}
+              provider={aiProvider}
+              model={aiModel}
+              draftingPreferences={aiDraftingPreferences}
+              onDraftCreated={handleDraftCreated}
+              onSendEmail={handleSendEmail}
+              onSaveDraft={handleSaveDraft}
+              onDeleteDraft={handleDeleteDraft}
+              onGoToInbox={handleGoToInbox}
+            />
           </div>
         )}
 
@@ -2176,6 +2184,7 @@ export function FloMailApp() {
             onClick={() => {
               setSelectedThread(null);
               setCurrentDraft(null);
+              setIsComposeMode(true);
               setCurrentView('chat');
             }}
             className="fixed bottom-6 right-6 z-40 w-14 h-14 rounded-full shadow-lg flex items-center justify-center text-white transition-all group"

@@ -985,11 +985,11 @@ export function DraftCard({ draft, thread, userEmail, onSend, onSaveDraft, onDis
       />
 
       {/* Actions - compact row with dynamic responsive labels */}
-      <div ref={actionsRef} className="flex items-center gap-2 px-3 py-2 overflow-hidden">
+      <div ref={actionsRef} className="flex items-center gap-2 px-3 py-1.5 overflow-hidden">
         <button
           onClick={() => onDiscard(editedDraft)}
           disabled={isSending || isSaving || isDeleting}
-          className="flex items-center gap-1 px-2 py-1.5 text-sm text-slate-400 hover:text-red-400 transition-colors disabled:opacity-50 whitespace-nowrap"
+          className="flex items-center gap-1 px-2 py-2 sm:py-1.5 text-sm text-slate-400 hover:text-red-400 transition-colors disabled:opacity-50 whitespace-nowrap min-h-[40px] sm:min-h-0"
           title={editedDraft.gmailDraftId ? "Delete draft from Gmail" : "Discard draft"}
         >
           {isDeleting ? (
@@ -1019,7 +1019,7 @@ export function DraftCard({ draft, thread, userEmail, onSend, onSaveDraft, onDis
             whileTap={{ scale: 0.98 }}
             onClick={() => onSaveDraft(editedDraft)}
             disabled={isSending || isSaving}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium transition-colors disabled:opacity-50 whitespace-nowrap"
+            className="flex items-center gap-1 px-3 py-2 sm:py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium transition-colors disabled:opacity-50 whitespace-nowrap min-h-[40px] sm:min-h-0"
             title="Save as Gmail draft"
           >
             {isSaving ? (
@@ -1037,7 +1037,7 @@ export function DraftCard({ draft, thread, userEmail, onSend, onSaveDraft, onDis
           whileTap={{ scale: 0.98 }}
           onClick={handleSendClick}
           disabled={isSending || isSaving || editedDraft.to.length === 0}
-          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-cyan-500/90 hover:bg-cyan-500 text-white text-sm font-medium transition-colors disabled:opacity-50 whitespace-nowrap"
+          className="flex items-center gap-1 px-3 py-2 sm:py-1.5 rounded-lg bg-cyan-500/90 hover:bg-cyan-500 text-white text-sm font-medium transition-colors disabled:opacity-50 whitespace-nowrap min-h-[40px] sm:min-h-0"
         >
           {isSending ? (
             <Loader2 className="w-3.5 h-3.5 animate-spin" />

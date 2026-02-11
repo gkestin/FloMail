@@ -20,7 +20,8 @@ import {
   X,
   Clock,
   Bell,
-  ShieldAlert
+  ShieldAlert,
+  Tag
 } from 'lucide-react';
 import { EmailThread } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
@@ -96,6 +97,7 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
   const [isSearching, setIsSearching] = useState(false);
   const isSearchActive = searchQuery.trim().length > 0;
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [filterImportant, setFilterImportant] = useState(false);
   
   // Pull-to-refresh state
   const [pullDistance, setPullDistance] = useState(0);
@@ -391,7 +393,14 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
   useEffect(() => {
     loadFolder(currentFolder);
   }, [currentFolder, loadFolder]);
-  
+
+  // Notify parent whenever threads change (initial load, refresh, loadMore, etc.)
+  useEffect(() => {
+    if (threads.length > 0) {
+      onThreadsUpdate?.(threads, currentFolder);
+    }
+  }, [threads, currentFolder, onThreadsUpdate]);
+
   // Stale data checking - every minute, check if data is older than 10 minutes
   useEffect(() => {
     const checkStale = () => {
@@ -539,14 +548,12 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
         nextPageToken: newPageToken,
       });
       
-      // Notify parent that threads have been updated
-      onThreadsUpdate?.(allThreads, currentFolder);
     } catch (err) {
       console.error('Failed to load more:', err);
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, nextPageToken, currentFolder, getAccessToken, threads, threadsWithDrafts, onThreadsUpdate]);
+  }, [loadingMore, nextPageToken, currentFolder, getAccessToken, threads, threadsWithDrafts]);
 
   // Register loadMore with parent so it can trigger loading more threads
   useEffect(() => {
@@ -603,8 +610,9 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
         setLoading(true);
       }
       
-      // Reset pagination for new folder
+      // Reset pagination and filters for new folder
       setNextPageToken(undefined);
+      setFilterImportant(false);
       setCurrentFolder(folder);
       
       // Notify parent of folder change
@@ -968,7 +976,12 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
   }
 
   const FolderIcon = FOLDER_CONFIG[currentFolder].icon;
-  
+
+  // Filter threads if "Important" filter is active
+  const displayThreads = filterImportant
+    ? threads.filter(t => t.labels?.includes('IMPORTANT'))
+    : threads;
+
   // Define tab order explicitly: Inbox → Sent → Drafts → Snoozed → Starred → Spam → All Mail
   const FOLDER_ORDER: MailFolder[] = ['inbox', 'sent', 'drafts', 'snoozed', 'starred', 'spam', 'all'];
 
@@ -1018,6 +1031,28 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
           <RefreshCw className={`w-5 h-5 ${refreshing ? 'animate-spin' : ''}`} />
         </motion.button>
       </div>
+      )}
+
+      {/* Important filter toggle - shown in inbox when important emails exist */}
+      {!isSearchActive && currentFolder === 'inbox' && threads.some(t => t.labels?.includes('IMPORTANT')) && (
+        <div className="flex items-center gap-2 px-3 py-1.5" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+          <button
+            onClick={() => setFilterImportant(!filterImportant)}
+            className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full transition-all"
+            style={filterImportant ? {
+              background: 'rgba(251, 191, 36, 0.15)',
+              color: 'rgb(251, 191, 36)',
+              border: '1px solid rgba(251, 191, 36, 0.3)',
+            } : {
+              background: 'transparent',
+              color: 'var(--text-muted)',
+              border: '1px solid var(--border-subtle)',
+            }}
+          >
+            <Tag className="w-3 h-3" />
+            Important
+          </button>
+        </div>
       )}
 
       {/* Search results header */}
@@ -1198,6 +1233,7 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
                     onMeasureHeight={(height) => rememberRowHeight(thread.id, height)}
                     getSenderNames={getSenderNames}
                     formatDate={formatDate}
+                    isImportant={thread.labels?.includes('IMPORTANT')}
                     labelBadge={searchLabelBadge}
                   />
                 );
@@ -1250,14 +1286,16 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
               ))}
             </div>
           )
-        ) : threads.length === 0 ? (
+        ) : displayThreads.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-4">
             <FolderIcon className="w-12 h-12 mb-4" style={{ color: 'var(--text-disabled)' }} />
-            <p style={{ color: 'var(--text-secondary)' }}>No emails in {FOLDER_CONFIG[currentFolder].label.toLowerCase()}</p>
+            <p style={{ color: 'var(--text-secondary)' }}>
+              {filterImportant ? 'No important emails' : `No emails in ${FOLDER_CONFIG[currentFolder].label.toLowerCase()}`}
+            </p>
           </div>
         ) : (
           <AnimatePresence>
-            {threads.map((thread, index) => {
+            {displayThreads.map((thread, index) => {
               // Determine if thread is in inbox (by folder or by labels)
               const threadInInbox = currentFolder === 'inbox' || thread.labels?.includes('INBOX');
               const threadIsSnoozed = currentFolder === 'snoozed';
@@ -1347,6 +1385,7 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
                   getSenderNames={getSenderNames}
                   formatDate={formatDate}
                   labelBadge={labelBadge}
+                  isImportant={thread.labels?.includes('IMPORTANT')}
                 />
               );
             })}
@@ -1354,7 +1393,7 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
         )}
         
         {/* Infinite scroll sentinel and loading indicator */}
-        {!loading && threads.length > 0 && (
+        {!loading && displayThreads.length > 0 && (
           <div ref={loadMoreRef} className="py-4 flex justify-center">
             {loadingMore ? (
               <div className="flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
@@ -1365,9 +1404,9 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
               <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
                 Scroll for more
               </div>
-            ) : threads.length > 30 ? (
+            ) : displayThreads.length > 30 ? (
               <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                All {threads.length} emails loaded
+                All {displayThreads.length} emails loaded
               </div>
             ) : null}
           </div>
@@ -1500,6 +1539,7 @@ interface SwipeableEmailRowProps {
   getSenderNames: (thread: EmailThread) => string;
   formatDate: (date: string) => string;
   labelBadge?: React.ReactNode; // Optional label badge for search results
+  isImportant?: boolean; // Whether this thread has the IMPORTANT label
 }
 
 function SwipeableEmailRow({
@@ -1523,6 +1563,7 @@ function SwipeableEmailRow({
   getSenderNames,
   formatDate,
   labelBadge,
+  isImportant,
 }: SwipeableEmailRowProps) {
   const x = useMotionValue(0);
   const [swipeState, setSwipeState] = useState<'idle' | 'snooze-pending'>('idle');
@@ -1702,10 +1743,25 @@ function SwipeableEmailRow({
             const avatarColor = colors[hash % colors.length];
             
             return (
-              <div 
-                className={`flex-shrink-0 w-10 h-10 sm:w-8 sm:h-8 rounded-full bg-gradient-to-br ${avatarColor} flex items-center justify-center shadow-sm ${!thread.isRead ? 'ring-2 ring-blue-400/50' : ''}`}
-              >
-                <span className="text-white font-semibold text-sm sm:text-xs">{senderInitial}</span>
+              <div className="relative flex-shrink-0">
+                <div
+                  className={`w-10 h-10 sm:w-8 sm:h-8 rounded-full bg-gradient-to-br ${avatarColor} flex items-center justify-center shadow-sm ${
+                    !thread.isRead
+                      ? isImportant ? 'ring-2 ring-amber-400/60' : 'ring-2 ring-blue-400/50'
+                      : ''
+                  }`}
+                >
+                  <span className="text-white font-semibold text-sm sm:text-xs">{senderInitial}</span>
+                </div>
+                {/* Important marker — subtle amber dot at bottom-right of avatar */}
+                {isImportant && (
+                  <div
+                    className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full flex items-center justify-center"
+                    style={{ background: 'var(--bg-primary)' }}
+                  >
+                    <div className="w-2 h-2 rounded-full bg-amber-400" />
+                  </div>
+                )}
               </div>
             );
           })()}
@@ -1852,11 +1908,13 @@ function SwipeableEmailRow({
         {/* Desktop layout: single-line Gmail-style (shown at md+) */}
         <div className="hidden md:block">
           <div className="flex items-center px-4 py-2" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-            {/* Unread indicator dot */}
+            {/* Unread / Important indicator */}
             <div className="w-2 flex-shrink-0 mr-2">
-              {!thread.isRead && (
-                <div className="w-2 h-2 rounded-full bg-blue-400" />
-              )}
+              {!thread.isRead ? (
+                <div className={`w-2 h-2 rounded-full ${isImportant ? 'bg-amber-400' : 'bg-blue-400'}`} />
+              ) : isImportant ? (
+                <div className="w-2 h-2 rounded-full bg-amber-400/40" />
+              ) : null}
             </div>
 
             {/* Sender name + count - fixed width */}

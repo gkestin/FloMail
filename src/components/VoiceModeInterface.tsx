@@ -176,6 +176,7 @@ export function VoiceModeInterface({
   const [isInitializing, setIsInitializing] = useState(false);
   const [processingTool, setProcessingTool] = useState<string | null>(null);
   const [isPaused, setIsPaused] = useState(false);
+  const isPausedRef = useRef(false);
   const [inputVolume, setInputVolume] = useState(0);
   const [outputVolume, setOutputVolume] = useState(0);
   const [speechRecognitionWorking, setSpeechRecognitionWorking] = useState(false);
@@ -186,6 +187,7 @@ export function VoiceModeInterface({
   const volumeIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const recognitionRef = useRef<any>(null);
   const accumulatedFinalTranscriptRef = useRef('');
+  const isSpeakingRef = useRef(false);
   const hasAutoStarted = useRef(false);
   const prevThreadIdRef = useRef<string | undefined>(thread?.id);
 
@@ -225,9 +227,15 @@ export function VoiceModeInterface({
   useEffect(() => { onDraftCreatedRef.current = onDraftCreated; }, [onDraftCreated]);
   useEffect(() => { onSendEmailRef.current = onSendEmail; }, [onSendEmail]);
 
+  // Track whether the user has already discussed this thread (for opening behavior)
+  const threadHasHistoryRef = useRef<Set<string>>(new Set());
+
   // Build the dynamic prompt for this thread
   const voicePrompt = useMemo(
-    () => buildVoiceAgentPrompt(thread, folder, draftingPreferences),
+    () => {
+      const isReturning = thread?.id ? threadHasHistoryRef.current.has(thread.id) : false;
+      return buildVoiceAgentPrompt(thread, folder, draftingPreferences, { isReturningToThread: isReturning });
+    },
     [thread?.id, folder, draftingPreferences]
   );
 
@@ -248,6 +256,19 @@ export function VoiceModeInterface({
         _threadId: threadRef.current?.id,
       },
     ]);
+  }, []);
+
+  // Helper to get brief thread context for action messages (e.g. "from John about Meeting")
+  const getThreadContext = useCallback(() => {
+    const t = threadRef.current;
+    if (!t) return '';
+    const lastMsg = t.messages?.[t.messages.length - 1];
+    const sender = lastMsg?.from?.name || lastMsg?.from?.email?.split('@')[0] || '';
+    const subject = t.subject?.replace(/^(Re|Fwd|Fw):\s*/gi, '').slice(0, 40) || '';
+    if (sender && subject) return ` from ${sender} re "${subject}"`;
+    if (sender) return ` from ${sender}`;
+    if (subject) return ` re "${subject}"`;
+    return '';
   }, []);
 
   const clientTools = useMemo(
@@ -282,7 +303,8 @@ export function VoiceModeInterface({
         setIsSending(true);
         try {
           await onSendEmailRef.current?.(draft);
-          addToolMessage('send_email', 'Email sent successfully.');
+          const recipient = draft.to?.[0] || '';
+          addToolMessage('send_email', `Sent to ${recipient}${draft.subject ? ` re "${draft.subject.replace(/^(Re|Fwd|Fw):\s*/gi, '').slice(0, 40)}"` : ''}.`);
           setCurrentDraft(null);
           return 'Email sent successfully.';
         } catch (err: any) {
@@ -296,39 +318,44 @@ export function VoiceModeInterface({
 
       // ── Thread actions ───────────────────────────────────
       archive_email: async () => {
+        const ctx = getThreadContext();
         setProcessingTool('Archiving...');
         soundsRef.current.playSend();
         onArchiveRef.current?.();
-        addToolMessage('archive_email', 'Email archived.');
+        addToolMessage('archive_email', `Archived${ctx}.`);
         setProcessingTool(null);
         return 'Email archived. The next email is now loading.';
       },
 
       move_to_inbox: async () => {
+        const ctx = getThreadContext();
         setProcessingTool('Moving...');
         soundsRef.current.playToolStart();
         onMoveToInboxRef.current?.();
-        addToolMessage('move_to_inbox', 'Moved to inbox.');
+        addToolMessage('move_to_inbox', `Moved to inbox${ctx}.`);
         setProcessingTool(null);
         return 'Email moved to inbox.';
       },
 
       star_email: async () => {
+        const ctx = getThreadContext();
         soundsRef.current.playToolStart();
         onStarRef.current?.();
-        addToolMessage('star_email', 'Email starred.');
+        addToolMessage('star_email', `Starred${ctx}.`);
         return 'Email starred.';
       },
 
       unstar_email: async () => {
+        const ctx = getThreadContext();
         soundsRef.current.playToolStart();
         onUnstarRef.current?.();
-        addToolMessage('unstar_email', 'Star removed.');
+        addToolMessage('unstar_email', `Unstarred${ctx}.`);
         return 'Star removed.';
       },
 
       snooze_email: async (params: any) => {
         if (!onSnoozeRef.current) return 'Snooze not available.';
+        const ctx = getThreadContext();
         setProcessingTool('Snoozing...');
         soundsRef.current.playToolStart();
         const snoozeUntilArg = params.snooze_until as string;
@@ -368,7 +395,7 @@ export function VoiceModeInterface({
 
         try {
           await onSnoozeRef.current!(snoozeDate);
-          addToolMessage('snooze_email', `Snoozed until ${snoozeDate.toLocaleString()}.`);
+          addToolMessage('snooze_email', `Snoozed${ctx} until ${snoozeDate.toLocaleString()}.`);
           return `Email snoozed until ${snoozeDate.toLocaleString()}.`;
         } catch (err: any) {
           soundsRef.current.playError();
@@ -517,6 +544,18 @@ export function VoiceModeInterface({
         setProcessingTool(null);
         return content || 'No content found.';
       },
+
+      // ── Draft content (for reading back verbatim) ──────────
+      get_draft_content: async () => {
+        const draft = currentDraftRef.current;
+        if (!draft) return 'No draft currently exists.';
+
+        setProcessingTool('Reading draft...');
+        const bodyText = draft.body || '';
+        const result = `To: ${draft.to.join(', ')}\nSubject: ${draft.subject}\n\n${bodyText}`;
+        setProcessingTool(null);
+        return result;
+      },
     }),
     // All callback props and thread/draft are accessed via refs — clientTools stays stable
     // so the ElevenLabs SDK always calls the latest handlers
@@ -574,6 +613,10 @@ export function VoiceModeInterface({
       }
 
       if (content?.trim()) {
+        // Suppress agent messages while paused — the agent may still generate
+        // text after the pause contextual update, but we don't show or record it
+        if (source !== 'user' && isPausedRef.current) return;
+
         setMessages((prev) => {
           const newMsg: VoiceMessage = {
             id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -641,6 +684,17 @@ export function VoiceModeInterface({
     },
   });
 
+  // Sync isSpeaking ref for use in SpeechRecognition callback.
+  // Also clear tentative transcript when agent starts speaking — any leftover
+  // interim text is likely echo from the speakers, not the user.
+  useEffect(() => {
+    isSpeakingRef.current = conversation.isSpeaking ?? false;
+    if (conversation.isSpeaking) {
+      accumulatedFinalTranscriptRef.current = '';
+      setTentativeTranscript('');
+    }
+  }, [conversation.isSpeaking]);
+
   // ============================================================
   // BROWSER SPEECH RECOGNITION (for interim transcripts)
   // ============================================================
@@ -659,6 +713,14 @@ export function VoiceModeInterface({
     recognition.onresult = (event: any) => {
       // Browser SpeechRecognition is producing results — mark as working
       if (!speechRecognitionWorking) setSpeechRecognitionWorking(true);
+
+      // While agent is speaking, suppress interim transcripts to avoid echo.
+      // The browser mic picks up the AI's TTS output from speakers, creating
+      // ghost transcripts. The ElevenLabs SDK handles actual user interruptions
+      // via its own WebRTC pipeline with echo cancellation, so we don't need
+      // browser recognition results during agent speech.
+      if (isSpeakingRef.current) return;
+
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         if (event.results[i].isFinal) {
@@ -755,7 +817,7 @@ export function VoiceModeInterface({
         body: JSON.stringify({
           action: 'get_agent',
           voiceId: voiceModeSettings?.voiceId,
-          llmModel: voiceModeSettings?.llmModel,
+          llmModel: model, // Use the main AI model setting (mapped to ElevenLabs ID server-side)
         }),
       });
 
@@ -826,6 +888,7 @@ export function VoiceModeInterface({
   const pauseConversation = useCallback(() => {
     if (conversation.status !== 'connected') return;
     setIsPaused(true);
+    isPausedRef.current = true;
     // Mute mic so agent stops hearing us
     // @ts-ignore - setMicMuted exists at runtime
     conversation.setMicMuted?.(true);
@@ -833,6 +896,10 @@ export function VoiceModeInterface({
     // @ts-ignore - setVolume exists at runtime
     conversation.setVolume?.({ volume: 0 });
     stopBrowserRecognition();
+    // Tell the agent to stop — it should cease speaking immediately
+    conversation.sendContextualUpdate(
+      '[SYSTEM] The user has PAUSED the conversation. STOP talking immediately. Do NOT say anything until they resume. Wait silently.'
+    );
     // Keep tentativeTranscript visible while paused (don't clear it)
     // But clear accumulated finals so resume starts fresh
     accumulatedFinalTranscriptRef.current = '';
@@ -841,6 +908,7 @@ export function VoiceModeInterface({
   const resumeConversation = useCallback(() => {
     if (conversation.status !== 'connected') return;
     setIsPaused(false);
+    isPausedRef.current = false;
     // Unmute mic
     // @ts-ignore - setMicMuted exists at runtime
     conversation.setMicMuted?.(false);
@@ -848,6 +916,10 @@ export function VoiceModeInterface({
     // @ts-ignore - setVolume exists at runtime
     conversation.setVolume?.({ volume: 1 });
     startBrowserRecognition();
+    // Let the agent know we're back
+    conversation.sendContextualUpdate(
+      '[SYSTEM] The user has RESUMED the conversation. You may respond normally again. Say "I\'m here" or similar brief acknowledgment.'
+    );
   }, [conversation, startBrowserRecognition]);
 
   // ============================================================
@@ -908,8 +980,14 @@ export function VoiceModeInterface({
 
     // Send the updated email context to the ElevenLabs agent
     if (conversation.status === 'connected') {
-      const newPrompt = buildVoiceAgentPrompt(thread, folder, draftingPreferences);
+      const isReturning = thread?.id ? threadHasHistoryRef.current.has(thread.id) : false;
+      const newPrompt = buildVoiceAgentPrompt(thread, folder, draftingPreferences, { isReturningToThread: isReturning });
       conversation.sendContextualUpdate(newPrompt);
+    }
+
+    // After navigating away and back, mark the thread as "discussed"
+    if (thread?.id) {
+      threadHasHistoryRef.current.add(thread.id);
     }
   }, [thread?.id, thread?.subject, folder, draftingPreferences, conversation.status]);
 
@@ -1015,6 +1093,9 @@ export function VoiceModeInterface({
       }
 
       if (historyMessages.length > 0) {
+        // Mark this thread as having prior discussion (so opening greeting is brief)
+        threadHasHistoryRef.current.add(threadId);
+
         // Add a "current session" divider
         historyMessages.push({
           id: `divider-current-${Date.now()}`,
@@ -1085,7 +1166,8 @@ export function VoiceModeInterface({
         soundsRef.current.playSend();
         setCurrentDraft(null);
         // Notify the AI and show in conversation
-        addToolMessage('send_email', 'Email sent.');
+        const recipient = draft.to?.[0] || '';
+        addToolMessage('send_email', `Sent to ${recipient}.`);
         if (conversation.status === 'connected') {
           conversation.sendContextualUpdate('The user just sent the draft email successfully via the UI.');
         }
@@ -1453,7 +1535,8 @@ export function VoiceModeInterface({
             initial={{ y: 20, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: 20, opacity: 0 }}
-            className="w-full px-4 py-2 flex-shrink-0"
+            className="w-full px-4 py-2 flex-shrink-0 overflow-y-auto"
+            style={{ maxHeight: '50vh' }}
           >
             <DraftCard
               draft={currentDraft}

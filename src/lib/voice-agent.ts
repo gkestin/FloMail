@@ -22,13 +22,41 @@ VOICE CONVERSATION GUIDELINES:
 - Never use markdown, bullet points, numbered lists, or formatting symbols.
 - Never say "asterisk" or dictate formatting characters.
 - Narrate your actions naturally: "Let me draft that reply for you" or "I'll archive that now."
-- When summarizing emails, be brief and natural - like telling someone about an email over the phone.
-- When reading email content, paraphrase rather than reading word-for-word unless asked.
 - Confirm important actions before executing: "Should I send that?" or "Want me to archive this?"
 - If the user pauses or is thinking, give them space. Don't rush to fill silence.
 - Use conversational fillers naturally: "Sure thing", "Got it", "Alright".
 
-## TOOLS (use for ACTIONS only):
+## OPENING BEHAVIOR — VERY IMPORTANT:
+When you first greet the user about a NEW email thread (one they haven't discussed yet):
+1. Keep it very short: mention who it's from and the topic in one sentence.
+2. Then offer to read it: "Want me to read it to you?"
+3. If the user says yes, call get_email_content to get the verbatim text and read it aloud word-for-word. Do NOT paraphrase — read it exactly as written.
+4. After reading, ask how you can help: "How would you like to respond?" or similar.
+
+When RETURNING to a thread the user has already discussed:
+- Just say something brief like "How can I help?" — don't re-summarize.
+
+When NO email thread is open (user is in inbox):
+- Just say "How can I help?"
+
+## READING EMAILS:
+- When the user asks you to read an email, ALWAYS use get_email_content and read the returned text VERBATIM. Do NOT paraphrase or summarize unless explicitly asked.
+- For threads with multiple new messages, read them in order.
+
+## AFTER DRAFTING — READ BACK:
+After you create a draft with prepare_draft, ALWAYS:
+1. Call get_draft_content to get the exact draft text.
+2. Read the draft body verbatim to the user.
+3. Then ask: "Want me to send it, or would you like any changes?"
+Do NOT try to recreate the draft text from memory — always use get_draft_content to get the exact text.
+
+## AFTER EDITING A DRAFT:
+When the user asks for changes and you call prepare_draft again:
+1. Call get_draft_content to get the updated text.
+2. Read the changes back verbatim.
+3. Ask if they want to send or make more changes.
+
+## TOOLS:
 
 ### Email Actions:
 - prepare_draft: Call when user wants to draft, write, reply, or forward. ALWAYS include type, to, subject, body.
@@ -49,8 +77,9 @@ VOICE CONVERSATION GUIDELINES:
 - browse_url: Fetch and read content from a URL.
 - search_emails: Search through the user's Gmail.
 
-### Reading Full Content:
-- get_email_content: Get the full verbatim text of the current email thread. Use when the user asks to read the email word-for-word, quote exact text, or needs complete unabridged content. The email context you receive is summarized — use this tool for the full text.
+### Reading Content:
+- get_email_content: Get the full verbatim text of the current email thread. Use when the user asks to read the email, or when you first greet them about a new email and they want to hear it. Returns exact text — read it word-for-word.
+- get_draft_content: Get the exact text of the current draft. ALWAYS call this after creating or editing a draft so you can read it back verbatim to the user.
 
 ## DRAFT TYPE - CRITICAL:
 DEFAULT IS REPLY. When viewing an email thread, assume the user wants to reply unless they explicitly say "forward" or "new email".
@@ -67,9 +96,10 @@ You can call multiple tools in sequence. For example, search the web then draft 
 ## IMPORTANT RULES:
 1. For drafts: ALWAYS call prepare_draft with complete email (to, subject, body).
 2. For summaries/questions: Just respond with the answer conversationally.
-3. After drafting: Say something like "I've drafted that reply. Want me to send it, or would you like any changes?"
+3. After drafting: ALWAYS call get_draft_content and read the draft back verbatim, then ask about sending or changes.
 4. Be concise but complete.
 5. Check the folder before suggesting actions.
+6. When performing actions (archive, send, snooze, etc.), include relevant context in your response — mention who the email is from or what it's about.
 
 Be helpful, efficient, and sound natural - like a knowledgeable assistant on a phone call.`;
 
@@ -233,6 +263,7 @@ export function buildVoiceAgentPrompt(
   thread?: EmailThread,
   folder: string = 'inbox',
   draftingPreferences?: AIDraftingPreferences,
+  options?: { isReturningToThread?: boolean },
 ): string {
   let prompt = VOICE_AGENT_BASE_PROMPT;
 
@@ -256,8 +287,18 @@ export function buildVoiceAgentPrompt(
   // Add email context
   if (thread) {
     prompt += `\n\n${buildEmailContext(thread, folder)}`;
+
+    // Guide the AI's opening behavior based on whether user has discussed this thread before
+    if (options?.isReturningToThread) {
+      prompt += '\n\n[CONTEXT: The user has previously discussed this email thread. Keep your greeting brief — just ask how you can help.]';
+    } else {
+      // New thread — give a brief intro and offer to read
+      const lastMessage = thread.messages[thread.messages.length - 1];
+      const senderName = lastMessage?.from?.name || lastMessage?.from?.email || 'someone';
+      prompt += `\n\n[CONTEXT: This is a NEW email the user hasn't discussed yet. Your first message should be very brief: mention it's from ${senderName} about "${thread.subject}", then offer to read it. Example: "You have a message from ${senderName} about ${thread.subject}. Want me to read it to you?"]`;
+    }
   } else {
-    prompt += '\n\nNo email thread is currently open. The user is in their inbox.';
+    prompt += '\n\nNo email thread is currently open. The user is in their inbox. Just ask how you can help.';
   }
 
   return prompt;
@@ -277,7 +318,7 @@ const VOICE_SPECIFIC_TOOLS: ElevenLabsClientTool[] = [
   {
     type: 'client',
     name: 'get_email_content',
-    description: 'Get the full verbatim content of messages in the current email thread. Use when the user asks to read the email word-for-word, quote exact text, or needs the complete unabridged message content.',
+    description: 'Get the full verbatim text of messages in the current email thread. Use this when the user asks you to read the email, or when first greeting the user about a new thread and they want to hear it. Read the returned text word-for-word.',
     parameters: {
       type: 'object',
       properties: {
@@ -286,6 +327,18 @@ const VOICE_SPECIFIC_TOOLS: ElevenLabsClientTool[] = [
           description: 'Which message to read: "1" for oldest, "2" for second, "last" for most recent. Omit to get all messages.',
         },
       },
+      required: [],
+    },
+    expects_response: true,
+    response_timeout_secs: 10,
+  },
+  {
+    type: 'client',
+    name: 'get_draft_content',
+    description: 'Get the exact text of the current draft email. ALWAYS call this after creating or editing a draft with prepare_draft, so you can read it back verbatim to the user. Returns the draft body text.',
+    parameters: {
+      type: 'object',
+      properties: {},
       required: [],
     },
     expects_response: true,
@@ -306,6 +359,31 @@ function getElevenLabsToolDefinitions() {
   }));
 
   return [...standardTools, ...VOICE_SPECIFIC_TOOLS];
+}
+
+// ============================================================
+// MODEL ID MAPPING (FloMail → ElevenLabs)
+// ============================================================
+
+/**
+ * Map FloMail's model IDs to ElevenLabs Conversational AI model IDs.
+ * OpenAI model IDs are the same; Claude IDs use different formatting.
+ */
+export function mapToElevenLabsModelId(floMailModelId: string): string {
+  const mapping: Record<string, string> = {
+    // Anthropic Claude models
+    'claude-sonnet-4-20250514': 'claude-sonnet-4@20250514',
+    'claude-opus-4-20250514': 'claude-sonnet-4-5',  // Opus not available on ElevenLabs; use Sonnet 4.5
+    'claude-3-5-sonnet-20241022': 'claude-3-5-sonnet',
+    'claude-3-5-haiku-20241022': 'claude-haiku-4-5',
+    // OpenAI GPT models — same IDs work directly
+    'gpt-4.1': 'gpt-4.1',
+    'gpt-4.1-mini': 'gpt-4.1-mini',
+    'gpt-4.1-nano': 'gpt-4.1-nano',
+    'gpt-4o': 'gpt-4o',
+    'gpt-4o-mini': 'gpt-4o-mini',
+  };
+  return mapping[floMailModelId] || floMailModelId;
 }
 
 // ============================================================
@@ -364,11 +442,11 @@ export function buildAgentConfig(options: {
   return {
     conversation_config: {
       agent: {
-        first_message: "Hey! I'm FloMail, your email assistant. How can I help you today?",
+        first_message: "How can I help?",
         language: 'en',
         prompt: {
           prompt: VOICE_AGENT_BASE_PROMPT,
-          llm: options.llmModel || 'gpt-4o',
+          llm: options.llmModel ? mapToElevenLabsModelId(options.llmModel) : 'gpt-4o',
           temperature: 0.7,
           tools: getElevenLabsToolDefinitions(),
         },

@@ -13,7 +13,7 @@ export interface VoiceModeSettings {
   voiceLabel: string;
   speed: number;
   stability: number;
-  llmModel: string;
+  llmModel?: string; // Deprecated — voice mode now uses the main AI model setting
 }
 
 export interface UserSettings {
@@ -54,7 +54,6 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
     voiceLabel: 'Rachel',
     speed: 1.0,
     stability: 0.5,
-    llmModel: 'gpt-4o',
   },
   lastUpdated: new Date(),
 };
