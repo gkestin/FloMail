@@ -994,7 +994,7 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
           const config = FOLDER_CONFIG[folder];
           const Icon = config.icon;
           const isActive = folder === currentFolder;
-          
+
           return (
             <button
               key={folder}
@@ -1018,27 +1018,12 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
             </button>
           );
         })}
-        
-        {/* Refresh button - at the end */}
-        <motion.button
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          onClick={() => loadFolder(currentFolder, true)}
-          disabled={refreshing}
-          className="ml-auto p-2 rounded-lg transition-colors flex-shrink-0"
-          style={{ color: 'var(--text-muted)' }}
-        >
-          <RefreshCw className={`w-5 h-5 ${refreshing ? 'animate-spin' : ''}`} />
-        </motion.button>
-      </div>
-      )}
 
-      {/* Important filter toggle - shown in inbox when important emails exist */}
-      {!isSearchActive && currentFolder === 'inbox' && threads.some(t => t.labels?.includes('IMPORTANT')) && (
-        <div className="flex items-center gap-2 px-3 py-1.5" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+        {/* Important filter — inline with folder tabs, only in inbox when important emails exist */}
+        {currentFolder === 'inbox' && threads.some(t => t.labels?.includes('IMPORTANT')) && (
           <button
             onClick={() => setFilterImportant(!filterImportant)}
-            className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full transition-all"
+            className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-full transition-all flex-shrink-0"
             style={filterImportant ? {
               background: 'rgba(251, 191, 36, 0.15)',
               color: 'rgb(251, 191, 36)',
@@ -1052,7 +1037,20 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
             <Tag className="w-3 h-3" />
             Important
           </button>
-        </div>
+        )}
+
+        {/* Refresh button - at the end */}
+        <motion.button
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={() => loadFolder(currentFolder, true)}
+          disabled={refreshing}
+          className="ml-auto p-2 rounded-lg transition-colors flex-shrink-0"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <RefreshCw className={`w-5 h-5 ${refreshing ? 'animate-spin' : ''}`} />
+        </motion.button>
+      </div>
       )}
 
       {/* Search results header */}

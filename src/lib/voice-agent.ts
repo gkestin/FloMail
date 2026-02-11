@@ -304,6 +304,31 @@ export function buildVoiceAgentPrompt(
   return prompt;
 }
 
+/**
+ * Build a dynamic first message for the agent to speak when the session starts.
+ * This is passed via overrides.agent.firstMessage so the greeting is contextual
+ * instead of a generic "How can I help?"
+ */
+export function buildDynamicFirstMessage(
+  thread?: EmailThread,
+  options?: { isReturningToThread?: boolean },
+): string {
+  if (!thread) {
+    return 'How can I help?';
+  }
+
+  const lastMessage = thread.messages?.[thread.messages.length - 1];
+  const senderName = lastMessage?.from?.name || lastMessage?.from?.email?.split('@')[0] || 'someone';
+  const subject = thread.subject?.replace(/^(Re|Fwd|Fw):\s*/gi, '').trim() || 'no subject';
+
+  if (options?.isReturningToThread) {
+    return `Back to the email from ${senderName}. How can I help?`;
+  }
+
+  // New thread — brief context + offer to read
+  return `You have a message from ${senderName} about "${subject}". Want me to read it to you?`;
+}
+
 // ============================================================
 // ELEVENLABS TOOL DEFINITIONS
 // ============================================================

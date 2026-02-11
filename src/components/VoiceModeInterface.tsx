@@ -18,7 +18,7 @@ import { useConversation } from '@elevenlabs/react';
 import { DraftCard } from './DraftCard';
 import { EmailThread, EmailDraft, AIProvider, AIDraftingPreferences } from '@/types';
 import { buildDraftFromToolCall } from '@/lib/agent-tools';
-import { buildVoiceAgentPrompt, extractTextFromHtml } from '@/lib/voice-agent';
+import { buildVoiceAgentPrompt, buildDynamicFirstMessage, extractTextFromHtml } from '@/lib/voice-agent';
 import { VoiceSoundEffects } from '@/lib/voice-agent';
 import { useAuth } from '@/contexts/AuthContext';
 import { MailFolder } from './InboxList';
@@ -42,6 +42,7 @@ interface VoiceMessage {
   isToolAction?: boolean;
   toolName?: string;
   isContextSwitch?: boolean;
+  isSentConfirmation?: boolean; // Green "sent" feedback message
   _threadId?: string; // Which thread this message belongs to (for segmentation)
   isHistory?: boolean; // Loaded from Firestore (not from current session)
   isSessionDivider?: boolean; // Visual divider between sessions
@@ -177,9 +178,16 @@ export function VoiceModeInterface({
   const [processingTool, setProcessingTool] = useState<string | null>(null);
   const [isPaused, setIsPaused] = useState(false);
   const isPausedRef = useRef(false);
+  const [userMicMuted, setUserMicMuted] = useState(false); // User's manual mic mute
+  const [isAgentSpeaking, setIsAgentSpeaking] = useState(false); // Track agent speech for echo prevention
   const [inputVolume, setInputVolume] = useState(0);
   const [outputVolume, setOutputVolume] = useState(0);
   const [speechRecognitionWorking, setSpeechRecognitionWorking] = useState(false);
+
+  // Computed mic mute: muted if user chose to, or paused, or agent is speaking (echo prevention).
+  // Auto-muting during agent speech prevents the mic from picking up TTS audio from speakers
+  // and causing the AI to reply to itself (echo loop). User can still interrupt via tap.
+  const effectiveMicMuted = userMicMuted || isPaused || isAgentSpeaking;
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -230,13 +238,15 @@ export function VoiceModeInterface({
   // Track whether the user has already discussed this thread (for opening behavior)
   const threadHasHistoryRef = useRef<Set<string>>(new Set());
 
-  // Build the dynamic prompt for this thread
+  // Build the dynamic prompt and first message for this thread
+  const isReturningToThread = thread?.id ? threadHasHistoryRef.current.has(thread.id) : false;
   const voicePrompt = useMemo(
-    () => {
-      const isReturning = thread?.id ? threadHasHistoryRef.current.has(thread.id) : false;
-      return buildVoiceAgentPrompt(thread, folder, draftingPreferences, { isReturningToThread: isReturning });
-    },
-    [thread?.id, folder, draftingPreferences]
+    () => buildVoiceAgentPrompt(thread, folder, draftingPreferences, { isReturningToThread }),
+    [thread?.id, folder, draftingPreferences, isReturningToThread]
+  );
+  const dynamicFirstMessage = useMemo(
+    () => buildDynamicFirstMessage(thread, { isReturningToThread }),
+    [thread?.id, isReturningToThread]
   );
 
   // ============================================================
@@ -253,6 +263,23 @@ export function VoiceModeInterface({
         timestamp: new Date(),
         isToolAction: true,
         toolName,
+        _threadId: threadRef.current?.id,
+      },
+    ]);
+  }, []);
+
+  // Green "sent" confirmation message (matches non-voice mode's green CompletedDraftPreview)
+  const addSentMessage = useCallback((content: string) => {
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `sent-${Date.now()}`,
+        role: 'assistant',
+        content,
+        timestamp: new Date(),
+        isToolAction: true,
+        toolName: 'send_email',
+        isSentConfirmation: true,
         _threadId: threadRef.current?.id,
       },
     ]);
@@ -304,15 +331,19 @@ export function VoiceModeInterface({
         try {
           await onSendEmailRef.current?.(draft);
           const recipient = draft.to?.[0] || '';
-          addToolMessage('send_email', `Sent to ${recipient}${draft.subject ? ` re "${draft.subject.replace(/^(Re|Fwd|Fw):\s*/gi, '').slice(0, 40)}"` : ''}.`);
+          const subjectClean = draft.subject?.replace(/^(Re|Fwd|Fw):\s*/gi, '').slice(0, 40) || '';
+          // Clear draft card immediately
           setCurrentDraft(null);
-          return 'Email sent successfully.';
-        } catch (err: any) {
-          soundsRef.current.playError();
-          return `Failed to send: ${err.message}`;
-        } finally {
           setIsSending(false);
           setProcessingTool(null);
+          // Show green sent confirmation (matches non-voice mode)
+          addSentMessage(`Sent to ${recipient}${subjectClean ? ` re "${subjectClean}"` : ''}`);
+          return 'Email sent successfully. What would you like to do next?';
+        } catch (err: any) {
+          soundsRef.current.playError();
+          setIsSending(false);
+          setProcessingTool(null);
+          return `Failed to send: ${err.message}`;
         }
       },
 
@@ -559,7 +590,7 @@ export function VoiceModeInterface({
     }),
     // All callback props and thread/draft are accessed via refs — clientTools stays stable
     // so the ElevenLabs SDK always calls the latest handlers
-    [user?.email, getAccessToken, addToolMessage]
+    [user?.email, getAccessToken, addToolMessage, addSentMessage]
   );
 
   // ============================================================
@@ -582,6 +613,7 @@ export function VoiceModeInterface({
   }, []);
 
   const conversation = useConversation({
+    micMuted: effectiveMicMuted,
     clientTools,
     onConnect: () => {
       setError(null);
@@ -661,6 +693,8 @@ export function VoiceModeInterface({
       soundsRef.current.playError();
     },
     onModeChange: ({ mode }: any) => {
+      // Track agent speaking for echo prevention (auto-mutes mic during agent speech)
+      setIsAgentSpeaking(mode === 'speaking');
       if (conversation.status === 'connected' && recognitionRef.current) {
         if (mode === 'listening') {
           startBrowserRecognition();
@@ -848,15 +882,19 @@ export function VoiceModeInterface({
     if (!id) return;
 
     try {
+      // Use overrides to set the full email context prompt AND a contextual first message.
+      // This replaces the agent's default "How can I help?" with a greeting that knows
+      // which email the user is looking at (e.g. "You have a message from John about ...").
       await conversation.startSession({
         agentId: id,
         connectionType: 'webrtc',
+        overrides: {
+          agent: {
+            prompt: { prompt: voicePrompt },
+            firstMessage: dynamicFirstMessage,
+          },
+        },
       });
-
-      // Send email context after connection is established
-      if (voicePrompt) {
-        conversation.sendContextualUpdate(voicePrompt);
-      }
 
       startBrowserRecognition();
     } catch (err: any) {
@@ -864,13 +902,14 @@ export function VoiceModeInterface({
       setIsInitializing(false);
       soundsRef.current.playError();
     }
-  }, [initializeAgent, conversation, voicePrompt, thread, startBrowserRecognition]);
+  }, [initializeAgent, conversation, voicePrompt, dynamicFirstMessage, startBrowserRecognition]);
 
   const endSession = useCallback(async () => {
     stopBrowserRecognition();
     accumulatedFinalTranscriptRef.current = '';
     setTentativeTranscript('');
     setIsPaused(false);
+    setUserMicMuted(false);
     soundsRef.current.playDisconnect();
 
     // Save conversation before disconnecting
@@ -889,19 +928,15 @@ export function VoiceModeInterface({
     if (conversation.status !== 'connected') return;
     setIsPaused(true);
     isPausedRef.current = true;
-    // Mute mic so agent stops hearing us
-    // @ts-ignore - setMicMuted exists at runtime
-    conversation.setMicMuted?.(true);
+    // Mic mutes automatically via controlled state (effectiveMicMuted includes isPaused)
     // Silence agent output so it stops talking
-    // @ts-ignore - setVolume exists at runtime
-    conversation.setVolume?.({ volume: 0 });
+    conversation.setVolume({ volume: 0 });
     stopBrowserRecognition();
     // Tell the agent to stop — it should cease speaking immediately
     conversation.sendContextualUpdate(
       '[SYSTEM] The user has PAUSED the conversation. STOP talking immediately. Do NOT say anything until they resume. Wait silently.'
     );
-    // Keep tentativeTranscript visible while paused (don't clear it)
-    // But clear accumulated finals so resume starts fresh
+    // Clear accumulated finals so resume starts fresh
     accumulatedFinalTranscriptRef.current = '';
   }, [conversation, stopBrowserRecognition]);
 
@@ -909,12 +944,9 @@ export function VoiceModeInterface({
     if (conversation.status !== 'connected') return;
     setIsPaused(false);
     isPausedRef.current = false;
-    // Unmute mic
-    // @ts-ignore - setMicMuted exists at runtime
-    conversation.setMicMuted?.(false);
+    // Mic unmutes automatically via controlled state
     // Restore agent output volume
-    // @ts-ignore - setVolume exists at runtime
-    conversation.setVolume?.({ volume: 1 });
+    conversation.setVolume({ volume: 1 });
     startBrowserRecognition();
     // Let the agent know we're back
     conversation.sendContextualUpdate(
@@ -978,11 +1010,14 @@ export function VoiceModeInterface({
       },
     ]);
 
-    // Send the updated email context to the ElevenLabs agent
+    // Send the updated email context to the ElevenLabs agent and trigger a contextual greeting
     if (conversation.status === 'connected') {
       const isReturning = thread?.id ? threadHasHistoryRef.current.has(thread.id) : false;
       const newPrompt = buildVoiceAgentPrompt(thread, folder, draftingPreferences, { isReturningToThread: isReturning });
       conversation.sendContextualUpdate(newPrompt);
+      // Trigger agent to greet about the new thread
+      const greeting = buildDynamicFirstMessage(thread, { isReturningToThread: isReturning });
+      conversation.sendContextualUpdate(`[SYSTEM] The user just navigated to a new email. Greet them briefly about this email. Say something like: "${greeting}"`);
     }
 
     // After navigating away and back, mark the thread as "discussed"
@@ -1164,21 +1199,23 @@ export function VoiceModeInterface({
       try {
         await onSendEmail?.(draft);
         soundsRef.current.playSend();
+        // Clear draft card immediately
         setCurrentDraft(null);
-        // Notify the AI and show in conversation
+        setIsSending(false);
+        // Show green sent confirmation (matches non-voice mode)
         const recipient = draft.to?.[0] || '';
-        addToolMessage('send_email', `Sent to ${recipient}.`);
+        const subjectClean = draft.subject?.replace(/^(Re|Fwd|Fw):\s*/gi, '').slice(0, 40) || '';
+        addSentMessage(`Sent to ${recipient}${subjectClean ? ` re "${subjectClean}"` : ''}`);
         if (conversation.status === 'connected') {
-          conversation.sendContextualUpdate('The user just sent the draft email successfully via the UI.');
+          conversation.sendContextualUpdate('The user just sent the draft email successfully via the UI. Ask what they want to do next.');
         }
       } catch (err: any) {
         soundsRef.current.playError();
         setError(`Send failed: ${err.message}`);
-      } finally {
         setIsSending(false);
       }
     },
-    [onSendEmail, conversation, addToolMessage]
+    [onSendEmail, conversation, addSentMessage]
   );
 
   const handleSaveDraft = useCallback(
@@ -1451,20 +1488,29 @@ export function VoiceModeInterface({
                   msg.isHistory ? 'opacity-60' : ''
                 }`}
                 style={{
-                  borderColor: msg.isToolAction
+                  borderColor: msg.isSentConfirmation
+                    ? 'rgba(34,197,94,0.4)'
+                    : msg.isToolAction
                     ? 'rgba(168,85,247,0.3)'
                     : msg.role === 'user'
                     ? 'rgba(6,182,212,0.3)'
                     : 'var(--border-subtle)',
-                  color: msg.isToolAction ? 'rgb(192,132,252)' : 'var(--text-primary)',
-                  background: msg.isToolAction
+                  color: msg.isSentConfirmation
+                    ? 'rgb(74,222,128)'
+                    : msg.isToolAction ? 'rgb(192,132,252)' : 'var(--text-primary)',
+                  background: msg.isSentConfirmation
+                    ? 'rgba(34,197,94,0.1)'
+                    : msg.isToolAction
                     ? 'rgba(168,85,247,0.08)'
                     : msg.role === 'user'
                     ? 'rgba(6,182,212,0.08)'
                     : 'var(--bg-elevated)',
                 }}
               >
-                <p className="leading-relaxed">{msg.content}</p>
+                <p className="leading-relaxed flex items-center gap-1.5">
+                  {msg.isSentConfirmation && <Send className="w-3 h-3 flex-shrink-0" />}
+                  {msg.content}
+                </p>
               </div>
             )}
           </motion.div>
@@ -1614,22 +1660,17 @@ export function VoiceModeInterface({
                 {!isPaused && (
                   <motion.button
                     whileTap={{ scale: 0.95 }}
-                    onClick={() => {
-                      if (conversation.status === 'connected') {
-                        // @ts-ignore - setMicMuted exists at runtime
-                        conversation.setMicMuted?.(!conversation.micMuted);
-                      }
-                    }}
+                    onClick={() => setUserMicMuted(prev => !prev)}
                     className="p-2.5 rounded-full transition-colors"
                     style={{
-                      background: conversation.micMuted
+                      background: userMicMuted
                         ? 'rgba(239,68,68,0.15)'
                         : 'rgba(255,255,255,0.05)',
-                      color: conversation.micMuted ? 'rgb(248,113,113)' : 'var(--text-secondary)',
+                      color: userMicMuted ? 'rgb(248,113,113)' : 'var(--text-secondary)',
                     }}
-                    title={conversation.micMuted ? 'Unmute' : 'Mute'}
+                    title={userMicMuted ? 'Unmute' : 'Mute'}
                   >
-                    {conversation.micMuted ? (
+                    {userMicMuted ? (
                       <MicOff className="w-5 h-5" />
                     ) : (
                       <Mic className="w-5 h-5" />
