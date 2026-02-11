@@ -16,7 +16,6 @@ import {
   Clock,
   Archive,
   ChevronDown,
-  Mail,
 } from 'lucide-react';
 import { useConversation } from '@elevenlabs/react';
 import { DraftCard } from './DraftCard';
@@ -55,7 +54,7 @@ interface VoiceMessage {
   sessionDate?: string; // Human-readable date for session dividers
 }
 
-type VoiceStatus = 'disconnected' | 'connecting' | 'listening' | 'speaking' | 'processing' | 'paused';
+type VoiceStatus = 'disconnected' | 'connecting' | 'listening' | 'speaking' | 'processing' | 'paused' | 'thinking';
 
 interface VoiceModeInterfaceProps {
   thread?: EmailThread;
@@ -100,13 +99,14 @@ function StatusBar({ status }: { status: VoiceStatus }) {
     listening: { from: 'rgba(6,182,212,0.3)', via: 'rgb(6,182,212)', to: 'rgba(6,182,212,0.3)' },
     speaking: { from: 'rgb(168,85,247)', via: 'rgb(6,182,212)', to: 'rgb(168,85,247)' },
     processing: { from: 'rgb(168,85,247)', via: 'rgb(251,191,36)', to: 'rgb(168,85,247)' },
+    thinking: { from: 'rgb(168,85,247)', via: 'rgb(192,132,252)', to: 'rgb(168,85,247)' },
     paused: { from: 'rgb(107,114,128)', via: 'rgb(156,163,175)', to: 'rgb(107,114,128)' },
   };
 
   const c = colors[status];
   const gradient = `linear-gradient(90deg, ${c.from} 0%, ${c.via} 50%, ${c.to} 100%)`;
 
-  const speed = status === 'processing' ? 1.2 : status === 'speaking' ? 2 : 3;
+  const speed = status === 'processing' ? 1.2 : status === 'thinking' ? 1.5 : status === 'speaking' ? 2 : 3;
 
   return (
     <div className="h-[2px] w-full relative overflow-hidden">
@@ -193,6 +193,7 @@ export function VoiceModeInterface({
   const [isIncognito, setIsIncognito] = useState(false);
   const [collapsedHistory, setCollapsedHistory] = useState<VoiceMessage[]>([]);
   const [emailPreviewExpanded, setEmailPreviewExpanded] = useState(false);
+  const [isThinking, setIsThinking] = useState(false);
   const isIncognitoRef = useRef(false);
 
   // Computed mic mute: only muted when paused.
@@ -237,6 +238,7 @@ export function VoiceModeInterface({
   const onGoToInboxRef = useRef(onGoToInbox);
   const onDraftCreatedRef = useRef(onDraftCreated);
   const onSendEmailRef = useRef(onSendEmail);
+  const onDeleteDraftRef = useRef(onDeleteDraft);
   useEffect(() => { threadRef.current = thread; }, [thread]);
   useEffect(() => { currentDraftRef.current = currentDraft; }, [currentDraft]);
   useEffect(() => { onArchiveRef.current = onArchive; }, [onArchive]);
@@ -249,6 +251,7 @@ export function VoiceModeInterface({
   useEffect(() => { onGoToInboxRef.current = onGoToInbox; }, [onGoToInbox]);
   useEffect(() => { onDraftCreatedRef.current = onDraftCreated; }, [onDraftCreated]);
   useEffect(() => { onSendEmailRef.current = onSendEmail; }, [onSendEmail]);
+  useEffect(() => { onDeleteDraftRef.current = onDeleteDraft; }, [onDeleteDraft]);
   useEffect(() => { isIncognitoRef.current = isIncognito; }, [isIncognito]);
 
   // Track whether the user has already discussed this thread (for opening behavior)
@@ -367,9 +370,25 @@ export function VoiceModeInterface({
         }
       },
 
+      discard_draft: async () => {
+        const draft = currentDraftRef.current;
+        if (!draft) return 'No draft to discard.';
+        setProcessingTool('Discarding...');
+        // Delete the Gmail draft if it was synced
+        if (draft.gmailDraftId) {
+          try { await onDeleteDraftRef.current?.(draft.gmailDraftId); } catch {}
+        }
+        setCurrentDraft(null);
+        setSentDraft(null);
+        setProcessingTool(null);
+        addToolMessage('discard_draft', 'Draft discarded.');
+        return 'Draft has been discarded. What would you like to do next?';
+      },
+
       // ── Thread actions ───────────────────────────────────
       archive_email: async () => {
         const ctx = getThreadContext();
+        const prevThreadId = threadRef.current?.id;
         setProcessingTool('Archiving...');
         soundsRef.current.playSend();
         lastNavigationActionRef.current = `Archived the email${ctx}`;
@@ -382,8 +401,26 @@ export function VoiceModeInterface({
           return `Failed to archive: ${err.message}`;
         }
         addToolMessage('archive_email', `Archived${ctx}.`);
+
+        // Wait for the thread to change (archive triggers navigation to next email).
+        // This ensures the contextual update with the new email fires before the
+        // agent responds, so it acknowledges the new thread instead of just saying
+        // "what should we do next?"
+        await new Promise<void>((resolve) => {
+          let checks = 0;
+          const check = () => {
+            if (threadRef.current?.id !== prevThreadId || checks >= 15) {
+              resolve();
+            } else {
+              checks++;
+              setTimeout(check, 100);
+            }
+          };
+          setTimeout(check, 100);
+        });
+
         setProcessingTool(null);
-        return 'Email archived. The next email is now loading.';
+        return 'Email archived and navigated to the next email. A system context update with the new email details will arrive shortly — DO NOT respond until you receive that update. Wait for the system message that describes the new email before saying anything.';
       },
 
       move_to_inbox: async () => {
@@ -431,6 +468,7 @@ export function VoiceModeInterface({
       snooze_email: async (params: any) => {
         if (!onSnoozeRef.current) return 'Snooze not available.';
         const ctx = getThreadContext();
+        const prevThreadId = threadRef.current?.id;
         setProcessingTool('Snoozing...');
         soundsRef.current.playToolStart();
         const snoozeUntilArg = params.snooze_until as string;
@@ -472,7 +510,22 @@ export function VoiceModeInterface({
         try {
           await onSnoozeRef.current!(snoozeDate);
           addToolMessage('snooze_email', `Snoozed${ctx} until ${snoozeDate.toLocaleString()}.`);
-          return `Email snoozed until ${snoozeDate.toLocaleString()}.`;
+
+          // Wait for thread to change (snooze triggers navigation to next email)
+          await new Promise<void>((resolve) => {
+            let checks = 0;
+            const check = () => {
+              if (threadRef.current?.id !== prevThreadId || checks >= 15) {
+                resolve();
+              } else {
+                checks++;
+                setTimeout(check, 100);
+              }
+            };
+            setTimeout(check, 100);
+          });
+
+          return `Email snoozed until ${snoozeDate.toLocaleString()} and navigated to the next email. A system context update with the new email details will arrive shortly — DO NOT respond until you receive that update.`;
         } catch (err: any) {
           soundsRef.current.playError();
           lastNavigationActionRef.current = null;
@@ -484,19 +537,39 @@ export function VoiceModeInterface({
 
       // ── Navigation ───────────────────────────────────────
       go_to_previous_email: async () => {
+        const prevThreadId = threadRef.current?.id;
         soundsRef.current.playToolStart();
         lastNavigationActionRef.current = `Navigated to previous email${getThreadContext() ? ' (was viewing' + getThreadContext() + ')' : ''}`;
         addToolMessage('go_to_previous_email', 'Going to previous email...');
         onPreviousEmailRef.current?.();
-        return 'Navigating to previous email. Wait for the new email context before speaking about it.';
+        // Wait for thread to change before returning
+        await new Promise<void>((resolve) => {
+          let checks = 0;
+          const check = () => {
+            if (threadRef.current?.id !== prevThreadId || checks >= 15) resolve();
+            else { checks++; setTimeout(check, 100); }
+          };
+          setTimeout(check, 100);
+        });
+        return 'Navigated to previous email. A system context update with the new email details will arrive shortly — DO NOT respond until you receive that update.';
       },
 
       go_to_next_email: async () => {
+        const prevThreadId = threadRef.current?.id;
         soundsRef.current.playToolStart();
         lastNavigationActionRef.current = `Navigated to next email${getThreadContext() ? ' (was viewing' + getThreadContext() + ')' : ''}`;
         addToolMessage('go_to_next_email', 'Moving to next email...');
         onNextEmailRef.current?.();
-        return 'Navigating to next email. Wait for the new email context before speaking about it.';
+        // Wait for thread to change before returning
+        await new Promise<void>((resolve) => {
+          let checks = 0;
+          const check = () => {
+            if (threadRef.current?.id !== prevThreadId || checks >= 15) resolve();
+            else { checks++; setTimeout(check, 100); }
+          };
+          setTimeout(check, 100);
+        });
+        return 'Navigated to next email. A system context update with the new email details will arrive shortly — DO NOT respond until you receive that update.';
       },
 
       go_to_inbox: async () => {
@@ -706,6 +779,11 @@ export function VoiceModeInterface({
         // ElevenLabs captured the full user transcript - clear browser interim display
         accumulatedFinalTranscriptRef.current = '';
         setTentativeTranscript('');
+        // Mark as thinking — waiting for agent response
+        setIsThinking(true);
+      } else {
+        // Agent response arrived — no longer thinking
+        setIsThinking(false);
       }
 
       let content = '';
@@ -776,6 +854,9 @@ export function VoiceModeInterface({
       soundsRef.current.playError();
     },
     onModeChange: ({ mode }: any) => {
+      if (mode === 'speaking') {
+        setIsThinking(false); // Agent started speaking — no longer thinking
+      }
       if (conversation.status === 'connected' && recognitionRef.current) {
         if (mode === 'listening') {
           startBrowserRecognition();
@@ -1450,6 +1531,8 @@ export function VoiceModeInterface({
     ? 'processing'
     : conversation.isSpeaking
     ? 'speaking'
+    : isThinking
+    ? 'thinking'
     : 'listening';
 
   // Detect user speaking via volume when no text transcript source is available (mobile fallback)
@@ -1472,12 +1555,16 @@ export function VoiceModeInterface({
       ? processingTool
       : conversation.isSpeaking
       ? 'Speaking...'
+      : isThinking
+      ? 'Thinking...'
       : 'Listening...';
 
   const statusColor =
     voiceStatus === 'paused'
       ? 'rgb(156,163,175)'
       : voiceStatus === 'processing'
+      ? 'rgb(192,132,252)'
+      : voiceStatus === 'thinking'
       ? 'rgb(192,132,252)'
       : voiceStatus === 'speaking'
       ? 'rgb(168,85,247)'
@@ -1497,15 +1584,12 @@ export function VoiceModeInterface({
       className="flex flex-col h-full"
       style={{ background: 'var(--bg-primary)' }}
     >
-      {/* ── Header ─────────────────────────────────────────── */}
-      <div
-        className="flex items-center justify-between px-4 py-2.5 flex-shrink-0"
-        style={{ borderBottom: '1px solid var(--border-subtle)' }}
-      >
-        <div className="flex items-center gap-2.5 min-w-0">
+      {/* ── Header (unified: status + email preview + controls) ── */}
+      <div className="flex-shrink-0" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+        <div className="flex items-center px-4 py-2.5">
           {/* Animated status dot */}
           <motion.div
-            className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+            className="w-2.5 h-2.5 rounded-full flex-shrink-0 mr-2.5"
             animate={{
               scale:
                 voiceStatus === 'paused'
@@ -1514,14 +1598,14 @@ export function VoiceModeInterface({
                   ? [1, 1.3, 1]
                   : voiceStatus === 'speaking'
                   ? [1, 1.2, 1]
-                  : voiceStatus === 'processing'
+                  : voiceStatus === 'processing' || voiceStatus === 'thinking'
                   ? [1, 1.4, 1]
                   : 1,
               opacity: voiceStatus === 'disconnected' ? 0.4 : voiceStatus === 'paused' ? 0.6 : 1,
             }}
             transition={{
               scale: {
-                duration: voiceStatus === 'processing' ? 0.8 : voiceStatus === 'speaking' ? 0.8 : 2,
+                duration: voiceStatus === 'processing' || voiceStatus === 'thinking' ? 0.8 : voiceStatus === 'speaking' ? 0.8 : 2,
                 repeat: Infinity,
                 ease: 'easeInOut',
               },
@@ -1536,6 +1620,8 @@ export function VoiceModeInterface({
                   ? 'rgb(168,85,247)'
                   : voiceStatus === 'processing'
                   ? 'rgb(251,191,36)'
+                  : voiceStatus === 'thinking'
+                  ? 'rgb(192,132,252)'
                   : voiceStatus === 'connecting'
                   ? 'rgb(168,85,247)'
                   : 'rgb(107,114,128)',
@@ -1549,35 +1635,111 @@ export function VoiceModeInterface({
                         ? 'rgba(168,85,247,0.5)'
                         : voiceStatus === 'processing'
                         ? 'rgba(251,191,36,0.5)'
+                        : voiceStatus === 'thinking'
+                        ? 'rgba(192,132,252,0.5)'
                         : 'rgba(168,85,247,0.3)'
                     }`,
               transition: 'background 0.6s ease, box-shadow 0.6s ease',
             }}
           />
-          {thread ? (
-            <p className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>
-              {thread.subject}
-            </p>
+
+          {/* Clickable subject/sender region — expands email preview */}
+          {thread && thread.messages.length > 0 ? (
+            <button
+              onClick={() => setEmailPreviewExpanded((v) => !v)}
+              className="flex-1 flex items-center gap-1.5 min-w-0 text-left"
+            >
+              <span className="text-xs font-medium flex-shrink-0" style={{ color: 'rgb(147, 197, 253)' }}>
+                {thread.messages[thread.messages.length - 1]?.from?.name ||
+                  thread.messages[thread.messages.length - 1]?.from?.email?.split('@')[0] || ''}
+              </span>
+              <span className="text-xs mx-0.5 opacity-30" style={{ color: 'var(--text-muted)' }}>—</span>
+              <span className="text-xs truncate" style={{ color: 'var(--text-secondary)' }}>
+                {thread.subject || '(No Subject)'}
+              </span>
+              {thread.messages.length > 1 && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full flex-shrink-0"
+                  style={{ background: 'rgba(147,197,253,0.1)', color: 'rgba(147,197,253,0.7)' }}
+                >
+                  {thread.messages.length}
+                </span>
+              )}
+              <motion.div
+                animate={{ rotate: emailPreviewExpanded ? 180 : 0 }}
+                transition={{ duration: 0.2 }}
+                className="flex-shrink-0 ml-1"
+              >
+                <ChevronDown className="w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} />
+              </motion.div>
+            </button>
           ) : (
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            <p className="flex-1 text-xs" style={{ color: 'var(--text-muted)' }}>
               Voice Mode
             </p>
           )}
-        </div>
 
-        <div className="flex items-center gap-1 flex-shrink-0">
           {/* Close voice mode */}
           <button
             onClick={() => {
               endSession();
               onExitVoiceMode();
             }}
-            className="p-1.5 rounded-lg hover:bg-white/5 transition-colors"
+            className="p-1.5 rounded-lg hover:bg-white/5 transition-colors flex-shrink-0 ml-1"
             style={{ color: 'var(--text-muted)' }}
           >
             <X className="w-4 h-4" />
           </button>
         </div>
+
+        {/* Expandable email content */}
+        <AnimatePresence>
+          {emailPreviewExpanded && thread && thread.messages.length > 0 && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="overflow-hidden"
+            >
+              <div
+                className="px-4 pb-3 overflow-y-auto space-y-3"
+                style={{ maxHeight: '40vh', borderTop: '1px solid var(--border-subtle)' }}
+              >
+                {thread.messages.map((msg, idx) => {
+                  const fromName = msg.from?.name || msg.from?.email || 'Unknown';
+                  let bodyText = msg.body || '';
+                  if (msg.bodyHtml) {
+                    const htmlText = extractTextFromHtml(msg.bodyHtml);
+                    if (htmlText.length > bodyText.length * 1.2 || bodyText.length < 50) {
+                      bodyText = htmlText;
+                    }
+                  }
+                  return (
+                    <div key={msg.id || idx}>
+                      <div className="flex items-center gap-2 mb-1 mt-2">
+                        <span className="text-[11px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                          {fromName}
+                        </span>
+                        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                          {new Date(msg.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                        </span>
+                      </div>
+                      <p
+                        className="text-xs leading-relaxed whitespace-pre-wrap"
+                        style={{ color: 'var(--text-primary)', opacity: 0.8 }}
+                      >
+                        {bodyText.slice(0, 2000) || '(No text content)'}
+                      </p>
+                      {idx < thread.messages.length - 1 && (
+                        <div className="h-px mt-3" style={{ background: 'var(--border-subtle)', opacity: 0.5 }} />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Incognito indicator bar */}
@@ -1607,77 +1769,6 @@ export function VoiceModeInterface({
           </motion.div>
         )}
       </AnimatePresence>
-
-      {/* ── Collapsible email preview ──────────────────────── */}
-      {thread && thread.messages.length > 0 && (
-        <div className="flex-shrink-0" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-          <button
-            onClick={() => setEmailPreviewExpanded((v) => !v)}
-            className="w-full flex items-center gap-2 px-4 py-2 text-left transition-colors hover:bg-white/[0.02]"
-          >
-            <Mail className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--text-muted)' }} />
-            <span className="text-xs truncate flex-1" style={{ color: 'var(--text-secondary)' }}>
-              {thread.messages[thread.messages.length - 1]?.from?.name || thread.messages[thread.messages.length - 1]?.from?.email}
-              {' — '}
-              {thread.messages[thread.messages.length - 1]?.snippet || thread.subject}
-            </span>
-            <motion.div
-              animate={{ rotate: emailPreviewExpanded ? 180 : 0 }}
-              transition={{ duration: 0.2 }}
-            >
-              <ChevronDown className="w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} />
-            </motion.div>
-          </button>
-          <AnimatePresence>
-            {emailPreviewExpanded && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.2 }}
-                className="overflow-hidden"
-              >
-                <div
-                  className="px-4 pb-3 overflow-y-auto space-y-3"
-                  style={{ maxHeight: '40vh' }}
-                >
-                  {thread.messages.map((msg, idx) => {
-                    const fromName = msg.from?.name || msg.from?.email || 'Unknown';
-                    let bodyText = msg.body || '';
-                    if (msg.bodyHtml) {
-                      const htmlText = extractTextFromHtml(msg.bodyHtml);
-                      if (htmlText.length > bodyText.length * 1.2 || bodyText.length < 50) {
-                        bodyText = htmlText;
-                      }
-                    }
-                    return (
-                      <div key={msg.id || idx}>
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-[11px] font-medium" style={{ color: 'var(--text-secondary)' }}>
-                            {fromName}
-                          </span>
-                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                            {new Date(msg.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                          </span>
-                        </div>
-                        <p
-                          className="text-xs leading-relaxed whitespace-pre-wrap"
-                          style={{ color: 'var(--text-primary)', opacity: 0.8 }}
-                        >
-                          {bodyText.slice(0, 2000) || '(No text content)'}
-                        </p>
-                        {idx < thread.messages.length - 1 && (
-                          <div className="h-px mt-3" style={{ background: 'var(--border-subtle)', opacity: 0.5 }} />
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      )}
 
       {/* ── Error banner ───────────────────────────────────── */}
       <AnimatePresence>
@@ -1935,6 +2026,42 @@ export function VoiceModeInterface({
           </motion.div>
         )}
 
+        {/* Thinking indicator — shown while waiting for agent response */}
+        {isThinking && !isPaused && !tentativeTranscript?.trim() && (
+          <motion.div
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className="flex justify-start"
+          >
+            <div
+              className="px-3.5 py-2 rounded-2xl border flex items-center gap-1.5"
+              style={{
+                borderColor: 'rgba(168,85,247,0.2)',
+                background: 'rgba(168,85,247,0.06)',
+              }}
+            >
+              {[0, 1, 2].map((i) => (
+                <motion.div
+                  key={i}
+                  className="w-1.5 h-1.5 rounded-full"
+                  style={{ background: 'rgb(192,132,252)' }}
+                  animate={{
+                    scale: [1, 1.5, 1],
+                    opacity: [0.3, 0.8, 0.3],
+                  }}
+                  transition={{
+                    duration: 0.8,
+                    repeat: Infinity,
+                    ease: 'easeInOut',
+                    delay: i * 0.2,
+                  }}
+                />
+              ))}
+            </div>
+          </motion.div>
+        )}
+
         {/* Tentative transcript (hidden while paused) */}
         {tentativeTranscript?.trim() && !isPaused && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-end">
@@ -2011,6 +2138,8 @@ export function VoiceModeInterface({
                 ? 'rgba(168,85,247,0.06)'
                 : voiceStatus === 'processing'
                 ? 'rgba(251,191,36,0.04)'
+                : voiceStatus === 'thinking'
+                ? 'rgba(168,85,247,0.06)'
                 : 'transparent'
             } 0%, transparent 100%)`,
             transition: 'background 0.8s ease',
@@ -2058,7 +2187,7 @@ export function VoiceModeInterface({
                 animate={{ opacity: 0.7 }}
                 style={{ color: statusColor, transition: 'color 0.5s ease' }}
               >
-                {voiceStatus === 'processing' && (
+                {(voiceStatus === 'processing' || voiceStatus === 'thinking') && (
                   <Loader2 className="w-3 h-3 animate-spin" />
                 )}
                 {statusLabel}

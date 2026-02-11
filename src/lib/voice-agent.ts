@@ -65,6 +65,7 @@ When the user asks for changes and you call prepare_draft again:
   * type: "reply" (responding to current email - THIS IS THE DEFAULT), "forward" (forwarding), or "new" (new email)
   * CRITICAL: When viewing an email thread and user asks to write back, respond, tell them, draft something - ALWAYS use "reply".
 - send_email: Call when user confirms they want to send. Must include confirm: "confirmed".
+- discard_draft: Discard the current draft. Use when the user says to discard, cancel, delete, or throw away the draft.
 - archive_email: Remove from inbox. Only works if email is currently in inbox.
 - move_to_inbox: Unarchive an email. Only use for archived emails.
 - star_email: Star/flag the email.
@@ -348,6 +349,18 @@ export function buildDynamicFirstMessage(
 const VOICE_SPECIFIC_TOOLS: ElevenLabsClientTool[] = [
   {
     type: 'client',
+    name: 'discard_draft',
+    description: 'Discard the current draft email. Use when the user wants to cancel, discard, delete, or throw away the draft they are working on.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+    expects_response: true,
+    response_timeout_secs: 10,
+  },
+  {
+    type: 'client',
     name: 'get_email_content',
     description: 'Get the full verbatim text of messages in the current email thread. Use this when the user asks you to read the email, or when first greeting the user about a new thread and they want to hear it. Read the returned text word-for-word.',
     parameters: {
@@ -455,6 +468,12 @@ export interface ElevenLabsAgentConfig {
       quality?: 'high';
       provider?: 'elevenlabs' | 'scribe_realtime';
     };
+    turn?: {
+      turn_eagerness?: 'patient' | 'normal' | 'eager';
+      speculative_turn?: boolean;
+      turn_timeout?: number;
+      spelling_patience?: 'auto' | 'off';
+    };
     conversation?: {
       client_events?: string[];
     };
@@ -506,7 +525,7 @@ export function buildAgentConfig(options: {
         },
       },
       tts: {
-        model_id: 'eleven_turbo_v2',
+        model_id: 'eleven_flash_v2', // ~75ms latency vs turbo_v2's higher latency
         voice_id: options.voiceId || '21m00Tcm4TlvDq8ikWAM', // Rachel
         stability: 0.5,
         similarity_boost: 0.8,
@@ -515,6 +534,12 @@ export function buildAgentConfig(options: {
       asr: {
         quality: 'high',
         provider: 'scribe_realtime',
+      },
+      turn: {
+        turn_eagerness: 'eager',      // Respond ASAP when user pauses
+        speculative_turn: true,         // Start LLM generation before full turn confidence
+        spelling_patience: 'off',       // Don't wait for entity spelling completion
+        turn_timeout: 7,               // Default timeout for re-engagement
       },
       conversation: {
         client_events: [
@@ -555,6 +580,7 @@ export function buildAgentConfig(options: {
 export class VoiceSoundEffects {
   private audioContext: AudioContext | null = null;
   private processingLoop: { osc1: OscillatorNode; osc2: OscillatorNode; gain: GainNode } | null = null;
+  private processingLoopTimer: number | null = null;
 
   private getContext(): AudioContext {
     if (!this.audioContext || this.audioContext.state === 'closed') {
@@ -673,52 +699,85 @@ export class VoiceSoundEffects {
     } catch {}
   }
 
-  /** Start a subtle continuous ambient loop for ongoing operations (search, browse, etc.)
-   *  Plays a soft oscillating tone that signals "working in background" */
+  /** Start a gentle ambient chime loop for ongoing operations (search, browse, etc.)
+   *  Plays soft, musical arpeggiated notes like wind chimes — warm and friendly */
   startProcessingLoop() {
     this.stopProcessingLoop(); // Clean up any existing loop
     try {
       const ctx = this.getContext();
 
-      // Two detuned sine oscillators for a gentle, airy sound
+      // Master gain for the whole loop
+      const gain = ctx.createGain();
+      gain.connect(ctx.destination);
+      gain.gain.setValueAtTime(0, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.04, ctx.currentTime + 0.5); // Gentle fade in
+
+      // Warm pentatonic notes (C major pentatonic, octave 5-6 range — bright but soft)
+      const notes = [523, 587, 659, 784, 880, 1047, 784, 659]; // C5 D5 E5 G5 A5 C6 G5 E5
+      let noteIndex = 0;
+      let timeOffset = 0.3; // Initial delay
+
+      // Schedule a sequence of soft chime notes
+      const scheduleChime = () => {
+        if (!this.processingLoop) return;
+        try {
+          const osc = ctx.createOscillator();
+          const noteGain = ctx.createGain();
+
+          osc.type = 'triangle'; // Warmer than sine
+          osc.connect(noteGain);
+          noteGain.connect(gain);
+
+          const freq = notes[noteIndex % notes.length];
+          // Slight random detuning for organic feel
+          osc.frequency.setValueAtTime(freq + (Math.random() - 0.5) * 4, ctx.currentTime);
+
+          // Soft attack, gentle decay (like a wind chime)
+          noteGain.gain.setValueAtTime(0, ctx.currentTime);
+          noteGain.gain.linearRampToValueAtTime(0.6, ctx.currentTime + 0.04);
+          noteGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.8);
+
+          osc.start(ctx.currentTime);
+          osc.stop(ctx.currentTime + 0.85);
+
+          noteIndex++;
+          // Vary timing: 400-700ms between notes for natural rhythm
+          const nextDelay = 400 + Math.random() * 300;
+          this.processingLoopTimer = window.setTimeout(scheduleChime, nextDelay);
+        } catch {}
+      };
+
+      // Use a dummy oscillator pair to satisfy the type (they produce no sound)
       const osc1 = ctx.createOscillator();
       const osc2 = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      osc1.type = 'sine';
-      osc2.type = 'sine';
-      osc1.frequency.setValueAtTime(392, ctx.currentTime); // G4
-      osc2.frequency.setValueAtTime(523, ctx.currentTime); // C5
-
-      // Gentle pulsing via LFO on gain
-      const lfo = ctx.createOscillator();
-      const lfoGain = ctx.createGain();
-      lfo.type = 'sine';
-      lfo.frequency.setValueAtTime(1.5, ctx.currentTime); // 1.5 Hz pulse
-      lfoGain.gain.setValueAtTime(0.012, ctx.currentTime);
-      lfo.connect(lfoGain);
-      lfoGain.connect(gain.gain);
-      lfo.start(ctx.currentTime);
-
       osc1.connect(gain);
       osc2.connect(gain);
-      gain.connect(ctx.destination);
-
-      // Very low volume — ambient, not intrusive
-      gain.gain.setValueAtTime(0.02, ctx.currentTime);
-
-      // Fade in
-      gain.gain.linearRampToValueAtTime(0.035, ctx.currentTime + 0.5);
-
+      osc1.type = 'triangle';
+      osc2.type = 'triangle';
+      osc1.frequency.setValueAtTime(0, ctx.currentTime);
+      osc2.frequency.setValueAtTime(0, ctx.currentTime);
+      const silentGain = ctx.createGain();
+      silentGain.gain.setValueAtTime(0, ctx.currentTime);
+      osc1.disconnect();
+      osc2.disconnect();
+      osc1.connect(silentGain);
+      osc2.connect(silentGain);
+      silentGain.connect(ctx.destination);
       osc1.start(ctx.currentTime);
       osc2.start(ctx.currentTime);
 
       this.processingLoop = { osc1, osc2, gain };
+      // Start the chime sequence after a brief initial delay
+      this.processingLoopTimer = window.setTimeout(scheduleChime, timeOffset * 1000);
     } catch {}
   }
 
   /** Stop the processing loop with a gentle fade-out */
   stopProcessingLoop() {
+    if (this.processingLoopTimer) {
+      clearTimeout(this.processingLoopTimer);
+      this.processingLoopTimer = null;
+    }
     if (!this.processingLoop) return;
     try {
       const ctx = this.getContext();
@@ -732,6 +791,10 @@ export class VoiceSoundEffects {
 
   dispose() {
     this.stopProcessingLoop();
+    if (this.processingLoopTimer) {
+      clearTimeout(this.processingLoopTimer);
+      this.processingLoopTimer = null;
+    }
     if (this.audioContext && this.audioContext.state !== 'closed') {
       this.audioContext.close().catch(() => {});
     }
