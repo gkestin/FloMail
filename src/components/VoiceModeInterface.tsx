@@ -182,7 +182,9 @@ export function VoiceModeInterface({
   const [processingTool, setProcessingTool] = useState<string | null>(null);
   const [isPaused, setIsPaused] = useState(false);
   const isPausedRef = useRef(false);
-  const [isAgentSpeaking, setIsAgentSpeaking] = useState(false); // Track agent speech for echo prevention
+  // Note: isAgentSpeaking was previously used for mic muting (echo prevention).
+  // Removed — WebRTC AEC handles echo, and muting killed interruptions.
+  // Browser SpeechRecognition echo is handled via isSpeakingRef guard in onresult.
   const [inputVolume, setInputVolume] = useState(0);
   const [outputVolume, setOutputVolume] = useState(0);
   const [speechRecognitionWorking, setSpeechRecognitionWorking] = useState(false);
@@ -190,10 +192,11 @@ export function VoiceModeInterface({
   const [collapsedHistory, setCollapsedHistory] = useState<VoiceMessage[]>([]);
   const isIncognitoRef = useRef(false);
 
-  // Computed mic mute: muted when paused or agent is speaking (echo prevention).
-  // Auto-muting during agent speech prevents the mic from picking up TTS audio from speakers
-  // and causing the AI to reply to itself (echo loop).
-  const effectiveMicMuted = isPaused || isAgentSpeaking;
+  // Computed mic mute: only muted when paused.
+  // Echo prevention is handled by WebRTC's built-in AEC (echoCancellation: true in SDK).
+  // We do NOT mute during agent speech — this allows natural interruptions via server-side VAD.
+  // Browser SpeechRecognition echo is handled separately (isSpeakingRef guard in onresult).
+  const effectiveMicMuted = isPaused;
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -732,8 +735,6 @@ export function VoiceModeInterface({
       soundsRef.current.playError();
     },
     onModeChange: ({ mode }: any) => {
-      // Track agent speaking for echo prevention (auto-mutes mic during agent speech)
-      setIsAgentSpeaking(mode === 'speaking');
       if (conversation.status === 'connected' && recognitionRef.current) {
         if (mode === 'listening') {
           startBrowserRecognition();
@@ -835,7 +836,7 @@ export function VoiceModeInterface({
     return () => {
       try { recognition.stop(); } catch {}
     };
-  }, [conversation.status, conversation.isSpeaking]);
+  }, [conversation.status]); // Don't depend on isSpeaking — handlers use isSpeakingRef instead
 
   const startBrowserRecognition = useCallback(() => {
     if (!recognitionRef.current) return;
