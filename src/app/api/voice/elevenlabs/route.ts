@@ -5,7 +5,8 @@ const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1';
 
 // Cache the agent ID in memory (persists across requests in the same server instance)
 let cachedAgentId: string | null = null;
-let cachedAgentModel: string | null = null; // Track which model was used
+let cachedAgentModel: string | null = null;
+let cachedAgentVoice: string | null = null;
 let agentCreatedAt: number = 0;
 const AGENT_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -38,9 +39,10 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ agentId: envAgentId });
       }
 
-      // Check cache (skip if forceNew requested or model changed)
+      // Check cache (skip if forceNew requested or model/voice changed)
       const modelChanged = llmModel && cachedAgentModel && llmModel !== cachedAgentModel;
-      if (!forceNew && !modelChanged && cachedAgentId && Date.now() - agentCreatedAt < AGENT_CACHE_TTL) {
+      const voiceChanged = voiceId && cachedAgentVoice && voiceId !== cachedAgentVoice;
+      if (!forceNew && !modelChanged && !voiceChanged && cachedAgentId && Date.now() - agentCreatedAt < AGENT_CACHE_TTL) {
         return NextResponse.json({ agentId: cachedAgentId });
       }
 
@@ -69,6 +71,7 @@ export async function POST(request: NextRequest) {
       const data = await response.json();
       cachedAgentId = data.agent_id;
       cachedAgentModel = llmModel || null;
+      cachedAgentVoice = voiceId || null;
       agentCreatedAt = Date.now();
 
       console.log('[Voice] Created ElevenLabs agent:', cachedAgentId);

@@ -6,6 +6,7 @@ import {
   getDoc,
   setDoc,
   deleteDoc,
+  runTransaction,
   Timestamp,
 } from 'firebase/firestore';
 
@@ -106,35 +107,39 @@ export async function saveVoiceChat(
 
   try {
     const docRef = getVoiceChatDocRef(userId, threadId);
-    const docSnap = await getDoc(docRef);
 
-    let allMessages: PersistedVoiceMessage[];
+    // Use a transaction to avoid race conditions when concurrent saves
+    // (e.g., auto-save timer + disconnect handler) fire simultaneously
+    await runTransaction(db, async (transaction) => {
+      const docSnap = await transaction.get(docRef);
 
-    if (docSnap.exists()) {
-      const existing = (docSnap.data() as VoiceChatDocument).messages || [];
-      // Merge: add only messages whose IDs don't already exist
-      const existingIds = new Set(existing.map((m) => m.id));
-      const toAdd = newMessages.filter((m) => !existingIds.has(m.id));
-      allMessages = [...existing, ...toAdd];
-    } else {
-      allMessages = newMessages;
-    }
+      let allMessages: PersistedVoiceMessage[];
 
-    const lastMsg = allMessages[allMessages.length - 1];
-    const preview = lastMsg?.content?.slice(0, 100) || '';
+      if (docSnap.exists()) {
+        const existing = (docSnap.data() as VoiceChatDocument).messages || [];
+        const existingIds = new Set(existing.map((m) => m.id));
+        const toAdd = newMessages.filter((m) => !existingIds.has(m.id));
+        allMessages = [...existing, ...toAdd];
+      } else {
+        allMessages = newMessages;
+      }
 
-    const chatDoc: VoiceChatDocument = {
-      messages: allMessages,
-      lastUpdated: Timestamp.now(),
-      messageCount: allMessages.length,
-      lastMessagePreview: preview,
-      lastSessionId: lastMsg?.sessionId || '',
-    };
-    if (lastEmailMessageId) {
-      chatDoc.lastEmailMessageId = lastEmailMessageId;
-    }
+      const lastMsg = allMessages[allMessages.length - 1];
+      const preview = lastMsg?.content?.slice(0, 100) || '';
 
-    await setDoc(docRef, chatDoc);
+      const chatDoc: VoiceChatDocument = {
+        messages: allMessages,
+        lastUpdated: Timestamp.now(),
+        messageCount: allMessages.length,
+        lastMessagePreview: preview,
+        lastSessionId: lastMsg?.sessionId || '',
+      };
+      if (lastEmailMessageId) {
+        chatDoc.lastEmailMessageId = lastEmailMessageId;
+      }
+
+      transaction.set(docRef, chatDoc);
+    });
   } catch (error) {
     console.error('[VoiceChat] Failed to save:', error);
   }

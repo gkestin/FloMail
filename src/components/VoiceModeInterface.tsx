@@ -186,7 +186,6 @@ export function VoiceModeInterface({
   // Removed — WebRTC AEC handles echo, and muting killed interruptions.
   // Browser SpeechRecognition echo is handled via isSpeakingRef guard in onresult.
   const [inputVolume, setInputVolume] = useState(0);
-  const [outputVolume, setOutputVolume] = useState(0);
   const [speechRecognitionWorking, setSpeechRecognitionWorking] = useState(false);
   const [isIncognito, setIsIncognito] = useState(false);
   const [collapsedHistory, setCollapsedHistory] = useState<VoiceMessage[]>([]);
@@ -337,13 +336,13 @@ export function VoiceModeInterface({
         const existingDraftId = currentDraftRef.current?.gmailDraftId;
         if (existingDraftId) draft.gmailDraftId = existingDraftId;
 
-        // Clean draft transition: clear → re-key → set new
+        // Clean draft transition: clear → re-key → set new (setTimeout ensures React commits the null state)
         setCurrentDraft(null);
         setDraftKey((k) => k + 1);
-        requestAnimationFrame(() => {
+        setTimeout(() => {
           setCurrentDraft(draft);
           onDraftCreatedRef.current?.(draft);
-        });
+        }, 0);
 
         addToolMessage(
           'prepare_draft',
@@ -383,7 +382,13 @@ export function VoiceModeInterface({
         const ctx = getThreadContext();
         setProcessingTool('Archiving...');
         soundsRef.current.playSend();
-        onArchiveRef.current?.();
+        try {
+          await onArchiveRef.current?.();
+        } catch (err: any) {
+          soundsRef.current.playError();
+          setProcessingTool(null);
+          return `Failed to archive: ${err.message}`;
+        }
         addToolMessage('archive_email', `Archived${ctx}.`);
         setProcessingTool(null);
         return 'Email archived. The next email is now loading.';
@@ -393,7 +398,13 @@ export function VoiceModeInterface({
         const ctx = getThreadContext();
         setProcessingTool('Moving...');
         soundsRef.current.playToolStart();
-        onMoveToInboxRef.current?.();
+        try {
+          await onMoveToInboxRef.current?.();
+        } catch (err: any) {
+          soundsRef.current.playError();
+          setProcessingTool(null);
+          return `Failed to move to inbox: ${err.message}`;
+        }
         addToolMessage('move_to_inbox', `Moved to inbox${ctx}.`);
         setProcessingTool(null);
         return 'Email moved to inbox.';
@@ -402,7 +413,12 @@ export function VoiceModeInterface({
       star_email: async () => {
         const ctx = getThreadContext();
         soundsRef.current.playToolStart();
-        onStarRef.current?.();
+        try {
+          await onStarRef.current?.();
+        } catch (err: any) {
+          soundsRef.current.playError();
+          return `Failed to star: ${err.message}`;
+        }
         addToolMessage('star_email', `Starred${ctx}.`);
         return 'Email starred.';
       },
@@ -410,7 +426,12 @@ export function VoiceModeInterface({
       unstar_email: async () => {
         const ctx = getThreadContext();
         soundsRef.current.playToolStart();
-        onUnstarRef.current?.();
+        try {
+          await onUnstarRef.current?.();
+        } catch (err: any) {
+          soundsRef.current.playError();
+          return `Failed to unstar: ${err.message}`;
+        }
         addToolMessage('unstar_email', `Unstarred${ctx}.`);
         return 'Star removed.';
       },
@@ -784,27 +805,26 @@ export function VoiceModeInterface({
     recognition.interimResults = true;
     recognition.lang = 'en-US';
 
+    // Track consecutive errors for backoff — reset on successful result
+    let consecutiveErrors = 0;
+    const MAX_CONSECUTIVE_ERRORS = 10;
+
     recognition.onresult = (event: any) => {
-      // Browser SpeechRecognition is producing results — mark as working
-      if (!speechRecognitionWorking) setSpeechRecognitionWorking(true);
+      // Working — reset error count and mark as functional
+      consecutiveErrors = 0;
+      setSpeechRecognitionWorking(true);
 
       // While agent is speaking, suppress interim transcripts to avoid echo.
-      // The browser mic picks up the AI's TTS output from speakers, creating
-      // ghost transcripts. The ElevenLabs SDK handles actual user interruptions
-      // via its own WebRTC pipeline with echo cancellation, so we don't need
-      // browser recognition results during agent speech.
       if (isSpeakingRef.current) return;
 
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         if (event.results[i].isFinal) {
-          // Accumulate finalized chunks so they don't disappear
           accumulatedFinalTranscriptRef.current += event.results[i][0].transcript;
         } else {
           interim += event.results[i][0].transcript;
         }
       }
-      // Show accumulated finals + current interim together
       const full = (accumulatedFinalTranscriptRef.current + interim).trim();
       if (full) {
         setTentativeTranscript(full);
@@ -812,28 +832,33 @@ export function VoiceModeInterface({
     };
 
     recognition.onerror = (e: any) => {
-      // On mobile, 'no-speech' and 'aborted' errors are common and recoverable
       const ignorable = ['no-speech', 'aborted', 'network'];
-      if (conversation.status === 'connected' && (!e.error || ignorable.includes(e.error))) {
-        setTimeout(() => {
-          try { recognition.start(); } catch {}
-        }, 500);
+      if (!e.error || ignorable.includes(e.error)) {
+        consecutiveErrors++;
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+          console.warn('[Voice] SpeechRecognition: max retries reached, stopping');
+          setSpeechRecognitionWorking(false);
+        }
       }
     };
 
     recognition.onend = () => {
-      // Always restart while connected (mobile fires onend frequently)
-      // Don't gate on isSpeaking - we want to capture user speech during agent TTS too
-      if (conversation.status === 'connected') {
+      // Restart while connected, with backoff on repeated errors
+      if (conversation.status === 'connected' && consecutiveErrors < MAX_CONSECUTIVE_ERRORS) {
+        const delay = consecutiveErrors > 0 ? Math.min(500 * consecutiveErrors, 5000) : 50;
         setTimeout(() => {
           try { recognition.start(); } catch {}
-        }, 50);
+        }, delay);
       }
     };
 
     recognitionRef.current = recognition;
 
     return () => {
+      // Null out handlers BEFORE stop() to prevent onend from restarting
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
       try { recognition.stop(); } catch {}
     };
   }, [conversation.status]); // Don't depend on isSpeaking — handlers use isSpeakingRef instead
@@ -864,8 +889,7 @@ export function VoiceModeInterface({
     if (conversation.status === 'connected') {
       volumeIntervalRef.current = setInterval(() => {
         setInputVolume(conversation.getInputVolume());
-        setOutputVolume(conversation.getOutputVolume());
-      }, 50);
+      }, 100);
     }
 
     return () => {
@@ -1269,11 +1293,11 @@ export function VoiceModeInterface({
     return () => { cancelled = true; };
   }, [thread?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-save every 30 seconds during active session
+  // Auto-save every 30 seconds during active session (uses ref to avoid interval churn)
   useEffect(() => {
     if (conversation.status === 'connected') {
       saveTimerRef.current = setInterval(() => {
-        saveCurrentSession();
+        saveCurrentSessionRef.current();
       }, 30000);
     }
     return () => {
@@ -1282,12 +1306,14 @@ export function VoiceModeInterface({
         saveTimerRef.current = null;
       }
     };
-  }, [conversation.status, saveCurrentSession]);
+  }, [conversation.status]);
 
-  // Save on unmount (session end) — use ref to avoid re-running on every message change
+  // Save and disconnect on unmount (e.g., parent sets isVoiceMode=false)
   useEffect(() => {
     return () => {
       saveCurrentSessionRef.current();
+      // End WebRTC session if still connected
+      try { conversation.endSession(); } catch {}
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 

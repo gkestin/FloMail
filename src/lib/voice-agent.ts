@@ -139,6 +139,9 @@ export function extractTextFromHtml(html: string): string {
   text = text.replace(/&#39;/gi, "'");
   text = text.replace(/&zwnj;/gi, '');
   text = text.replace(/&zwj;/gi, '');
+  // Decode numeric HTML entities (&#NNN; and &#xHHH;)
+  text = text.replace(/&#x([0-9a-fA-F]+);/gi, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+  text = text.replace(/&#(\d+);/g, (_, dec: string) => String.fromCharCode(parseInt(dec, 10)));
   text = text.replace(/\t+/g, ' ');
   text = text.replace(/ +/g, ' ');
   text = text.replace(/\n\s*\n\s*\n/g, '\n\n');
@@ -500,7 +503,7 @@ export function buildAgentConfig(options: {
         },
       },
       tts: {
-        model_id: 'eleven_turbo_v2',
+        model_id: 'eleven_turbo_v2_5',
         voice_id: options.voiceId || '21m00Tcm4TlvDq8ikWAM', // Rachel
         stability: 0.5,
         similarity_boost: 0.8,
