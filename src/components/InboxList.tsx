@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence, useMotionValue, useTransform, PanInfo, animate } from 'framer-motion';
 import { 
   RefreshCw, 
@@ -21,7 +21,7 @@ import {
   Clock,
   Bell,
   ShieldAlert,
-  Tag
+  ChevronRight
 } from 'lucide-react';
 import { EmailThread } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
@@ -62,6 +62,7 @@ interface InboxListProps {
   onFolderChange?: (folder: MailFolder) => void; // Notify parent when folder changes
   onRegisterLoadMore?: (loadMore: () => Promise<void>, hasMore: () => boolean) => void; // Expose loadMore to parent
   onThreadsUpdate?: (threads: EmailThread[], folder: MailFolder) => void; // Notify parent when threads change
+  importantUnreadCount?: number; // Count of important+unread messages for Inbox tab badge
 }
 
 // Type for pending undo actions (archive with undo capability)
@@ -73,7 +74,7 @@ interface PendingUndo {
   duration: number;
 }
 
-export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'inbox', searchQuery = '', onClearSearch, onFolderChange, onRegisterLoadMore, onThreadsUpdate }: InboxListProps) {
+export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'inbox', searchQuery = '', onClearSearch, onFolderChange, onRegisterLoadMore, onThreadsUpdate, importantUnreadCount }: InboxListProps) {
   const { getAccessToken, user } = useAuth();
   const [threads, setThreads] = useState<EmailThread[]>([]);
   const [drafts, setDrafts] = useState<GmailDraftInfo[]>([]);
@@ -996,48 +997,54 @@ export function InboxList({ onSelectThread, selectedThreadId, defaultFolder = 'i
           const isActive = folder === currentFolder;
 
           return (
-            <button
-              key={folder}
-              onClick={() => handleFolderChange(folder)}
-              className="flex items-center gap-1.5 rounded-lg font-medium whitespace-nowrap transition-all"
-              style={isActive ? {
-                padding: '8px 16px',
-                background: 'rgba(59, 130, 246, 0.2)',
-                color: 'rgb(147, 197, 253)',
-                border: '1px solid rgba(59, 130, 246, 0.4)',
-                fontSize: '1rem',
-              } : {
-                padding: '6px 12px',
-                fontSize: '0.875rem',
-                color: 'var(--text-secondary)',
-                background: 'transparent',
-              }}
-            >
-              <Icon className={isActive ? 'w-5 h-5' : 'w-4 h-4'} />
-              {config.label}
-            </button>
+            <React.Fragment key={folder}>
+              <button
+                onClick={() => handleFolderChange(folder)}
+                className="flex items-center gap-1.5 rounded-lg font-medium whitespace-nowrap transition-all"
+                style={isActive ? {
+                  padding: '8px 16px',
+                  background: 'rgba(59, 130, 246, 0.2)',
+                  color: 'rgb(147, 197, 253)',
+                  border: '1px solid rgba(59, 130, 246, 0.4)',
+                  fontSize: '1rem',
+                } : {
+                  padding: '6px 12px',
+                  fontSize: '0.875rem',
+                  color: 'var(--text-secondary)',
+                  background: 'transparent',
+                }}
+              >
+                <Icon className={isActive ? 'w-5 h-5' : 'w-4 h-4'} />
+                {config.label}
+                {folder === 'inbox' && importantUnreadCount != null && importantUnreadCount > 0 && (
+                  <span className="text-xs font-normal" style={{ color: isActive ? 'rgb(147, 197, 253)' : 'var(--text-muted)', opacity: 0.8 }}>
+                    ({importantUnreadCount})
+                  </span>
+                )}
+              </button>
+
+              {/* Important filter — right after Inbox tab */}
+              {folder === 'inbox' && currentFolder === 'inbox' && threads.some(t => t.labels?.includes('IMPORTANT')) && (
+                <button
+                  onClick={() => setFilterImportant(!filterImportant)}
+                  className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-full transition-all flex-shrink-0"
+                  style={filterImportant ? {
+                    background: 'rgba(251, 191, 36, 0.15)',
+                    color: 'rgb(251, 191, 36)',
+                    border: '1px solid rgba(251, 191, 36, 0.3)',
+                  } : {
+                    background: 'transparent',
+                    color: 'var(--text-muted)',
+                    border: '1px solid var(--border-subtle)',
+                  }}
+                >
+                  <ChevronRight className="w-3.5 h-3.5" style={{ color: filterImportant ? 'rgb(251, 191, 36)' : 'rgb(217, 170, 29)' }} />
+                  Important
+                </button>
+              )}
+            </React.Fragment>
           );
         })}
-
-        {/* Important filter — inline with folder tabs, only in inbox when important emails exist */}
-        {currentFolder === 'inbox' && threads.some(t => t.labels?.includes('IMPORTANT')) && (
-          <button
-            onClick={() => setFilterImportant(!filterImportant)}
-            className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-full transition-all flex-shrink-0"
-            style={filterImportant ? {
-              background: 'rgba(251, 191, 36, 0.15)',
-              color: 'rgb(251, 191, 36)',
-              border: '1px solid rgba(251, 191, 36, 0.3)',
-            } : {
-              background: 'transparent',
-              color: 'var(--text-muted)',
-              border: '1px solid var(--border-subtle)',
-            }}
-          >
-            <Tag className="w-3 h-3" />
-            Important
-          </button>
-        )}
 
         {/* Refresh button - at the end */}
         <motion.button

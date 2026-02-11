@@ -178,6 +178,8 @@ export function FloMailApp() {
         setAiModel(settings.aiModel);
         setAiDraftingPreferences({ ...defaultPreferences, ...settings.aiDraftingPreferences });
         setTtsSettings(settings.ttsSettings);
+        // Sync to localStorage so TTSController reads the correct speed/voice on first play
+        localStorage.setItem('flomail_tts_settings', JSON.stringify(settings.ttsSettings));
         if (settings.voiceModeSettings) setVoiceModeSettings(settings.voiceModeSettings);
         setSettingsLoaded(true);
 
@@ -187,6 +189,8 @@ export function FloMailApp() {
           setAiModel(updatedSettings.aiModel);
           setAiDraftingPreferences({ ...defaultPreferences, ...updatedSettings.aiDraftingPreferences });
           setTtsSettings(updatedSettings.ttsSettings);
+          // Keep localStorage in sync for TTSController
+          localStorage.setItem('flomail_tts_settings', JSON.stringify(updatedSettings.ttsSettings));
           if (updatedSettings.voiceModeSettings) setVoiceModeSettings(updatedSettings.voiceModeSettings);
         });
       });
@@ -283,9 +287,9 @@ export function FloMailApp() {
         return [...prev, ...newThreads];
       });
     }
-    // Track inbox unread count for tab title
+    // Track inbox unread count for tab title (only important + unread)
     if (folder === 'inbox') {
-      const unread = threads.filter(t => !t.isRead).length;
+      const unread = threads.filter(t => !t.isRead && t.labels?.includes('IMPORTANT')).length;
       setInboxUnreadCount(unread);
     }
   }, [currentMailFolder]);
@@ -2074,6 +2078,7 @@ export function FloMailApp() {
               onFolderChange={setCurrentMailFolder}
               onRegisterLoadMore={handleRegisterLoadMore}
               onThreadsUpdate={handleThreadsUpdate}
+              importantUnreadCount={inboxUnreadCount}
             />
           </div>
         )}

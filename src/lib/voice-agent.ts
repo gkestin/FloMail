@@ -42,6 +42,8 @@ When NO email thread is open (user is in inbox):
 ## READING EMAILS:
 - When the user asks you to read an email, ALWAYS use get_email_content and read the returned text VERBATIM. Do NOT paraphrase or summarize unless explicitly asked.
 - For threads with multiple new messages, read them in order.
+- If the email context in your system prompt shows "[truncated for voice]" or seems incomplete/too short, call get_email_content to get the full text before answering questions about the email's content.
+- If get_email_content returns a note about content being in images or complex formatting, let the user know you can see most of the text but some visual content may be missing.
 
 ## AFTER DRAFTING — READ BACK:
 After you create a draft with prepare_draft, ALWAYS:
@@ -161,9 +163,10 @@ export function buildEmailContext(thread: EmailThread, folder: string = 'inbox')
         bodyText = htmlText;
       }
     }
-    // Truncate very long messages for voice context (voice doesn't need full body)
+    // Truncate very long messages for voice context (voice doesn't need full body in prompt)
+    // The agent can call get_email_content to get the full text if needed
     if (bodyText.length > 800) {
-      bodyText = bodyText.substring(0, 800) + '... [truncated for voice]';
+      bodyText = bodyText.substring(0, 800) + '... [truncated for voice — call get_email_content for full text]';
     }
 
     const toLine = `To: ${msg.to.map(t => t.email).join(', ')}`;
@@ -551,6 +554,7 @@ export function buildAgentConfig(options: {
 
 export class VoiceSoundEffects {
   private audioContext: AudioContext | null = null;
+  private processingLoop: { osc1: OscillatorNode; osc2: OscillatorNode; gain: GainNode } | null = null;
 
   private getContext(): AudioContext {
     if (!this.audioContext || this.audioContext.state === 'closed') {
@@ -669,7 +673,65 @@ export class VoiceSoundEffects {
     } catch {}
   }
 
+  /** Start a subtle continuous ambient loop for ongoing operations (search, browse, etc.)
+   *  Plays a soft oscillating tone that signals "working in background" */
+  startProcessingLoop() {
+    this.stopProcessingLoop(); // Clean up any existing loop
+    try {
+      const ctx = this.getContext();
+
+      // Two detuned sine oscillators for a gentle, airy sound
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc1.type = 'sine';
+      osc2.type = 'sine';
+      osc1.frequency.setValueAtTime(392, ctx.currentTime); // G4
+      osc2.frequency.setValueAtTime(523, ctx.currentTime); // C5
+
+      // Gentle pulsing via LFO on gain
+      const lfo = ctx.createOscillator();
+      const lfoGain = ctx.createGain();
+      lfo.type = 'sine';
+      lfo.frequency.setValueAtTime(1.5, ctx.currentTime); // 1.5 Hz pulse
+      lfoGain.gain.setValueAtTime(0.012, ctx.currentTime);
+      lfo.connect(lfoGain);
+      lfoGain.connect(gain.gain);
+      lfo.start(ctx.currentTime);
+
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(ctx.destination);
+
+      // Very low volume — ambient, not intrusive
+      gain.gain.setValueAtTime(0.02, ctx.currentTime);
+
+      // Fade in
+      gain.gain.linearRampToValueAtTime(0.035, ctx.currentTime + 0.5);
+
+      osc1.start(ctx.currentTime);
+      osc2.start(ctx.currentTime);
+
+      this.processingLoop = { osc1, osc2, gain };
+    } catch {}
+  }
+
+  /** Stop the processing loop with a gentle fade-out */
+  stopProcessingLoop() {
+    if (!this.processingLoop) return;
+    try {
+      const ctx = this.getContext();
+      const { osc1, osc2, gain } = this.processingLoop;
+      gain.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+      osc1.stop(ctx.currentTime + 0.35);
+      osc2.stop(ctx.currentTime + 0.35);
+    } catch {}
+    this.processingLoop = null;
+  }
+
   dispose() {
+    this.stopProcessingLoop();
     if (this.audioContext && this.audioContext.state !== 'closed') {
       this.audioContext.close().catch(() => {});
     }
