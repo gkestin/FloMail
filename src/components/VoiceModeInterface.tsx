@@ -14,6 +14,7 @@ import {
   Ghost,
   Trash2,
   Clock,
+  Archive,
 } from 'lucide-react';
 import { useConversation } from '@elevenlabs/react';
 import { DraftCard } from './DraftCard';
@@ -274,6 +275,22 @@ export function VoiceModeInterface({
     ]);
   }, []);
 
+  // Handler for typed text input — adds user message to transcript and clears interim display
+  const handleTextSend = useCallback((text: string) => {
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `typed-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        role: 'user' as const,
+        content: text,
+        timestamp: new Date(),
+        _threadId: threadRef.current?.id,
+      },
+    ]);
+    accumulatedFinalTranscriptRef.current = '';
+    setTentativeTranscript('');
+  }, []);
+
   // Green "sent" confirmation message (matches non-voice mode's green CompletedDraftPreview)
   const addSentMessage = useCallback((content: string) => {
     setMessages((prev) => [
@@ -311,6 +328,11 @@ export function VoiceModeInterface({
         setProcessingTool('Drafting...');
         soundsRef.current.playDraftReady();
         const draft = buildDraftFromToolCall(params, threadRef.current, user?.email);
+
+        // Preserve gmailDraftId from existing draft (e.g. restored from Gmail)
+        // so subsequent saves update the same Gmail draft instead of creating a new one
+        const existingDraftId = currentDraftRef.current?.gmailDraftId;
+        if (existingDraftId) draft.gmailDraftId = existingDraftId;
 
         // Clean draft transition: clear → re-key → set new
         setCurrentDraft(null);
@@ -632,6 +654,8 @@ export function VoiceModeInterface({
         volumeIntervalRef.current = null;
       }
       stopBrowserRecognition();
+      // Save conversation on unexpected disconnect (uses ref to avoid stale closure)
+      saveCurrentSessionRef.current();
     },
     onMessage: ({ message, source }: any) => {
       if (source === 'user') {
@@ -656,6 +680,15 @@ export function VoiceModeInterface({
         if (source !== 'user' && isPausedRef.current) return;
 
         setMessages((prev) => {
+          // Dedup: if SDK echoes a recently typed message, skip adding it again
+          if (source === 'user') {
+            const lastUserMsg = [...prev].reverse().find(m => m.role === 'user');
+            if (lastUserMsg && lastUserMsg.content === content?.trim() &&
+                Date.now() - lastUserMsg.timestamp.getTime() < 3000) {
+              return prev;
+            }
+          }
+
           const newMsg: VoiceMessage = {
             id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             role: source === 'user' ? 'user' : 'assistant',
@@ -903,6 +936,17 @@ export function VoiceModeInterface({
       });
 
       startBrowserRecognition();
+
+      // If a draft card is already showing (e.g. restored from Gmail, or from before disconnect),
+      // notify the agent so it knows about the draft context
+      if (currentDraftRef.current) {
+        const d = currentDraftRef.current;
+        setTimeout(() => {
+          conversation.sendContextualUpdate(
+            `[SYSTEM] There is an existing draft displayed to the user. To: ${d.to?.join(', ')}, Subject: ${d.subject}. The user can review, edit, send, or discard it.`
+          );
+        }, 2000); // Delay to let first message finish
+      }
     } catch (err: any) {
       setError(`Failed to connect: ${err.message}`);
       setIsInitializing(false);
@@ -995,8 +1039,9 @@ export function VoiceModeInterface({
     // Save before switching threads (fire-and-forget)
     saveCurrentSessionRef.current();
 
-    // Clear old draft
+    // Clear old draft and stale collapsed history from previous thread
     setCurrentDraft(null);
+    setCollapsedHistory([]);
 
     // Load history for the new thread
     loadHistoryForThread(thread.id);
@@ -1238,13 +1283,12 @@ export function VoiceModeInterface({
     };
   }, [conversation.status, saveCurrentSession]);
 
-  // Save on unmount (session end)
+  // Save on unmount (session end) — use ref to avoid re-running on every message change
   useEffect(() => {
     return () => {
-      // Fire-and-forget save on cleanup
-      saveCurrentSession();
+      saveCurrentSessionRef.current();
     };
-  }, [saveCurrentSession]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ============================================================
   // AUTO-SCROLL
@@ -1479,6 +1523,7 @@ export function VoiceModeInterface({
                   setCollapsedHistory([]);
                   setCurrentDraft(null);
                   lastSavedCountRef.current = 0;
+                  historyLoadedForRef.current = null; // Allow history reload if Firestore clear fails
                   // Also clear from Firestore if not incognito
                   if (!isIncognito && thread?.id && user?.uid) {
                     clearVoiceChat(user.uid, thread.id);
@@ -1608,7 +1653,7 @@ export function VoiceModeInterface({
           </div>
         )}
 
-        {messages.map((msg) => (
+        {messages.map((msg, msgIdx) => (
           <motion.div
             key={msg.id}
             initial={{ opacity: 0, y: 6 }}
@@ -1682,6 +1727,35 @@ export function VoiceModeInterface({
                   {msg.isSentConfirmation && <Send className="w-3 h-3 flex-shrink-0" />}
                   {msg.content}
                 </p>
+                {/* Post-send quick actions — shown on the last sent confirmation */}
+                {msg.isSentConfirmation && msgIdx === messages.length - 1 && (
+                  <div className="flex items-center gap-1.5 mt-1.5 -mb-0.5">
+                    {folder === 'inbox' && (
+                      <button
+                        onClick={() => onArchiveRef.current?.()}
+                        className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium transition-colors hover:bg-green-500/15"
+                        style={{
+                          color: 'rgb(74,222,128)',
+                          border: '1px solid rgba(34,197,94,0.3)',
+                        }}
+                      >
+                        <Archive className="w-3 h-3" />
+                        Archive
+                      </button>
+                    )}
+                    <button
+                      onClick={() => onNextEmailRef.current?.()}
+                      className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium transition-colors hover:bg-white/5"
+                      style={{
+                        color: 'var(--text-muted)',
+                        border: '1px solid var(--border-subtle)',
+                      }}
+                    >
+                      Next
+                      <ArrowRight className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </motion.div>
@@ -1828,7 +1902,7 @@ export function VoiceModeInterface({
                 </motion.button>
 
                 {/* Type a message */}
-                {!isPaused && <TextInputButton conversation={conversation} />}
+                {!isPaused && <TextInputButton conversation={conversation} onSendText={handleTextSend} />}
               </div>
 
               {/* Status label — centered */}
@@ -1888,7 +1962,7 @@ export function VoiceModeInterface({
 // TEXT INPUT (for typing during voice session)
 // ============================================================
 
-function TextInputButton({ conversation }: { conversation: any }) {
+function TextInputButton({ conversation, onSendText }: { conversation: any; onSendText: (text: string) => void }) {
   const [showInput, setShowInput] = useState(false);
   const [text, setText] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -1899,7 +1973,9 @@ function TextInputButton({ conversation }: { conversation: any }) {
 
   const handleSend = () => {
     if (!text.trim() || conversation.status !== 'connected') return;
-    conversation.sendUserMessage(text.trim());
+    const trimmed = text.trim();
+    onSendText(trimmed); // Add to transcript immediately
+    conversation.sendUserMessage(trimmed); // Send to agent
     setText('');
     setShowInput(false);
   };
