@@ -503,7 +503,7 @@ export function buildAgentConfig(options: {
         },
       },
       tts: {
-        model_id: 'eleven_turbo_v2_5',
+        model_id: 'eleven_turbo_v2',
         voice_id: options.voiceId || '21m00Tcm4TlvDq8ikWAM', // Rachel
         stability: 0.5,
         similarity_boost: 0.8,
