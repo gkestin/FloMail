@@ -453,6 +453,29 @@ export interface ElevenLabsAgentConfig {
       client_events?: string[];
     };
   };
+  platform_settings?: {
+    overrides?: {
+      conversation_config_override?: {
+        agent?: {
+          first_message?: boolean;
+          language?: boolean;
+          prompt?: {
+            prompt?: boolean;
+            llm?: boolean;
+          };
+        };
+        tts?: {
+          voice_id?: boolean;
+          speed?: boolean;
+          stability?: boolean;
+          similarity_boost?: boolean;
+        };
+        conversation?: {
+          text_only?: boolean;
+        };
+      };
+    };
+  };
 }
 
 /**
@@ -500,6 +523,20 @@ export function buildAgentConfig(options: {
           'ping',
           'vad_score',
         ],
+      },
+    },
+    // Allow runtime overrides for first_message and prompt so each session
+    // can have a contextual greeting based on the current email thread
+    platform_settings: {
+      overrides: {
+        conversation_config_override: {
+          agent: {
+            first_message: true,
+            prompt: {
+              prompt: true,
+            },
+          },
+        },
       },
     },
   };
