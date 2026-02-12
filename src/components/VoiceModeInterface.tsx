@@ -1452,22 +1452,20 @@ export function VoiceModeInterface({
 
   const handleSendDraft = useCallback(
     async (draft: EmailDraft) => {
-      setIsSending(true);
+      // Immediately collapse draft card into sent preview
+      soundsRef.current.playSend();
+      setSentDraft(draft);
+      setCurrentDraft(null);
+      addToolMessage('send_email', `Sent to ${draft.to?.[0] || 'recipient'}.`);
+      if (conversation.status === 'connected') {
+        conversation.sendContextualUpdate('The user just sent the draft email successfully via the UI. Ask what they want to do next.');
+      }
+      // Send in background — don't block the UI
       try {
         await onSendEmail?.(draft);
-        soundsRef.current.playSend();
-        // Collapse draft card into sent preview
-        setSentDraft(draft);
-        setCurrentDraft(null);
-        setIsSending(false);
-        addToolMessage('send_email', `Sent to ${draft.to?.[0] || 'recipient'}.`);
-        if (conversation.status === 'connected') {
-          conversation.sendContextualUpdate('The user just sent the draft email successfully via the UI. Ask what they want to do next.');
-        }
       } catch (err: any) {
         soundsRef.current.playError();
         setError(`Send failed: ${err.message}`);
-        setIsSending(false);
       }
     },
     [onSendEmail, conversation, addToolMessage]
