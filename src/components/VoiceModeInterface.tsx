@@ -1100,36 +1100,60 @@ export function VoiceModeInterface({
   // PAUSE / RESUME
   // ============================================================
 
-  const pauseConversation = useCallback(() => {
+  const pauseConversation = useCallback(async () => {
     if (conversation.status !== 'connected') return;
     setIsPaused(true);
     isPausedRef.current = true;
-    // Mic mutes automatically via controlled state (effectiveMicMuted includes isPaused)
-    // Silence agent output so it stops talking
-    conversation.setVolume({ volume: 0 });
     stopBrowserRecognition();
-    // Tell the agent to stop — it should cease speaking immediately
-    conversation.sendContextualUpdate(
-      '[SYSTEM] The user has PAUSED the conversation. STOP talking immediately. Do NOT say anything until they resume. Wait silently.'
-    );
-    // Clear transcripts so nothing lingers while paused
     accumulatedFinalTranscriptRef.current = '';
     setTentativeTranscript('');
+    setIsThinking(false);
+
+    // Save conversation before ending (same as endSession)
+    saveCurrentSessionRef.current();
+
+    // Actually end the ElevenLabs session to stop consuming quota.
+    // The user sees "paused" UI — they don't know the session ended.
+    // We do NOT play the disconnect sound (that's only for explicit exit).
+    await conversation.endSession();
   }, [conversation, stopBrowserRecognition]);
 
-  const resumeConversation = useCallback(() => {
-    if (conversation.status !== 'connected') return;
+  const resumeConversation = useCallback(async () => {
+    if (!agentId) return;
     setIsPaused(false);
     isPausedRef.current = false;
-    // Mic unmutes automatically via controlled state
-    // Restore agent output volume
-    conversation.setVolume({ volume: 1 });
-    startBrowserRecognition();
-    // Let the agent know we're back
-    conversation.sendContextualUpdate(
-      '[SYSTEM] The user has RESUMED the conversation. You may respond normally again. Say "I\'m here" or similar brief acknowledgment.'
-    );
-  }, [conversation, startBrowserRecognition]);
+
+    // Start a fresh ElevenLabs session under the hood.
+    // The user sees "resuming" — they don't know it's a new session.
+    // We suppress the greeting by using a brief firstMessage.
+    try {
+      await conversation.startSession({
+        agentId,
+        connectionType: 'webrtc',
+        overrides: {
+          agent: {
+            prompt: { prompt: voicePrompt },
+            firstMessage: 'I\'m here. How can I help?',
+          },
+        },
+      });
+      startBrowserRecognition();
+
+      // If a draft is showing, let the new session know
+      if (currentDraftRef.current) {
+        const d = currentDraftRef.current;
+        setTimeout(() => {
+          conversation.sendContextualUpdate(
+            `[SYSTEM] There is an existing draft displayed to the user. To: ${d.to?.join(', ')}, Subject: ${d.subject}. The user can review, edit, send, or discard it.`
+          );
+        }, 2000);
+      }
+    } catch (err: any) {
+      setError(`Failed to resume: ${err.message}`);
+      setIsPaused(true);
+      isPausedRef.current = true;
+    }
+  }, [agentId, conversation, voicePrompt, startBrowserRecognition]);
 
   // ============================================================
   // AUTO-START: connect immediately when voice mode opens
@@ -1521,10 +1545,10 @@ export function VoiceModeInterface({
 
   const voiceStatus: VoiceStatus = isConnecting
     ? 'connecting'
-    : !isConnected
-    ? 'disconnected'
     : isPaused
     ? 'paused'
+    : !isConnected
+    ? 'disconnected'
     : processingTool
     ? 'processing'
     : conversation.isSpeaking
@@ -2123,7 +2147,7 @@ export function VoiceModeInterface({
         <motion.div
           className="absolute inset-x-0 bottom-full h-12 pointer-events-none"
           animate={{
-            opacity: isConnected ? 1 : 0,
+            opacity: (isConnected || isPaused) ? 1 : 0,
           }}
           transition={{ duration: 0.8 }}
           style={{
@@ -2152,7 +2176,7 @@ export function VoiceModeInterface({
           className="flex items-center px-4 py-3"
           style={{ borderTop: '1px solid var(--border-subtle)' }}
         >
-          {isConnected && (
+          {(isConnected || isPaused) && (
             <>
               <div className="flex items-center gap-2">
                 {/* Pause / Resume toggle */}
@@ -2210,7 +2234,7 @@ export function VoiceModeInterface({
             </>
           )}
 
-          {!isConnected && !isConnecting && (
+          {!isConnected && !isConnecting && !isPaused && (
             <motion.button
               whileTap={{ scale: 0.98 }}
               onClick={startSession}
