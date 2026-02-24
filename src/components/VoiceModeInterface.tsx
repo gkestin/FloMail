@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { useConversation } from '@elevenlabs/react';
 import { DraftCard } from './DraftCard';
+import { ProfessionalEmailRenderer } from './ProfessionalEmailRenderer';
 import { EmailThread, EmailDraft, AIProvider, AIDraftingPreferences } from '@/types';
 import { buildDraftFromToolCall } from '@/lib/agent-tools';
 import { getDraftForThread } from '@/lib/gmail';
@@ -1729,13 +1730,6 @@ export function VoiceModeInterface({
               >
                 {thread.messages.map((msg, idx) => {
                   const fromName = msg.from?.name || msg.from?.email || 'Unknown';
-                  let bodyText = msg.body || '';
-                  if (msg.bodyHtml) {
-                    const htmlText = extractTextFromHtml(msg.bodyHtml);
-                    if (htmlText.length > bodyText.length * 1.2 || bodyText.length < 50) {
-                      bodyText = htmlText;
-                    }
-                  }
                   return (
                     <div key={msg.id || idx}>
                       <div className="flex items-center gap-2 mb-1 mt-2">
@@ -1746,12 +1740,7 @@ export function VoiceModeInterface({
                           {new Date(msg.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
                         </span>
                       </div>
-                      <p
-                        className="text-xs leading-relaxed whitespace-pre-wrap"
-                        style={{ color: 'var(--text-primary)', opacity: 0.8 }}
-                      >
-                        {bodyText.slice(0, 2000) || '(No text content)'}
-                      </p>
+                      <ProfessionalEmailRenderer message={msg} />
                       {idx < thread.messages.length - 1 && (
                         <div className="h-px mt-3" style={{ background: 'var(--border-subtle)', opacity: 0.5 }} />
                       )}

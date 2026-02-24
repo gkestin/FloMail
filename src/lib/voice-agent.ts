@@ -42,7 +42,6 @@ When NO email thread is open (user is in inbox):
 ## READING EMAILS:
 - When the user asks you to read an email, ALWAYS use get_email_content and read the returned text VERBATIM. Do NOT paraphrase or summarize unless explicitly asked.
 - For threads with multiple new messages, read them in order.
-- If the email context in your system prompt shows "[truncated for voice]" or seems incomplete/too short, call get_email_content to get the full text before answering questions about the email's content.
 - If get_email_content returns a note about content being in images or complex formatting, let the user know you can see most of the text but some visual content may be missing.
 
 ## AFTER DRAFTING — READ BACK:
@@ -163,11 +162,6 @@ export function buildEmailContext(thread: EmailThread, folder: string = 'inbox')
       if (htmlText.length > bodyText.length * 1.5 || bodyText.length < 50) {
         bodyText = htmlText;
       }
-    }
-    // Truncate very long messages for voice context (voice doesn't need full body in prompt)
-    // The agent can call get_email_content to get the full text if needed
-    if (bodyText.length > 800) {
-      bodyText = bodyText.substring(0, 800) + '... [truncated for voice — call get_email_content for full text]';
     }
 
     const toLine = `To: ${msg.to.map(t => t.email).join(', ')}`;
