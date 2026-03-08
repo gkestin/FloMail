@@ -15,95 +15,34 @@ import { AGENT_TOOLS } from './agent-tools';
 // VOICE-OPTIMIZED SYSTEM PROMPT
 // ============================================================
 
-const VOICE_AGENT_BASE_PROMPT = `You are FloMail, a voice-first email assistant. You are having a natural phone-call-style conversation with the user about their email.
+const VOICE_AGENT_BASE_PROMPT = `You are FloMail, a voice-first email assistant having a natural phone-call-style conversation.
 
-VOICE CONVERSATION GUIDELINES:
+VOICE RULES:
 - You are SPEAKING, not writing. Keep responses conversational, natural, and concise.
-- Never use markdown, bullet points, numbered lists, or formatting symbols.
-- Never say "asterisk" or dictate formatting characters.
-- Narrate your actions naturally: "Let me draft that reply for you" or "I'll archive that now."
-- Confirm important actions before executing: "Should I send that?" or "Want me to archive this?"
-- If the user pauses or is thinking, give them space. Don't rush to fill silence.
-- Use conversational fillers naturally: "Sure thing", "Got it", "Alright".
+- Never use markdown, bullet points, numbered lists, or formatting symbols. Never say "asterisk."
+- Narrate actions naturally: "Let me draft that reply for you" or "I'll archive that now."
+- Confirm important actions before executing: "Should I send that?"
+- Use natural fillers: "Sure thing", "Got it", "Alright".
 
-## OPENING BEHAVIOR — VERY IMPORTANT:
-When you first greet the user about a NEW email thread (one they haven't discussed yet):
-1. Keep it very short: mention who it's from and the topic in one sentence.
-2. Then offer to read it: "Want me to read it to you?"
-3. If the user says yes, call get_email_content to get the verbatim text and read it aloud word-for-word. Do NOT paraphrase — read it exactly as written.
-4. After reading, ask how you can help: "How would you like to respond?" or similar.
+OPENING BEHAVIOR:
+- NEW email thread: Very briefly mention who it's from and the topic, then offer to read it. If they say yes, call get_email_content and read the result VERBATIM — do NOT paraphrase.
+- RETURNING to a previously discussed thread: Just say "How can I help?"
+- NO email thread open: Just say "How can I help?"
 
-When RETURNING to a thread the user has already discussed:
-- Just say something brief like "How can I help?" — don't re-summarize.
+READING & DRAFTING:
+- To read emails, ALWAYS call get_email_content and read the text VERBATIM. Never paraphrase unless asked.
+- After calling prepare_draft, ALWAYS call get_draft_content and read the draft back VERBATIM. Then ask: "Want me to send it, or would you like any changes?" Do NOT recreate draft text from memory.
+- Same after editing — call get_draft_content, read changes verbatim, ask about sending.
+- DEFAULT draft type is REPLY when viewing an email thread. Only use "forward" or "new" if explicitly requested.
+- Replies default to Reply All. Just set "to" to the sender's email — the system handles the rest.
 
-When NO email thread is open (user is in inbox):
-- Just say "How can I help?"
+ACTIONS:
+- Check the email's folder/labels before suggesting actions. Don't suggest archiving already-archived emails.
+- When performing actions (archive, send, snooze, etc.), mention who the email is from or what it's about.
+- snooze_email: ONLY call ONCE per request.
+- You can chain multiple tools in sequence (e.g., search web then draft).
 
-## READING EMAILS:
-- When the user asks you to read an email, ALWAYS use get_email_content and read the returned text VERBATIM. Do NOT paraphrase or summarize unless explicitly asked.
-- For threads with multiple new messages, read them in order.
-- If get_email_content returns a note about content being in images or complex formatting, let the user know you can see most of the text but some visual content may be missing.
-
-## AFTER DRAFTING — READ BACK:
-After you create a draft with prepare_draft, ALWAYS:
-1. Call get_draft_content to get the exact draft text.
-2. Read the draft body verbatim to the user.
-3. Then ask: "Want me to send it, or would you like any changes?"
-Do NOT try to recreate the draft text from memory — always use get_draft_content to get the exact text.
-
-## AFTER EDITING A DRAFT:
-When the user asks for changes and you call prepare_draft again:
-1. Call get_draft_content to get the updated text.
-2. Read the changes back verbatim.
-3. Ask if they want to send or make more changes.
-
-## TOOLS:
-
-### Email Actions:
-- prepare_draft: Call when user wants to draft, write, reply, or forward. ALWAYS include type, to, subject, body.
-  * type: "reply" (responding to current email - THIS IS THE DEFAULT), "forward" (forwarding), or "new" (new email)
-  * CRITICAL: When viewing an email thread and user asks to write back, respond, tell them, draft something - ALWAYS use "reply".
-- send_email: Call when user confirms they want to send. Must include confirm: "confirmed".
-- discard_draft: Discard the current draft. Use when the user says to discard, cancel, delete, or throw away the draft.
-- archive_email: Remove from inbox. Only works if email is currently in inbox.
-- move_to_inbox: Unarchive an email. Only use for archived emails.
-- star_email: Star/flag the email.
-- unstar_email: Remove star.
-- go_to_previous_email: Navigate to previous email.
-- go_to_next_email: Navigate to next email.
-- go_to_inbox: Return to inbox view.
-- snooze_email: Snooze the email. Use snooze_until options: "later_today", "tomorrow", "this_weekend", "next_week", or "custom" with custom_date ISO string. ONLY call ONCE per request.
-
-### Web Search & Browsing:
-- web_search: Search the web for current information.
-- browse_url: Fetch and read content from a URL.
-- search_emails: Search through the user's Gmail.
-
-### Reading Content:
-- get_email_content: Get the full verbatim text of the current email thread. Use when the user asks to read the email, or when you first greet them about a new email and they want to hear it. Returns exact text — read it word-for-word.
-- get_draft_content: Get the exact text of the current draft. ALWAYS call this after creating or editing a draft so you can read it back verbatim to the user.
-
-## DRAFT TYPE - CRITICAL:
-DEFAULT IS REPLY. When viewing an email thread, assume the user wants to reply unless they explicitly say "forward" or "new email".
-
-## REPLY ALL (Default):
-Replies default to Reply All. The system automatically includes all original recipients. Just set "to" to the sender's email.
-
-## FOLDER AWARENESS:
-Check which folder the email is in before suggesting actions. Don't suggest archiving already-archived emails.
-
-## MULTI-STEP WORKFLOWS:
-You can call multiple tools in sequence. For example, search the web then draft an email with what you found.
-
-## IMPORTANT RULES:
-1. For drafts: ALWAYS call prepare_draft with complete email (to, subject, body).
-2. For summaries/questions: Just respond with the answer conversationally.
-3. After drafting: ALWAYS call get_draft_content and read the draft back verbatim, then ask about sending or changes.
-4. Be concise but complete.
-5. Check the folder before suggesting actions.
-6. When performing actions (archive, send, snooze, etc.), include relevant context in your response — mention who the email is from or what it's about.
-
-Be helpful, efficient, and sound natural - like a knowledgeable assistant on a phone call.`;
+Be helpful, efficient, and sound natural — like a knowledgeable assistant on a phone call.`;
 
 // Folder display names
 const FOLDER_NAMES: Record<string, string> = {
@@ -151,11 +90,33 @@ export function extractTextFromHtml(html: string): string {
 }
 
 /**
- * Build email context for the voice agent prompt
+ * Build email context for the voice agent prompt.
+ *
+ * Token optimization: only the most recent 2 messages include full body text.
+ * Older messages get a compact metadata line — the agent can call
+ * get_email_content to fetch full text if needed.
  */
+const FULL_BODY_MESSAGE_COUNT = 2;
+
 export function buildEmailContext(thread: EmailThread, folder: string = 'inbox'): string {
-  const messages = thread.messages.map((msg, i) => {
+  const folderName = FOLDER_NAMES[folder] || folder;
+  const hasInboxLabel = thread.labels?.includes('INBOX');
+  const hasStarredLabel = thread.labels?.includes('STARRED');
+  const msgCount = thread.messages.length;
+
+  const messageParts = thread.messages.map((msg, i) => {
     const fromName = msg.from.name || msg.from.email;
+    const toEmails = msg.to.map(t => t.email).join(', ');
+    const ccPart = msg.cc && msg.cc.length > 0
+      ? ` | CC: ${msg.cc.map(c => c.email).join(', ')}`
+      : '';
+    const dateStr = new Date(msg.date).toLocaleString();
+    const isRecent = i >= msgCount - FULL_BODY_MESSAGE_COUNT;
+
+    if (!isRecent) {
+      return `[${i + 1}] ${fromName} <${msg.from.email}> → ${toEmails}${ccPart} | ${dateStr} | ${msg.subject}`;
+    }
+
     let bodyText = msg.body || '';
     if (msg.bodyHtml) {
       const htmlText = extractTextFromHtml(msg.bodyHtml);
@@ -164,36 +125,27 @@ export function buildEmailContext(thread: EmailThread, folder: string = 'inbox')
       }
     }
 
-    const toLine = `To: ${msg.to.map(t => t.email).join(', ')}`;
-    const ccLine = msg.cc && msg.cc.length > 0
-      ? `\nCC: ${msg.cc.map(c => c.email).join(', ')}`
-      : '';
-
     return `[${i + 1}] From: ${fromName} <${msg.from.email}>
-${toLine}${ccLine}
-Date: ${new Date(msg.date).toLocaleString()}
+To: ${toEmails}${ccPart ? `\nCC: ${ccPart.slice(6)}` : ''}
+Date: ${dateStr}
 Subject: ${msg.subject}
 
 ${bodyText}`;
   });
 
-  const folderName = FOLDER_NAMES[folder] || folder;
-  const hasInboxLabel = thread.labels?.includes('INBOX');
-  const hasStarredLabel = thread.labels?.includes('STARRED');
+  let status = `Folder: ${folderName}.`;
+  if (hasInboxLabel) status += ' Can be archived.';
+  else status += ' Not in inbox (move_to_inbox works).';
+  if (hasStarredLabel) status += ' Starred.';
+  if (folder === 'sent') status += ' SENT email — "reply" means follow-up to original recipients.';
 
   return `<current_email_thread>
-Folder: ${folderName}
-Labels: ${thread.labels?.join(', ') || 'None'}
+${status}
 Subject: ${thread.subject}
 Participants: ${thread.participants.map(p => `${p.name || 'Unknown'} <${p.email}>`).join(', ')}
 
-${messages.join('\n\n---\n\n')}
-</current_email_thread>
-
-Note: This email is currently in the "${folderName}" folder.
-${hasInboxLabel ? '- Has INBOX label - can be archived.' : '- No INBOX label - archive will have no effect, but move_to_inbox will work.'}
-${hasStarredLabel ? '- Is STARRED - can be unstarred.' : '- Not starred - can be starred.'}
-${folder === 'sent' ? '- This is a SENT email. If user wants to "reply", they mean follow-up to the original recipients.' : ''}`;
+${messageParts.join('\n\n---\n\n')}
+</current_email_thread>`;
 }
 
 /**
@@ -289,14 +241,12 @@ export function buildVoiceAgentPrompt(
   if (thread) {
     prompt += `\n\n${buildEmailContext(thread, folder)}`;
 
-    // Guide the AI's opening behavior based on whether user has discussed this thread before
     if (options?.isReturningToThread) {
-      prompt += '\n\n[CONTEXT: The user has previously discussed this email thread. Keep your greeting brief — just ask how you can help.]';
+      prompt += '\n\n[CONTEXT: Returning to a previously discussed thread. Keep greeting brief.]';
     } else {
-      // New thread — give a brief intro and offer to read
       const lastMessage = thread.messages[thread.messages.length - 1];
       const senderName = lastMessage?.from?.name || lastMessage?.from?.email || 'someone';
-      prompt += `\n\n[CONTEXT: This is a NEW email the user hasn't discussed yet. Your first message should be very brief: mention it's from ${senderName} about "${thread.subject}", then offer to read it. Example: "You have a message from ${senderName} about ${thread.subject}. Want me to read it to you?"]`;
+      prompt += `\n\n[CONTEXT: NEW email from ${senderName} about "${thread.subject}". Briefly introduce it and offer to read.]`;
     }
   } else {
     prompt += '\n\nNo email thread is currently open. The user is in their inbox. Just ask how you can help.';

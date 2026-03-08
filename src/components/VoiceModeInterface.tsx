@@ -23,7 +23,7 @@ import { ProfessionalEmailRenderer } from './ProfessionalEmailRenderer';
 import { EmailThread, EmailDraft, AIProvider, AIDraftingPreferences } from '@/types';
 import { buildDraftFromToolCall } from '@/lib/agent-tools';
 import { getDraftForThread } from '@/lib/gmail';
-import { buildVoiceAgentPrompt, buildDynamicFirstMessage, extractTextFromHtml } from '@/lib/voice-agent';
+import { buildVoiceAgentPrompt, buildDynamicFirstMessage, buildEmailContext, extractTextFromHtml } from '@/lib/voice-agent';
 import { VoiceSoundEffects } from '@/lib/voice-agent';
 import { useAuth } from '@/contexts/AuthContext';
 import { MailFolder } from './InboxList';
@@ -665,8 +665,27 @@ export function VoiceModeInterface({
 
       // ── Full email content (voice-only) ──────────────────
       get_email_content: async (params: any) => {
-        const currentThread = threadRef.current;
+        let currentThread = threadRef.current;
         if (!currentThread) return 'No email thread is currently open.';
+
+        // If thread only has metadata (snippet as body), fetch full content first.
+        // This happens when navigating between emails — the metadata-only thread
+        // is set immediately while full content loads asynchronously.
+        if (currentThread._metadataOnly) {
+          try {
+            const token = await getAccessToken();
+            if (token) {
+              const { fetchThread } = await import('@/lib/gmail');
+              const fullThread = await fetchThread(token, currentThread.id);
+              if (fullThread) {
+                threadRef.current = fullThread;
+                currentThread = fullThread;
+              }
+            }
+          } catch {
+            // Continue with what we have
+          }
+        }
 
         setProcessingTool('Reading email...');
         soundsRef.current.playToolStart();
@@ -1215,11 +1234,12 @@ export function VoiceModeInterface({
       },
     ]);
 
-    // Send the updated email context to the ElevenLabs agent and trigger a contextual greeting
+    // Send only the new email context (not the full system prompt — that's already
+    // set from session start and doesn't change between threads)
     if (conversation.status === 'connected') {
       const isReturning = thread?.id ? threadHasHistoryRef.current.has(thread.id) : false;
-      const newPrompt = buildVoiceAgentPrompt(thread, folder, draftingPreferences, { isReturningToThread: isReturning });
-      conversation.sendContextualUpdate(newPrompt);
+      const emailContext = buildEmailContext(thread, folder);
+      conversation.sendContextualUpdate(emailContext);
 
       // Build a contextual greeting that includes what just happened and describes the new thread
       const lastAction = lastNavigationActionRef.current;
@@ -1247,6 +1267,34 @@ export function VoiceModeInterface({
       threadHasHistoryRef.current.add(thread.id);
     }
   }, [thread?.id, thread?.subject, folder, draftingPreferences, conversation.status]);
+
+  // ============================================================
+  // CORRECTIVE CONTEXT UPDATE — metadata-only → full content
+  // ============================================================
+  // When navigating, FloMailApp sets the thread immediately with metadata-only data
+  // (body = snippet ≈ 160 chars), then fetches full content asynchronously.
+  // The thread-change effect above fires on the metadata-only version and doesn't
+  // re-fire when full content arrives (same thread.id). This effect detects the
+  // content upgrade and sends a corrective contextual update to the voice agent.
+
+  const contentUpgradeRef = useRef<{ threadId: string; hadFull: boolean } | null>(null);
+
+  useEffect(() => {
+    if (!thread?.id) return;
+
+    const hasFull = !thread._metadataOnly;
+    const tracker = contentUpgradeRef.current;
+
+    if (tracker?.threadId === thread.id) {
+      if (hasFull && !tracker.hadFull && conversation.status === 'connected') {
+        const emailContext = buildEmailContext(thread, folder);
+        conversation.sendContextualUpdate(emailContext);
+      }
+      tracker.hadFull = hasFull;
+    } else {
+      contentUpgradeRef.current = { threadId: thread.id, hadFull: hasFull };
+    }
+  }, [thread, folder, conversation.status]);
 
   // ============================================================
   // VOICE CHAT PERSISTENCE — auto-save & load
