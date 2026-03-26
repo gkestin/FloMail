@@ -12,7 +12,7 @@ const GMAIL_API_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 /**
  * Decode HTML entities in text (used for snippets from Gmail API)
  */
-function decodeHtmlEntities(text: string): string {
+export function decodeHtmlEntities(text: string): string {
   if (!text) return '';
   let decoded = text;
   // Named entities
@@ -521,7 +521,7 @@ async function fetchThreadMetadata(accessToken: string, threadId: string): Promi
       to,
       cc,
       date: getHeader(headers, 'Date'),
-      body: msg.snippet || '', // Use snippet as placeholder until full load
+      body: decodeHtmlEntities(msg.snippet || ''), // Use decoded snippet as placeholder until full load
       isRead: !msg.labelIds?.includes('UNREAD'),
       labels: msg.labelIds || [],
       hasAttachments: msgHasAttachments,

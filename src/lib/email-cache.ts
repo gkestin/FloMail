@@ -179,6 +179,9 @@ class EmailCache {
    */
   setThreads(threads: EmailThread[]): void {
     threads.forEach(thread => {
+      // Skip metadata-only threads — they only have snippets, not full content.
+      // The folder cache already stores them for list views.
+      if (thread._metadataOnly) return;
       // Only cache if not already cached (preserve existing cache)
       if (!this.threadCache.has(thread.id)) {
         this.setThread(thread);

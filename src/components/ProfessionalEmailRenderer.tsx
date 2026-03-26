@@ -16,6 +16,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronRight, Copy, Check, MoreHorizontal } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { EmailMessage } from '@/types';
+import { decodeHtmlEntities } from '@/lib/gmail';
 import { TTSController } from './TTSController';
 
 interface ProfessionalEmailRendererProps {
@@ -244,7 +245,7 @@ export function ProfessionalEmailRenderer({
 
   // Process HTML content with dark mode
   const processedContent = useMemo(() => {
-    if (!isHtml) return mainContent;
+    if (!isHtml) return decodeHtmlEntities(mainContent);
 
     let sanitized = DOMPurify.sanitize(mainContent, {
       ALLOWED_TAGS: [

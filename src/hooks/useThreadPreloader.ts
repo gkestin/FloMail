@@ -23,14 +23,15 @@ export function useThreadPreloader(
 
   // Preload a thread if not already cached
   const preloadThread = useCallback(async (threadId: string) => {
-    // Skip if already cached or currently loading
-    if (cache.current[threadId] || loadingRef.current.has(threadId)) {
+    // Skip if already cached (with full content) or currently loading
+    const localCached = cache.current[threadId];
+    if ((localCached && !localCached._metadataOnly) || loadingRef.current.has(threadId)) {
       return;
     }
 
-    // Check if we have it in the email cache first
+    // Check if we have it in the email cache first (skip metadata-only)
     const cached = emailCache.getThread(threadId);
-    if (cached) {
+    if (cached && !cached._metadataOnly) {
       cache.current[threadId] = cached;
       return;
     }
@@ -62,8 +63,10 @@ export function useThreadPreloader(
     const currentIndex = threads.findIndex(t => t.id === currentThread.id);
     if (currentIndex === -1) return;
 
-    // Cache current thread
-    cache.current[currentThread.id] = currentThread;
+    // Cache current thread (only if it has full content)
+    if (!currentThread._metadataOnly) {
+      cache.current[currentThread.id] = currentThread;
+    }
 
     // Preload previous thread
     if (currentIndex > 0) {
@@ -84,9 +87,13 @@ export function useThreadPreloader(
     }
   }, [currentThread, threads, preloadThread]);
 
-  // Get a cached thread or return partial data
+  // Get a cached thread with full content, or null
   const getCachedThread = useCallback((threadId: string): EmailThread | null => {
-    return cache.current[threadId] || emailCache.getThread(threadId) || null;
+    const local = cache.current[threadId];
+    if (local && !local._metadataOnly) return local;
+    const global = emailCache.getThread(threadId);
+    if (global && !global._metadataOnly) return global;
+    return null;
   }, []);
 
   // Clear cache when unmounting or when threads change significantly
