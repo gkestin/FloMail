@@ -1155,6 +1155,18 @@ export function ChatInterface({
     // Capture the current draft at the start - we'll use this to preserve gmailDraftId
     const draftAtStart = currentDraft;
 
+    // Auto-cancel any existing drafts when sending a new message to the AI
+    // This ensures drafts close immediately regardless of entry path (text, voice, edit)
+    setMessages(prev => prev.map(m => {
+      if (m.draft && !m.draftCancelled && !m.draftSaved && !m.draftSent) {
+        return { ...m, draftCancelled: true };
+      }
+      return m;
+    }));
+    if (currentDraft) {
+      setCurrentDraft(null);
+    }
+
     // Create a placeholder for the streaming assistant message
     let assistantMessageId = (Date.now() + 1).toString();
     setStreamingMessageId(assistantMessageId);
@@ -1207,6 +1219,7 @@ export function ChatInterface({
           accessToken, // For email search
           currentDraft: currentDraft, // Pass existing draft so AI can modify it
           draftingPreferences, // User's drafting preferences
+          userEmail: user?.email, // For identity disambiguation in email context
         }),
         signal: abortControllerRef.current.signal,
       });
@@ -1472,20 +1485,7 @@ export function ChatInterface({
       messagesThreadIdRef.current = thread.id;
     }
 
-    // Auto-cancel any existing drafts that haven't been saved or sent
-    // This happens when user continues the conversation without saving/sending
-    setMessages(prev => prev.map(m => {
-      // Only cancel if: has draft, not already cancelled, not saved, not sent
-      if (m.draft && !m.draftCancelled && !m.draftSaved && !m.draftSent) {
-        return { ...m, draftCancelled: true };
-      }
-      return m;
-    }))
-    
-    // Clear currentDraft when user continues the conversation
-    if (currentDraft) {
-      setCurrentDraft(null);
-    }
+    // Draft cancellation is handled inside sendToAI to work for all paths (text, voice, edit)
 
     const messageId = Date.now().toString();
     const userMessage: UIMessage = {
@@ -1501,7 +1501,7 @@ export function ChatInterface({
     // Note: Don't change message region state - chat and messages are independent
     
     await sendToAI(messageId, content.trim());
-  }, [isLoading, sendToAI, thread?.id, currentDraft]);
+  }, [isLoading, sendToAI, thread?.id]);
 
   // Start voice recording
   const startRecording = useCallback(async () => {
@@ -1797,14 +1797,23 @@ export function ChatInterface({
 
   
   // Undo the pending send
-  const handleUndoSend = useCallback(() => {
+  const handleUndoSend = useCallback(async () => {
     if (!pendingSend) return;
 
     // Clear the timeout
     clearTimeout(pendingSend.timeoutId);
 
-    // Restore the draft
-    setCurrentDraft(pendingSend.draft);
+    // Restore the draft (re-save to Gmail to recreate it)
+    let restoredDraft = pendingSend.draft;
+    if (onSaveDraft) {
+      try {
+        restoredDraft = await onSaveDraft(pendingSend.draft);
+      } catch (error) {
+        console.warn('[handleUndoSend] Failed to re-save draft to Gmail:', error);
+      }
+    }
+
+    setCurrentDraft(restoredDraft);
 
     // Un-mark ONLY the specific draft being undone (compare draft objects)
     // AND remove the confirmation message
@@ -1813,7 +1822,7 @@ export function ChatInterface({
       .map(m =>
         // Only reset the specific draft being undone
         m.draft && m.draftSent && m.draft === pendingSend.draft
-          ? { ...m, draftSent: false }
+          ? { ...m, draftSent: false, draft: restoredDraft }
           : m
       )
     );
@@ -1821,7 +1830,7 @@ export function ChatInterface({
     // Clear pending send state
     setPendingSend(null);
     setIsSending(false);
-  }, [pendingSend]);
+  }, [pendingSend, onSaveDraft]);
   
   const handleSendDraft = async (updatedDraft: EmailDraft) => {
     if (!updatedDraft || !onSendEmail) return;
@@ -1829,16 +1838,19 @@ export function ChatInterface({
     setIsSending(true);
     setCurrentDraft(null);
 
-    // First, save the draft to Gmail so user doesn't lose it if send fails
-    let finalDraft = updatedDraft;
-    if (onSaveDraft) {
+    // Delete the Gmail draft immediately so it doesn't persist.
+    // We keep the draft data locally for undo capability.
+    const draftToSend = { ...updatedDraft };
+    if (draftToSend.gmailDraftId && onDeleteDraft) {
       try {
-        finalDraft = await onSaveDraft(updatedDraft);
+        await onDeleteDraft(draftToSend.gmailDraftId);
+        console.log('[handleSendDraft] Deleted Gmail draft:', draftToSend.gmailDraftId);
       } catch (error) {
-        console.warn('[handleSendDraft] Failed to save draft before sending:', error);
-        // Continue with send attempt even if save failed
+        console.warn('[handleSendDraft] Failed to delete Gmail draft:', error);
       }
     }
+    // Clear gmailDraftId so sendEmail uses messages/send (draft is already deleted)
+    const finalDraft = { ...draftToSend, gmailDraftId: undefined };
 
     // Mark the draft as sent immediately with a confirmMessageId
     const confirmMessageId = `sending-${Date.now()}`;

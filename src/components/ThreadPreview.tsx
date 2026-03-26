@@ -205,17 +205,17 @@ export function ThreadPreview({
   // Load persisted height from localStorage
   // For unread emails (startFullyExpanded), use 70% of viewport height
   const [messagesHeight, setMessagesHeight] = useState(() => {
-    if (typeof window === 'undefined') return startFullyExpanded ? 500 : 250;
+    if (typeof window === 'undefined') return startFullyExpanded ? 500 : 400;
     if (startFullyExpanded) {
       // Use 70% of viewport height for unread emails
       return Math.floor(window.innerHeight * 0.7);
     }
     const saved = localStorage.getItem(STORAGE_KEY_HEIGHT);
-    return saved !== null ? parseInt(saved, 10) : 250;
+    return saved !== null ? parseInt(saved, 10) : 400;
   });
   // The user's baseline (manually resized) height. Auto-expands should NOT overwrite this.
   // For unread emails, we don't want to persist the large initial height
-  const manualHeightRef = useRef(startFullyExpanded ? 250 : messagesHeight);
+  const manualHeightRef = useRef(startFullyExpanded ? 400 : messagesHeight);
   
   const isDragging = useRef(false);
   const startY = useRef(0);

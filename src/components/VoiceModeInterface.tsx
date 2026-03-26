@@ -261,8 +261,8 @@ export function VoiceModeInterface({
   // Build the dynamic prompt and first message for this thread
   const isReturningToThread = thread?.id ? threadHasHistoryRef.current.has(thread.id) : false;
   const voicePrompt = useMemo(
-    () => buildVoiceAgentPrompt(thread, folder, draftingPreferences, { isReturningToThread }),
-    [thread?.id, folder, draftingPreferences, isReturningToThread]
+    () => buildVoiceAgentPrompt(thread, folder, draftingPreferences, { isReturningToThread, userEmail: user?.email }),
+    [thread?.id, folder, draftingPreferences, isReturningToThread, user?.email]
   );
   const dynamicFirstMessage = useMemo(
     () => buildDynamicFirstMessage(thread, { isReturningToThread }),
@@ -1238,7 +1238,7 @@ export function VoiceModeInterface({
     // set from session start and doesn't change between threads)
     if (conversation.status === 'connected') {
       const isReturning = thread?.id ? threadHasHistoryRef.current.has(thread.id) : false;
-      const emailContext = buildEmailContext(thread, folder);
+      const emailContext = buildEmailContext(thread, folder, user?.email);
       conversation.sendContextualUpdate(emailContext);
 
       // Build a contextual greeting that includes what just happened and describes the new thread
@@ -1287,7 +1287,7 @@ export function VoiceModeInterface({
 
     if (tracker?.threadId === thread.id) {
       if (hasFull && !tracker.hadFull && conversation.status === 'connected') {
-        const emailContext = buildEmailContext(thread, folder);
+        const emailContext = buildEmailContext(thread, folder, user?.email);
         conversation.sendContextualUpdate(emailContext);
       }
       tracker.hadFull = hasFull;
@@ -1774,7 +1774,7 @@ export function VoiceModeInterface({
             >
               <div
                 className="px-4 pb-3 overflow-y-auto space-y-3"
-                style={{ maxHeight: '40vh', borderTop: '1px solid var(--border-subtle)' }}
+                style={{ maxHeight: '60vh', borderTop: '1px solid var(--border-subtle)' }}
               >
                 {thread.messages.map((msg, idx) => {
                   const fromName = msg.from?.name || msg.from?.email || 'Unknown';

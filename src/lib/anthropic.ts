@@ -180,10 +180,18 @@ function extractTextFromHtml(html: string): string {
   return text.trim();
 }
 
+// Check if an email address belongs to the user (case-insensitive)
+function isUserEmail(email: string, userEmail?: string): boolean {
+  if (!userEmail) return false;
+  return email.toLowerCase() === userEmail.toLowerCase();
+}
+
 // Build context from email thread
-function buildEmailContext(thread: EmailThread, folder: string = 'inbox'): string {
+function buildEmailContext(thread: EmailThread, folder: string = 'inbox', userEmail?: string): string {
   const messages = thread.messages.map((msg, i) => {
     const fromName = msg.from.name || msg.from.email;
+    const isFromUser = isUserEmail(msg.from.email, userEmail);
+    const fromLabel = isFromUser ? '[YOU] ' : '';
 
     // Use body, but if it's very short compared to bodyHtml, extract text from HTML
     // This handles complex table-based HTML emails (e.g., Outlook) where
@@ -203,7 +211,7 @@ function buildEmailContext(thread: EmailThread, folder: string = 'inbox'): strin
       ? `\nCC: ${msg.cc.map(c => c.email).join(', ')}`
       : '';
 
-    return `[${i + 1}] From: ${fromName} <${msg.from.email}>
+    return `[${i + 1}] ${fromLabel}From: ${fromName} <${msg.from.email}>
 ${toLine}${ccLine}
 Date: ${new Date(msg.date).toLocaleString()}
 Subject: ${msg.subject}
@@ -212,16 +220,22 @@ ${bodyText}`;
   });
 
   const folderName = FOLDER_NAMES[folder] || folder;
-  
+
   // Check actual labels for precise guidance
   const hasInboxLabel = thread.labels?.includes('INBOX');
   const hasStarredLabel = thread.labels?.includes('STARRED');
-  
+
+  // Mark user in participants list
+  const participantsList = thread.participants.map(p => {
+    const label = isUserEmail(p.email, userEmail) ? ' [YOU]' : '';
+    return `${p.name || 'Unknown'} <${p.email}>${label}`;
+  }).join(', ');
+
   return `<current_email_thread>
 Folder: ${folderName}
 Labels: ${thread.labels?.join(', ') || 'None'}
 Subject: ${thread.subject}
-Participants: ${thread.participants.map(p => `${p.name || 'Unknown'} <${p.email}>`).join(', ')}
+Participants: ${participantsList}
 
 ${messages.join('\n\n---\n\n')}
 </current_email_thread>
@@ -233,12 +247,19 @@ ${folder === 'sent' ? '• This is a SENT email. If user wants to "reply", they 
 }
 
 // Build user preferences context for drafting
-function buildUserPreferencesContext(prefs: AIDraftingPreferences): string {
+function buildUserPreferencesContext(prefs: AIDraftingPreferences, userEmail?: string): string {
   const parts: string[] = [];
-  
+
   // User identity
-  if (prefs.userName) {
-    const identity = `The user's name is ${prefs.userName}. They are the SENDER of any drafted messages.`;
+  if (prefs.userName || userEmail) {
+    let identity = '';
+    if (prefs.userName && userEmail) {
+      identity = `YOU are assisting ${prefs.userName} (${userEmail}). They are the person using FloMail — the SENDER of any drafted messages. Messages marked [YOU] in the email thread are from this user. All other senders are people the user is corresponding with.`;
+    } else if (prefs.userName) {
+      identity = `YOU are assisting ${prefs.userName}. They are the person using FloMail — the SENDER of any drafted messages.`;
+    } else if (userEmail) {
+      identity = `YOU are assisting the user (${userEmail}). They are the person using FloMail — the SENDER of any drafted messages.`;
+    }
     parts.push(identity);
   }
   
@@ -310,7 +331,8 @@ export async function agentChatClaude(
   thread?: EmailThread,
   model: ClaudeModel = 'claude-sonnet-4-20250514',
   folder: string = 'inbox',
-  draftingPreferences?: AIDraftingPreferences
+  draftingPreferences?: AIDraftingPreferences,
+  userEmail?: string
 ): Promise<{
   content: string;
   toolCalls: ToolCall[];
@@ -334,14 +356,14 @@ export async function agentChatClaude(
   
   // Add user drafting preferences
   if (draftingPreferences) {
-    const prefsContext = buildUserPreferencesContext(draftingPreferences);
+    const prefsContext = buildUserPreferencesContext(draftingPreferences, userEmail);
     if (prefsContext) {
       systemPrompt += `\n\n${prefsContext}`;
     }
   }
-  
+
   if (thread) {
-    systemPrompt += `\n\n${buildEmailContext(thread, folder)}`;
+    systemPrompt += `\n\n${buildEmailContext(thread, folder, userEmail)}`;
   }
 
   try {
@@ -463,7 +485,8 @@ export async function* agentChatStreamClaude(
   thread?: EmailThread,
   model: ClaudeModel = 'claude-sonnet-4-20250514',
   folder: string = 'inbox',
-  draftingPreferences?: AIDraftingPreferences
+  draftingPreferences?: AIDraftingPreferences,
+  userEmail?: string
 ): AsyncGenerator<StreamEvent> {
   const anthropic = getAnthropicClient();
 
@@ -483,14 +506,14 @@ export async function* agentChatStreamClaude(
   
   // Add user drafting preferences
   if (draftingPreferences) {
-    const prefsContext = buildUserPreferencesContext(draftingPreferences);
+    const prefsContext = buildUserPreferencesContext(draftingPreferences, userEmail);
     if (prefsContext) {
       systemPrompt += `\n\n${prefsContext}`;
     }
   }
-  
+
   if (thread) {
-    systemPrompt += `\n\n${buildEmailContext(thread, folder)}`;
+    systemPrompt += `\n\n${buildEmailContext(thread, folder, userEmail)}`;
   }
 
   try {

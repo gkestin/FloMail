@@ -446,7 +446,8 @@ async function makeAgentCall(
   thread: EmailThread | undefined,
   folder: string,
   provider: 'openai' | 'anthropic',
-  model: string
+  model: string,
+  userEmail?: string
 ): Promise<{
   content: string;
   toolCalls: CollectedToolCall[];
@@ -455,7 +456,7 @@ async function makeAgentCall(
   if (provider === 'anthropic') {
     const { agentChatClaude, CLAUDE_MODELS } = await import('@/lib/anthropic');
     const validModel = model && model in CLAUDE_MODELS ? model as keyof typeof CLAUDE_MODELS : 'claude-sonnet-4-20250514';
-    const result = await agentChatClaude(messages, thread, validModel, folder);
+    const result = await agentChatClaude(messages, thread, validModel, folder, undefined, userEmail);
     return {
       content: result.content,
       toolCalls: result.toolCalls.map(tc => ({
@@ -468,7 +469,7 @@ async function makeAgentCall(
   } else {
     const { agentChat, OPENAI_MODELS } = await import('@/lib/openai');
     const validModel = model && model in OPENAI_MODELS ? model as keyof typeof OPENAI_MODELS : 'gpt-4.1';
-    const result = await agentChat(messages, thread, validModel, folder);
+    const result = await agentChat(messages, thread, validModel, folder, undefined, userEmail);
     return {
       content: result.content,
       toolCalls: result.toolCalls.map(tc => ({
@@ -488,16 +489,17 @@ async function* streamAgentCall(
   folder: string,
   provider: 'openai' | 'anthropic',
   model: string,
-  draftingPreferences?: AIDraftingPreferences
+  draftingPreferences?: AIDraftingPreferences,
+  userEmail?: string
 ): AsyncGenerator<StreamEvent | { _toolCalls: CollectedToolCall[]; _content: string }> {
   const collectedToolCalls: CollectedToolCall[] = [];
   let streamedContent = '';
-  
+
   if (provider === 'anthropic') {
     const { agentChatStreamClaude, CLAUDE_MODELS } = await import('@/lib/anthropic');
     const validModel = model && model in CLAUDE_MODELS ? model as keyof typeof CLAUDE_MODELS : 'claude-sonnet-4-20250514';
-    
-    for await (const event of agentChatStreamClaude(messages, thread, validModel, folder, draftingPreferences)) {
+
+    for await (const event of agentChatStreamClaude(messages, thread, validModel, folder, draftingPreferences, userEmail)) {
       if (event.type === 'text') {
         streamedContent = event.data.fullContent;
       }
@@ -514,7 +516,7 @@ async function* streamAgentCall(
     const { agentChatStream, OPENAI_MODELS } = await import('@/lib/openai');
     const validModel = model && model in OPENAI_MODELS ? model as keyof typeof OPENAI_MODELS : 'gpt-4.1';
     
-    for await (const event of agentChatStream(messages, thread, validModel, folder, draftingPreferences)) {
+    for await (const event of agentChatStream(messages, thread, validModel, folder, draftingPreferences, userEmail)) {
       if (event.type === 'text') {
         streamedContent = event.data.fullContent;
       }
@@ -536,15 +538,16 @@ async function* streamAgentCall(
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { 
-      messages, 
-      thread, 
+    const {
+      messages,
+      thread,
       folder = 'inbox',
-      provider = 'anthropic', 
+      provider = 'anthropic',
       model,
       accessToken,
       currentDraft,
       draftingPreferences,
+      userEmail,
     }: {
       messages: { role: 'user' | 'assistant'; content: string }[];
       thread?: EmailThread;
@@ -560,6 +563,7 @@ export async function POST(request: NextRequest) {
         gmailDraftId?: string;
       };
       draftingPreferences?: AIDraftingPreferences;
+      userEmail?: string;
     } = body;
 
     if (!messages || !Array.isArray(messages)) {
@@ -635,7 +639,7 @@ IMPORTANT INSTRUCTIONS:
           // Subsequent iterations: don't stream (just execute tools)
           if (iteration === 1) {
             // Stream the first response
-            for await (const event of streamAgentCall(currentMessages, thread, folder, provider, model || '', draftingPreferences)) {
+            for await (const event of streamAgentCall(currentMessages, thread, folder, provider, model || '', draftingPreferences, userEmail)) {
               if ('_toolCalls' in event) {
                 // This is our internal data packet
                 collectedToolCalls = event._toolCalls;
@@ -648,7 +652,7 @@ IMPORTANT INSTRUCTIONS:
             // Non-streaming for subsequent iterations
             await sendEvent({ type: 'status', data: { message: '💭 Thinking...' } });
             
-            const result = await makeAgentCall(currentMessages, thread, folder, provider, model || '');
+            const result = await makeAgentCall(currentMessages, thread, folder, provider, model || '', userEmail);
             streamedContent = result.content;
             collectedToolCalls = result.toolCalls;
             

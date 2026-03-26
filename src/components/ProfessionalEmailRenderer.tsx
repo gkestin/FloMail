@@ -183,6 +183,9 @@ export function ProfessionalEmailRenderer({
   const onNextEmailRef = useRef(onNextEmail);
   const onPreviousEmailRef = useRef(onPreviousEmail);
 
+  // Detect metadata-only messages (body = Gmail snippet, no bodyHtml yet)
+  const isMetadataOnly = !!(message._metadataOnly);
+
   const isHtml = !!(message.bodyHtml && message.bodyHtml.trim());
   const content = isHtml ? message.bodyHtml! : (message.body || '');
 
@@ -268,23 +271,36 @@ export function ProfessionalEmailRenderer({
     content.length > 2000
   );
 
-  // Auto-resize iframe
+  // Auto-resize iframe with robust retry logic
   useEffect(() => {
     if (shouldUseIframe && iframeRef.current) {
       const iframe = iframeRef.current;
       const resizeIframe = () => {
         try {
-          const height = iframe.contentDocument?.body.scrollHeight || 400;
-          iframe.style.height = `${height + 40}px`;
+          const doc = iframe.contentDocument;
+          if (!doc?.body) return;
+          const height = Math.max(
+            doc.body.scrollHeight,
+            doc.body.offsetHeight,
+            doc.documentElement?.scrollHeight || 0,
+            doc.documentElement?.offsetHeight || 0
+          );
+          if (height > 50) {
+            iframe.style.height = `${height + 40}px`;
+          }
         } catch (e) {
-          console.log('Could not resize iframe:', e);
+          // Fallback to a generous height on error
+          iframe.style.height = '600px';
         }
       };
 
       iframe.onload = () => {
         resizeIframe();
+        // Retry at increasing intervals to catch late-loading images/fonts
+        setTimeout(resizeIframe, 200);
         setTimeout(resizeIframe, 500);
         setTimeout(resizeIframe, 1000);
+        setTimeout(resizeIframe, 2000);
       };
     }
   }, [shouldUseIframe, processedContent]);
@@ -336,7 +352,32 @@ export function ProfessionalEmailRenderer({
       >
         {/* Main Content */}
         <div className="email-content">
-          {shouldUseIframe ? (
+          {isMetadataOnly ? (
+            /* Metadata-only: show snippet with loading indicator */
+            <div>
+              <div
+                className="text-content whitespace-pre-wrap"
+                style={{
+                  color: COLORS.text.secondary,
+                  fontSize: '15px',
+                  lineHeight: '1.6',
+                  fontStyle: 'italic',
+                }}
+              >
+                {message.body || message.snippet}
+              </div>
+              <div
+                className="flex items-center gap-2 mt-2"
+                style={{ color: COLORS.text.quaternary, fontSize: '13px' }}
+              >
+                <div
+                  className="w-3 h-3 rounded-full animate-pulse"
+                  style={{ background: COLORS.border.strong }}
+                />
+                Loading full message...
+              </div>
+            </div>
+          ) : shouldUseIframe ? (
             <iframe
               key={contentKey}
               ref={iframeRef}

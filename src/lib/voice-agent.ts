@@ -90,6 +90,14 @@ export function extractTextFromHtml(html: string): string {
 }
 
 /**
+ * Check if an email address belongs to the user (case-insensitive).
+ */
+function isUserEmail(email: string, userEmail?: string): boolean {
+  if (!userEmail) return false;
+  return email.toLowerCase() === userEmail.toLowerCase();
+}
+
+/**
  * Build email context for the voice agent prompt.
  *
  * Token optimization: only the most recent 2 messages include full body text.
@@ -98,7 +106,7 @@ export function extractTextFromHtml(html: string): string {
  */
 const FULL_BODY_MESSAGE_COUNT = 2;
 
-export function buildEmailContext(thread: EmailThread, folder: string = 'inbox'): string {
+export function buildEmailContext(thread: EmailThread, folder: string = 'inbox', userEmail?: string): string {
   const folderName = FOLDER_NAMES[folder] || folder;
   const hasInboxLabel = thread.labels?.includes('INBOX');
   const hasStarredLabel = thread.labels?.includes('STARRED');
@@ -106,6 +114,8 @@ export function buildEmailContext(thread: EmailThread, folder: string = 'inbox')
 
   const messageParts = thread.messages.map((msg, i) => {
     const fromName = msg.from.name || msg.from.email;
+    const isFromUser = isUserEmail(msg.from.email, userEmail);
+    const fromLabel = isFromUser ? '[YOU] ' : '';
     const toEmails = msg.to.map(t => t.email).join(', ');
     const ccPart = msg.cc && msg.cc.length > 0
       ? ` | CC: ${msg.cc.map(c => c.email).join(', ')}`
@@ -114,7 +124,7 @@ export function buildEmailContext(thread: EmailThread, folder: string = 'inbox')
     const isRecent = i >= msgCount - FULL_BODY_MESSAGE_COUNT;
 
     if (!isRecent) {
-      return `[${i + 1}] ${fromName} <${msg.from.email}> → ${toEmails}${ccPart} | ${dateStr} | ${msg.subject}`;
+      return `[${i + 1}] ${fromLabel}${fromName} <${msg.from.email}> → ${toEmails}${ccPart} | ${dateStr} | ${msg.subject}`;
     }
 
     let bodyText = msg.body || '';
@@ -125,13 +135,19 @@ export function buildEmailContext(thread: EmailThread, folder: string = 'inbox')
       }
     }
 
-    return `[${i + 1}] From: ${fromName} <${msg.from.email}>
+    return `[${i + 1}] ${fromLabel}From: ${fromName} <${msg.from.email}>
 To: ${toEmails}${ccPart ? `\nCC: ${ccPart.slice(6)}` : ''}
 Date: ${dateStr}
 Subject: ${msg.subject}
 
 ${bodyText}`;
   });
+
+  // Mark user in participants list
+  const participantsList = thread.participants.map(p => {
+    const label = isUserEmail(p.email, userEmail) ? ' [YOU]' : '';
+    return `${p.name || 'Unknown'} <${p.email}>${label}`;
+  }).join(', ');
 
   let status = `Folder: ${folderName}.`;
   if (hasInboxLabel) status += ' Can be archived.';
@@ -142,7 +158,7 @@ ${bodyText}`;
   return `<current_email_thread>
 ${status}
 Subject: ${thread.subject}
-Participants: ${thread.participants.map(p => `${p.name || 'Unknown'} <${p.email}>`).join(', ')}
+Participants: ${participantsList}
 
 ${messageParts.join('\n\n---\n\n')}
 </current_email_thread>`;
@@ -151,11 +167,19 @@ ${messageParts.join('\n\n---\n\n')}
 /**
  * Build user preferences context
  */
-function buildUserPreferencesContext(prefs: AIDraftingPreferences): string {
+function buildUserPreferencesContext(prefs: AIDraftingPreferences, userEmail?: string): string {
   const parts: string[] = [];
 
-  if (prefs.userName) {
-    parts.push(`The user's name is ${prefs.userName}. They are the SENDER of any drafted messages.`);
+  if (prefs.userName || userEmail) {
+    let identity = '';
+    if (prefs.userName && userEmail) {
+      identity = `YOU are assisting ${prefs.userName} (${userEmail}). They are the person using FloMail — the SENDER of any drafted messages. Messages marked [YOU] in the email thread are from this user. All other senders are people the user is corresponding with.`;
+    } else if (prefs.userName) {
+      identity = `YOU are assisting ${prefs.userName}. They are the person using FloMail — the SENDER of any drafted messages.`;
+    } else if (userEmail) {
+      identity = `YOU are assisting the user (${userEmail}). They are the person using FloMail — the SENDER of any drafted messages.`;
+    }
+    parts.push(identity);
   }
 
   const toneDescriptions: Record<string, string> = {
@@ -216,9 +240,10 @@ export function buildVoiceAgentPrompt(
   thread?: EmailThread,
   folder: string = 'inbox',
   draftingPreferences?: AIDraftingPreferences,
-  options?: { isReturningToThread?: boolean },
+  options?: { isReturningToThread?: boolean; userEmail?: string },
 ): string {
   let prompt = VOICE_AGENT_BASE_PROMPT;
+  const userEmail = options?.userEmail;
 
   // Add current date/time
   const now = new Date();
@@ -234,12 +259,12 @@ export function buildVoiceAgentPrompt(
 
   // Add user preferences
   if (draftingPreferences) {
-    prompt += buildUserPreferencesContext(draftingPreferences);
+    prompt += buildUserPreferencesContext(draftingPreferences, userEmail);
   }
 
   // Add email context
   if (thread) {
-    prompt += `\n\n${buildEmailContext(thread, folder)}`;
+    prompt += `\n\n${buildEmailContext(thread, folder, userEmail)}`;
 
     if (options?.isReturningToThread) {
       prompt += '\n\n[CONTEXT: Returning to a previously discussed thread. Keep greeting brief.]';
