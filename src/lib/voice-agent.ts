@@ -233,6 +233,38 @@ function buildUserPreferencesContext(prefs: AIDraftingPreferences, userEmail?: s
     : '';
 }
 
+// ============================================================
+// SESSION LEDGER — compact record of actions taken this session
+// ============================================================
+
+/**
+ * Build a one-line ledger entry for an action taken on a thread.
+ * These entries are injected into the new session prompt after a hot-swap
+ * so the agent knows what happened earlier without full conversation history.
+ */
+export function buildSessionLedgerEntry(
+  action: 'replied' | 'sent' | 'archived' | 'snoozed' | 'starred' | 'unstarred' | 'forwarded' | 'moved_to_inbox' | 'discarded_draft',
+  thread?: { subject?: string; messages?: { from?: { name?: string; email?: string } }[] },
+  extra?: string,
+): string {
+  const lastMsg = thread?.messages?.[thread.messages.length - 1];
+  const sender = lastMsg?.from?.name || lastMsg?.from?.email?.split('@')[0] || 'someone';
+  const subject = thread?.subject?.replace(/^(Re|Fwd|Fw):\s*/gi, '').slice(0, 50) || 'unknown';
+
+  switch (action) {
+    case 'replied': return `Replied to ${sender} re "${subject}"${extra ? ` — ${extra}` : ''}`;
+    case 'sent': return `Sent email to ${sender} re "${subject}"`;
+    case 'archived': return `Archived email from ${sender} re "${subject}"`;
+    case 'snoozed': return `Snoozed email from ${sender} re "${subject}"${extra ? ` until ${extra}` : ''}`;
+    case 'starred': return `Starred email from ${sender} re "${subject}"`;
+    case 'unstarred': return `Unstarred email from ${sender} re "${subject}"`;
+    case 'forwarded': return `Forwarded email from ${sender} re "${subject}"${extra ? ` to ${extra}` : ''}`;
+    case 'moved_to_inbox': return `Moved to inbox: email from ${sender} re "${subject}"`;
+    case 'discarded_draft': return `Discarded draft for email from ${sender} re "${subject}"`;
+    default: return `Action on email from ${sender} re "${subject}"`;
+  }
+}
+
 /**
  * Build the full voice agent prompt with dynamic email context
  */
@@ -240,7 +272,7 @@ export function buildVoiceAgentPrompt(
   thread?: EmailThread,
   folder: string = 'inbox',
   draftingPreferences?: AIDraftingPreferences,
-  options?: { isReturningToThread?: boolean; userEmail?: string },
+  options?: { isReturningToThread?: boolean; userEmail?: string; sessionLedger?: string },
 ): string {
   let prompt = VOICE_AGENT_BASE_PROMPT;
   const userEmail = options?.userEmail;
@@ -260,6 +292,11 @@ export function buildVoiceAgentPrompt(
   // Add user preferences
   if (draftingPreferences) {
     prompt += buildUserPreferencesContext(draftingPreferences, userEmail);
+  }
+
+  // Add session ledger (prior actions from this voice session)
+  if (options?.sessionLedger) {
+    prompt += `\n\nSESSION HISTORY (actions taken earlier in this voice session — you can reference these if the user asks about previous emails):\n${options.sessionLedger}`;
   }
 
   // Add email context
@@ -287,7 +324,7 @@ export function buildVoiceAgentPrompt(
  */
 export function buildDynamicFirstMessage(
   thread?: EmailThread,
-  options?: { isReturningToThread?: boolean },
+  options?: { isReturningToThread?: boolean; previousAction?: string },
 ): string {
   if (!thread) {
     return 'How can I help?';
@@ -297,12 +334,14 @@ export function buildDynamicFirstMessage(
   const senderName = lastMessage?.from?.name || lastMessage?.from?.email?.split('@')[0] || 'someone';
   const subject = thread.subject?.replace(/^(Re|Fwd|Fw):\s*/gi, '').trim() || 'no subject';
 
+  const actionPrefix = options?.previousAction ? `${options.previousAction}. ` : '';
+
   if (options?.isReturningToThread) {
-    return `Back to the email from ${senderName}. How can I help?`;
+    return `${actionPrefix}Back to the email from ${senderName}. How can I help?`;
   }
 
   // New thread — brief context + offer to read
-  return `You have a message from ${senderName} about "${subject}". Want me to read it to you?`;
+  return `${actionPrefix}Next up, you have a message from ${senderName} about "${subject}". Want me to read it to you?`;
 }
 
 // ============================================================

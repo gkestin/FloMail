@@ -23,7 +23,7 @@ import { ProfessionalEmailRenderer } from './ProfessionalEmailRenderer';
 import { EmailThread, EmailDraft, AIProvider, AIDraftingPreferences } from '@/types';
 import { buildDraftFromToolCall } from '@/lib/agent-tools';
 import { getDraftForThread } from '@/lib/gmail';
-import { buildVoiceAgentPrompt, buildDynamicFirstMessage, buildEmailContext, extractTextFromHtml } from '@/lib/voice-agent';
+import { buildVoiceAgentPrompt, buildDynamicFirstMessage, buildEmailContext, extractTextFromHtml, buildSessionLedgerEntry } from '@/lib/voice-agent';
 import { VoiceSoundEffects } from '@/lib/voice-agent';
 import { useAuth } from '@/contexts/AuthContext';
 import { MailFolder } from './InboxList';
@@ -224,6 +224,16 @@ export function VoiceModeInterface({
   const historyLoadedForRef = useRef<string | null>(null);
   const saveCurrentSessionRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
+  // Session ledger — compact record of actions taken this voice session.
+  // Injected into new session prompts after hot-swap so the agent knows what happened earlier.
+  const sessionLedgerRef = useRef<string[]>([]);
+
+  // Hot-swap state: which conversation slot is active ('a' or 'b'), and swap coordination
+  const [activeSlot, setActiveSlot] = useState<'a' | 'b'>('a');
+  const activeSlotRef = useRef<'a' | 'b'>('a');
+  const swapInProgressRef = useRef(false);
+  const pendingSwapRef = useRef<{ threadId: string; thread: EmailThread } | null>(null);
+
   // Stale-closure protection — refs for values accessed inside tool handlers.
   // useConversation holds the initial clientTools reference and doesn't update,
   // so ALL values accessed inside handlers must go through refs.
@@ -260,9 +270,12 @@ export function VoiceModeInterface({
 
   // Build the dynamic prompt and first message for this thread
   const isReturningToThread = thread?.id ? threadHasHistoryRef.current.has(thread.id) : false;
+  const sessionLedgerText = sessionLedgerRef.current.length > 0
+    ? sessionLedgerRef.current.map((e, i) => `${i + 1}. ${e}`).join('\n')
+    : undefined;
   const voicePrompt = useMemo(
-    () => buildVoiceAgentPrompt(thread, folder, draftingPreferences, { isReturningToThread, userEmail: user?.email }),
-    [thread?.id, folder, draftingPreferences, isReturningToThread, user?.email]
+    () => buildVoiceAgentPrompt(thread, folder, draftingPreferences, { isReturningToThread, userEmail: user?.email, sessionLedger: sessionLedgerText }),
+    [thread?.id, folder, draftingPreferences, isReturningToThread, user?.email, sessionLedgerText]
   );
   const dynamicFirstMessage = useMemo(
     () => buildDynamicFirstMessage(thread, { isReturningToThread }),
@@ -362,6 +375,14 @@ export function VoiceModeInterface({
           setIsSending(false);
           setProcessingTool(null);
           addToolMessage('send_email', `Sent to ${draft.to?.[0] || 'recipient'}.`);
+          // Session ledger entry
+          sessionLedgerRef.current.push(
+            buildSessionLedgerEntry(
+              draft.type === 'forward' ? 'forwarded' : 'replied',
+              threadRef.current ?? undefined,
+              draft.type === 'forward' ? draft.to?.join(', ') : undefined
+            )
+          );
           return 'Email sent successfully. What would you like to do next?';
         } catch (err: any) {
           soundsRef.current.playError();
@@ -383,6 +404,7 @@ export function VoiceModeInterface({
         setSentDraft(null);
         setProcessingTool(null);
         addToolMessage('discard_draft', 'Draft discarded.');
+        sessionLedgerRef.current.push(buildSessionLedgerEntry('discarded_draft', threadRef.current ?? undefined));
         return 'Draft has been discarded. What would you like to do next?';
       },
 
@@ -402,6 +424,7 @@ export function VoiceModeInterface({
           return `Failed to archive: ${err.message}`;
         }
         addToolMessage('archive_email', `Archived${ctx}.`);
+        sessionLedgerRef.current.push(buildSessionLedgerEntry('archived', threadRef.current ?? undefined));
 
         // Wait for the thread to change (archive triggers navigation to next email).
         // This ensures the contextual update with the new email fires before the
@@ -436,6 +459,7 @@ export function VoiceModeInterface({
           return `Failed to move to inbox: ${err.message}`;
         }
         addToolMessage('move_to_inbox', `Moved to inbox${ctx}.`);
+        sessionLedgerRef.current.push(buildSessionLedgerEntry('moved_to_inbox', threadRef.current ?? undefined));
         setProcessingTool(null);
         return 'Email moved to inbox.';
       },
@@ -450,6 +474,7 @@ export function VoiceModeInterface({
           return `Failed to star: ${err.message}`;
         }
         addToolMessage('star_email', `Starred${ctx}.`);
+        sessionLedgerRef.current.push(buildSessionLedgerEntry('starred', threadRef.current ?? undefined));
         return 'Email starred.';
       },
 
@@ -463,6 +488,7 @@ export function VoiceModeInterface({
           return `Failed to unstar: ${err.message}`;
         }
         addToolMessage('unstar_email', `Unstarred${ctx}.`);
+        sessionLedgerRef.current.push(buildSessionLedgerEntry('unstarred', threadRef.current ?? undefined));
         return 'Star removed.';
       },
 
@@ -511,6 +537,7 @@ export function VoiceModeInterface({
         try {
           await onSnoozeRef.current!(snoozeDate);
           addToolMessage('snooze_email', `Snoozed${ctx} until ${snoozeDate.toLocaleString()}.`);
+          sessionLedgerRef.current.push(buildSessionLedgerEntry('snoozed', threadRef.current ?? undefined, snoozeDate.toLocaleString()));
 
           // Wait for thread to change (snooze triggers navigation to next email)
           await new Promise<void>((resolve) => {
@@ -759,8 +786,12 @@ export function VoiceModeInterface({
   );
 
   // ============================================================
-  // ELEVENLABS CONVERSATION
+  // ELEVENLABS DUAL CONVERSATIONS (hot-swap architecture)
   // ============================================================
+  // Two conversation hooks (A and B) enable zero-gap context switching
+  // between email threads. Only one is "active" (has mic + audio) at a time.
+  // When navigating to a new thread, the standby slot connects in the
+  // background with clean context, then we swap audio routing instantly.
 
   // Suppress unhandled SDK errors (e.g. malformed error events from server)
   useEffect(() => {
@@ -777,128 +808,227 @@ export function VoiceModeInterface({
     return () => window.removeEventListener('unhandledrejection', handler);
   }, []);
 
-  const conversation = useConversation({
-    micMuted: effectiveMicMuted,
-    clientTools,
-    onConnect: () => {
+  // ── Browser recognition helpers (defined before slot callbacks that reference them) ──
+
+  const startBrowserRecognition = useCallback(() => {
+    if (!recognitionRef.current) return;
+    try {
+      recognitionRef.current.start();
+    } catch (e: any) {
+      if (!e.message?.includes('already started')) {
+        setTimeout(() => {
+          try { recognitionRef.current?.start(); } catch {}
+        }, 200);
+      }
+    }
+  }, []);
+
+  const stopBrowserRecognition = useCallback(() => {
+    if (!recognitionRef.current) return;
+    try { recognitionRef.current.stop(); } catch {}
+  }, []);
+
+  // ── Shared slot-aware callback handlers ──
+  // These check activeSlotRef to decide whether to process events.
+  // Standby slot events are mostly ignored — except onConnect (triggers swap)
+  // and onError (cancels swap and falls back).
+
+  const onSlotConnect = useCallback((slot: 'a' | 'b') => {
+    if (activeSlotRef.current === slot) {
+      // Active slot connected — normal startup behavior
       setError(null);
       setIsInitializing(false);
       soundsRef.current.playConnect();
-    },
-    onDisconnect: () => {
-      if (volumeIntervalRef.current) {
-        clearInterval(volumeIntervalRef.current);
-        volumeIntervalRef.current = null;
-      }
-      stopBrowserRecognition();
-      // Save conversation on unexpected disconnect (uses ref to avoid stale closure)
-      saveCurrentSessionRef.current();
-    },
-    onMessage: ({ message, source }: any) => {
-      if (source === 'user') {
-        // ElevenLabs captured the full user transcript - clear browser interim display
-        accumulatedFinalTranscriptRef.current = '';
-        setTentativeTranscript('');
-        // Mark as thinking — waiting for agent response
-        setIsThinking(true);
-      } else {
-        // Agent response arrived — no longer thinking
-        setIsThinking(false);
-      }
+    } else if (swapInProgressRef.current) {
+      // Background slot just connected — execute the hot-swap!
+      console.log(`[Voice] Background slot ${slot} connected — executing hot-swap`);
 
-      let content = '';
-      if (typeof message === 'string') {
-        content = message;
-      } else if (typeof message === 'object' && message !== null) {
-        const msgObj = message as any;
-        content = msgObj.text || msgObj.content || JSON.stringify(message);
-      } else {
-        content = String(message);
-      }
+      // 1. Flip active slot
+      const oldSlot = activeSlotRef.current;
+      activeSlotRef.current = slot;
+      setActiveSlot(slot);
+      swapInProgressRef.current = false;
+      pendingSwapRef.current = null;
 
-      if (content?.trim()) {
-        // Suppress agent messages while paused — the agent may still generate
-        // text after the pause contextual update, but we don't show or record it
-        if (source !== 'user' && isPausedRef.current) return;
+      // 2. End old session (fire-and-forget — don't await)
+      const oldConv = oldSlot === 'a' ? conversationARef.current : conversationBRef.current;
+      try { oldConv?.endSession(); } catch {}
 
-        setMessages((prev) => {
-          // Dedup: if SDK echoes a recently typed message, skip adding it again
-          if (source === 'user') {
-            const lastUserMsg = [...prev].reverse().find(m => m.role === 'user');
-            if (lastUserMsg && lastUserMsg.content === content?.trim() &&
-                Date.now() - lastUserMsg.timestamp.getTime() < 3000) {
-              return prev;
+      // 3. Start browser recognition for new session
+      // (also handled by SpeechRecognition useEffect on conversation.status change)
+      startBrowserRecognition();
+
+      console.log(`[Voice] Hot-swap complete: ${oldSlot} → ${slot}`);
+    }
+  }, [startBrowserRecognition]);
+
+  const onSlotDisconnect = useCallback((slot: 'a' | 'b') => {
+    if (activeSlotRef.current !== slot) return; // Ignore standby disconnects
+    if (volumeIntervalRef.current) {
+      clearInterval(volumeIntervalRef.current);
+      volumeIntervalRef.current = null;
+    }
+    stopBrowserRecognition();
+    saveCurrentSessionRef.current();
+  }, [stopBrowserRecognition]);
+
+  const onSlotMessage = useCallback((slot: 'a' | 'b', { message, source }: any) => {
+    if (activeSlotRef.current !== slot) return; // Ignore standby messages
+
+    if (source === 'user') {
+      accumulatedFinalTranscriptRef.current = '';
+      setTentativeTranscript('');
+      setIsThinking(true);
+    } else {
+      setIsThinking(false);
+    }
+
+    let content = '';
+    if (typeof message === 'string') {
+      content = message;
+    } else if (typeof message === 'object' && message !== null) {
+      const msgObj = message as any;
+      content = msgObj.text || msgObj.content || JSON.stringify(message);
+    } else {
+      content = String(message);
+    }
+
+    if (content?.trim()) {
+      if (source !== 'user' && isPausedRef.current) return;
+
+      setMessages((prev) => {
+        if (source === 'user') {
+          const lastUserMsg = [...prev].reverse().find(m => m.role === 'user');
+          if (lastUserMsg && lastUserMsg.content === content?.trim() &&
+              Date.now() - lastUserMsg.timestamp.getTime() < 3000) {
+            return prev;
+          }
+        }
+
+        const newMsg: VoiceMessage = {
+          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          role: source === 'user' ? 'user' : 'assistant',
+          content,
+          timestamp: new Date(),
+          _threadId: threadRef.current?.id,
+        };
+
+        if (source === 'user') {
+          const now = Date.now();
+          let insertIdx = prev.length;
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].isToolAction && now - prev[i].timestamp.getTime() < 3000) {
+              insertIdx = i;
+            } else {
+              break;
             }
           }
-
-          const newMsg: VoiceMessage = {
-            id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            role: source === 'user' ? 'user' : 'assistant',
-            content,
-            timestamp: new Date(),
-            _threadId: threadRef.current?.id,
-          };
-
-          // FIX: Message ordering — when a user message arrives, ensure it
-          // appears before any recent tool-action messages that the SDK may
-          // have delivered out of order (tool call firing before transcript).
-          if (source === 'user') {
-            const now = Date.now();
-            let insertIdx = prev.length;
-            // Walk backwards to find tool messages from the last 3 seconds
-            for (let i = prev.length - 1; i >= 0; i--) {
-              if (prev[i].isToolAction && now - prev[i].timestamp.getTime() < 3000) {
-                insertIdx = i;
-              } else {
-                break;
-              }
-            }
-            if (insertIdx < prev.length) {
-              // Insert user message before the trailing tool messages
-              return [...prev.slice(0, insertIdx), newMsg, ...prev.slice(insertIdx)];
-            }
+          if (insertIdx < prev.length) {
+            return [...prev.slice(0, insertIdx), newMsg, ...prev.slice(insertIdx)];
           }
+        }
 
-          return [...prev, newMsg];
-        });
+        return [...prev, newMsg];
+      });
+    }
+  }, []);
+
+  const onSlotError = useCallback((slot: 'a' | 'b', err: any) => {
+    const errorMessage = typeof err === 'string' ? err : err?.message || 'Unknown error';
+
+    if (activeSlotRef.current !== slot) {
+      // Background slot failed — cancel the swap, fall back to contextual update
+      if (swapInProgressRef.current) {
+        console.warn('[Voice] Background session failed, falling back to contextual update:', errorMessage);
+        swapInProgressRef.current = false;
+        const pending = pendingSwapRef.current;
+        pendingSwapRef.current = null;
+
+        // Fall back: send contextual update on the active session
+        if (pending) {
+          const activeConv = activeSlotRef.current === 'a' ? conversationARef.current : conversationBRef.current;
+          if (activeConv?.status === 'connected') {
+            const emailContext = buildEmailContext(pending.thread, folder, user?.email);
+            activeConv.sendContextualUpdate(emailContext);
+          }
+        }
       }
-    },
-    onError: (err: any) => {
-      const errorMessage = typeof err === 'string' ? err : err?.message || 'Unknown error';
-      if (errorMessage.includes('Server error') && conversation.status === 'connected') {
+      return;
+    }
+
+    // Active slot error
+    if (errorMessage.includes('Server error')) {
+      const activeConv = activeSlotRef.current === 'a' ? conversationARef.current : conversationBRef.current;
+      if (activeConv?.status === 'connected') {
         console.warn('[Voice] Non-fatal server error:', errorMessage);
         return;
       }
-      setError(errorMessage);
-      setIsInitializing(false);
-      soundsRef.current.playError();
-    },
-    onModeChange: ({ mode }: any) => {
-      if (mode === 'speaking') {
-        setIsThinking(false); // Agent started speaking — no longer thinking
+    }
+    setError(errorMessage);
+    setIsInitializing(false);
+    soundsRef.current.playError();
+  }, [folder, user?.email]);
+
+  const onSlotModeChange = useCallback((slot: 'a' | 'b', { mode }: any) => {
+    if (activeSlotRef.current !== slot) return;
+    if (mode === 'speaking') {
+      setIsThinking(false);
+    }
+    const activeConv = activeSlotRef.current === 'a' ? conversationARef.current : conversationBRef.current;
+    if (activeConv?.status === 'connected' && recognitionRef.current) {
+      if (mode === 'listening') {
+        startBrowserRecognition();
+      } else if (mode === 'speaking') {
+        stopBrowserRecognition();
       }
-      if (conversation.status === 'connected' && recognitionRef.current) {
-        if (mode === 'listening') {
-          startBrowserRecognition();
-        } else if (mode === 'speaking') {
-          stopBrowserRecognition();
-        }
+    }
+  }, [startBrowserRecognition, stopBrowserRecognition]);
+
+  const onSlotDebug = useCallback((slot: 'a' | 'b', event: any) => {
+    if (activeSlotRef.current !== slot) return;
+    if (event?.type === 'tentative_user_transcript') {
+      const text = event.tentative_user_transcription_event?.user_transcript;
+      if (text?.trim()) {
+        if (!speechRecognitionWorking) setSpeechRecognitionWorking(true);
+        setTentativeTranscript(text.trim());
       }
-    },
-    // Capture tentative_user_transcript events from ElevenLabs ASR
-    // These arrive via onDebug since the SDK doesn't have a dedicated callback
-    // This is the primary interim transcript source (works on mobile where browser SpeechRecognition fails)
-    onDebug: (event: any) => {
-      if (event?.type === 'tentative_user_transcript') {
-        const text = event.tentative_user_transcription_event?.user_transcript;
-        if (text?.trim()) {
-          // ElevenLabs ASR is providing tentative transcripts — mark as working
-          if (!speechRecognitionWorking) setSpeechRecognitionWorking(true);
-          setTentativeTranscript(text.trim());
-        }
-      }
-    },
+    }
+  }, [speechRecognitionWorking]);
+
+  // ── The two conversation hooks ──
+
+  const conversationA = useConversation({
+    micMuted: activeSlot === 'a' ? effectiveMicMuted : true,
+    clientTools,
+    onConnect: () => onSlotConnect('a'),
+    onDisconnect: () => onSlotDisconnect('a'),
+    onMessage: (data: any) => onSlotMessage('a', data),
+    onError: (err: any) => onSlotError('a', err),
+    onModeChange: (data: any) => onSlotModeChange('a', data),
+    onDebug: (event: any) => onSlotDebug('a', event),
   });
+
+  const conversationB = useConversation({
+    micMuted: activeSlot === 'b' ? effectiveMicMuted : true,
+    clientTools,
+    onConnect: () => onSlotConnect('b'),
+    onDisconnect: () => onSlotDisconnect('b'),
+    onMessage: (data: any) => onSlotMessage('b', data),
+    onError: (err: any) => onSlotError('b', err),
+    onModeChange: (data: any) => onSlotModeChange('b', data),
+    onDebug: (event: any) => onSlotDebug('b', event),
+  });
+
+  // Refs for accessing conversations inside callbacks (avoids stale closures)
+  const conversationARef = useRef(conversationA);
+  const conversationBRef = useRef(conversationB);
+  useEffect(() => { conversationARef.current = conversationA; }, [conversationA]);
+  useEffect(() => { conversationBRef.current = conversationB; }, [conversationB]);
+
+  // Active conversation accessor — used throughout the component
+  const conversation = activeSlot === 'a' ? conversationA : conversationB;
+  const standbyConversation = activeSlot === 'a' ? conversationB : conversationA;
+  const standbySlot = activeSlot === 'a' ? 'b' : 'a';
 
   // Sync isSpeaking ref for use in SpeechRecognition callback.
   // Also clear tentative transcript when agent starts speaking — any leftover
@@ -975,6 +1105,13 @@ export function VoiceModeInterface({
 
     recognitionRef.current = recognition;
 
+    // Auto-start recognition if conversation is already connected.
+    // This handles the slot swap case where the effect re-runs because
+    // conversation (active slot) changed and is already connected.
+    if (conversation.status === 'connected') {
+      try { recognition.start(); } catch {}
+    }
+
     return () => {
       // Null out handlers BEFORE stop() to prevent onend from restarting
       recognition.onresult = null;
@@ -983,24 +1120,6 @@ export function VoiceModeInterface({
       try { recognition.stop(); } catch {}
     };
   }, [conversation.status]); // Don't depend on isSpeaking — handlers use isSpeakingRef instead
-
-  const startBrowserRecognition = useCallback(() => {
-    if (!recognitionRef.current) return;
-    try {
-      recognitionRef.current.start();
-    } catch (e: any) {
-      if (!e.message?.includes('already started')) {
-        setTimeout(() => {
-          try { recognitionRef.current?.start(); } catch {}
-        }, 200);
-      }
-    }
-  }, []);
-
-  const stopBrowserRecognition = useCallback(() => {
-    if (!recognitionRef.current) return;
-    try { recognitionRef.current.stop(); } catch {}
-  }, []);
 
   // ============================================================
   // VOLUME MONITORING
@@ -1070,7 +1189,8 @@ export function VoiceModeInterface({
       // Use overrides to set the full email context prompt AND a contextual first message.
       // This replaces the agent's default "How can I help?" with a greeting that knows
       // which email the user is looking at (e.g. "You have a message from John about ...").
-      await conversation.startSession({
+      const activeConv = activeSlotRef.current === 'a' ? conversationARef.current : conversationBRef.current;
+      await activeConv?.startSession({
         agentId: id,
         connectionType: 'webrtc',
         overrides: {
@@ -1088,9 +1208,12 @@ export function VoiceModeInterface({
       if (currentDraftRef.current) {
         const d = currentDraftRef.current;
         setTimeout(() => {
-          conversation.sendContextualUpdate(
-            `[SYSTEM] There is an existing draft displayed to the user. To: ${d.to?.join(', ')}, Subject: ${d.subject}. The user can review, edit, send, or discard it.`
-          );
+          const conv = activeSlotRef.current === 'a' ? conversationARef.current : conversationBRef.current;
+          if (conv?.status === 'connected') {
+            conv.sendContextualUpdate(
+              `[SYSTEM] There is an existing draft displayed to the user. To: ${d.to?.join(', ')}, Subject: ${d.subject}. The user can review, edit, send, or discard it.`
+            );
+          }
         }, 2000); // Delay to let first message finish
       }
     } catch (err: any) {
@@ -1098,7 +1221,7 @@ export function VoiceModeInterface({
       setIsInitializing(false);
       soundsRef.current.playError();
     }
-  }, [initializeAgent, conversation, voicePrompt, dynamicFirstMessage, startBrowserRecognition]);
+  }, [initializeAgent, voicePrompt, dynamicFirstMessage, startBrowserRecognition]);
 
   const endSession = useCallback(async () => {
     stopBrowserRecognition();
@@ -1108,20 +1231,27 @@ export function VoiceModeInterface({
     setIsPaused(false);
     soundsRef.current.playDisconnect();
 
+    // Cancel any in-progress hot-swap
+    if (swapInProgressRef.current) {
+      swapInProgressRef.current = false;
+      pendingSwapRef.current = null;
+    }
+
     // Save conversation before disconnecting
     saveCurrentSessionRef.current();
 
-    if (conversation.status === 'connected') {
-      await conversation.endSession();
-    }
-  }, [conversation, stopBrowserRecognition]);
+    // End both sessions (active + any standby)
+    try { if (conversationARef.current?.status === 'connected') await conversationARef.current.endSession(); } catch {}
+    try { if (conversationBRef.current?.status === 'connected') await conversationBRef.current.endSession(); } catch {}
+  }, [stopBrowserRecognition]);
 
   // ============================================================
   // PAUSE / RESUME
   // ============================================================
 
   const pauseConversation = useCallback(async () => {
-    if (conversation.status !== 'connected') return;
+    const activeConv = activeSlotRef.current === 'a' ? conversationARef.current : conversationBRef.current;
+    if (activeConv?.status !== 'connected') return;
     setIsPaused(true);
     isPausedRef.current = true;
     stopBrowserRecognition();
@@ -1129,14 +1259,22 @@ export function VoiceModeInterface({
     setTentativeTranscript('');
     setIsThinking(false);
 
+    // Cancel any in-progress hot-swap
+    if (swapInProgressRef.current) {
+      swapInProgressRef.current = false;
+      pendingSwapRef.current = null;
+      const standbyConv = activeSlotRef.current === 'a' ? conversationBRef.current : conversationARef.current;
+      try { standbyConv?.endSession(); } catch {}
+    }
+
     // Save conversation before ending (same as endSession)
     saveCurrentSessionRef.current();
 
     // Actually end the ElevenLabs session to stop consuming quota.
     // The user sees "paused" UI — they don't know the session ended.
     // We do NOT play the disconnect sound (that's only for explicit exit).
-    await conversation.endSession();
-  }, [conversation, stopBrowserRecognition]);
+    await activeConv.endSession();
+  }, [stopBrowserRecognition]);
 
   const resumeConversation = useCallback(async () => {
     if (!agentId) return;
@@ -1147,7 +1285,8 @@ export function VoiceModeInterface({
     // The user sees "resuming" — they don't know it's a new session.
     // We suppress the greeting by using a brief firstMessage.
     try {
-      await conversation.startSession({
+      const activeConv = activeSlotRef.current === 'a' ? conversationARef.current : conversationBRef.current;
+      await activeConv?.startSession({
         agentId,
         connectionType: 'webrtc',
         overrides: {
@@ -1163,9 +1302,12 @@ export function VoiceModeInterface({
       if (currentDraftRef.current) {
         const d = currentDraftRef.current;
         setTimeout(() => {
-          conversation.sendContextualUpdate(
-            `[SYSTEM] There is an existing draft displayed to the user. To: ${d.to?.join(', ')}, Subject: ${d.subject}. The user can review, edit, send, or discard it.`
-          );
+          const conv = activeSlotRef.current === 'a' ? conversationARef.current : conversationBRef.current;
+          if (conv?.status === 'connected') {
+            conv.sendContextualUpdate(
+              `[SYSTEM] There is an existing draft displayed to the user. To: ${d.to?.join(', ')}, Subject: ${d.subject}. The user can review, edit, send, or discard it.`
+            );
+          }
         }, 2000);
       }
     } catch (err: any) {
@@ -1173,7 +1315,7 @@ export function VoiceModeInterface({
       setIsPaused(true);
       isPausedRef.current = true;
     }
-  }, [agentId, conversation, voicePrompt, startBrowserRecognition]);
+  }, [agentId, voicePrompt, startBrowserRecognition]);
 
   // ============================================================
   // AUTO-START: connect immediately when voice mode opens
@@ -1204,7 +1346,7 @@ export function VoiceModeInterface({
     const wasFirstThread = !prevThreadIdRef.current;
     prevThreadIdRef.current = thread.id;
 
-    // Don't add divider for the initial thread
+    // Don't trigger hot-swap for the initial thread
     if (wasFirstThread) return;
 
     // Save before switching threads (fire-and-forget)
@@ -1234,39 +1376,107 @@ export function VoiceModeInterface({
       },
     ]);
 
-    // Send only the new email context (not the full system prompt — that's already
-    // set from session start and doesn't change between threads)
-    if (conversation.status === 'connected') {
-      const isReturning = thread?.id ? threadHasHistoryRef.current.has(thread.id) : false;
-      const emailContext = buildEmailContext(thread, folder, user?.email);
-      conversation.sendContextualUpdate(emailContext);
-
-      // Build a contextual greeting that includes what just happened and describes the new thread
-      const lastAction = lastNavigationActionRef.current;
-      lastNavigationActionRef.current = null; // Consume it
-
-      const lastMessage = thread.messages?.[thread.messages.length - 1];
-      const senderName = lastMessage?.from?.name || lastMessage?.from?.email?.split('@')[0] || 'someone';
-      const subject = thread.subject?.replace(/^(Re|Fwd|Fw):\s*/gi, '').trim() || 'no subject';
-
-      let systemInstruction: string;
-      if (isReturning) {
-        systemInstruction = lastAction
-          ? `[SYSTEM] ${lastAction}. Now back to a previously discussed email from ${senderName} about "${subject}". Briefly acknowledge the action and ask how you can help with this email.`
-          : `[SYSTEM] The user navigated back to a previously discussed email from ${senderName} about "${subject}". Just ask how you can help.`;
-      } else {
-        systemInstruction = lastAction
-          ? `[SYSTEM] ${lastAction}. Now viewing a new email from ${senderName} about "${subject}". Briefly acknowledge the action, then introduce this new email — mention who it's from and the topic, and offer to read it.`
-          : `[SYSTEM] The user navigated to a new email from ${senderName} about "${subject}". Introduce this email — mention who it's from and the topic, and offer to read it. Example: "Next up, you have a message from ${senderName} about ${subject}. Want me to read it?"`;
+    // ── Hot-swap: start a background session on the standby slot ──
+    // Instead of sending a contextual update (which grows unbounded history),
+    // we start a fresh session with clean context on the standby slot.
+    // When it connects, onSlotConnect swaps audio routing instantly.
+    const activeConv = activeSlotRef.current === 'a' ? conversationARef.current : conversationBRef.current;
+    if (activeConv?.status === 'connected' && agentId) {
+      // Cancel any already-pending swap (rapid navigation)
+      if (swapInProgressRef.current) {
+        console.log('[Voice] Cancelling pending swap for rapid navigation');
+        const oldStandby = activeSlotRef.current === 'a' ? conversationBRef.current : conversationARef.current;
+        try { oldStandby?.endSession(); } catch {}
+        swapInProgressRef.current = false;
+        pendingSwapRef.current = null;
       }
-      conversation.sendContextualUpdate(systemInstruction);
-    }
 
-    // After navigating away and back, mark the thread as "discussed"
+      // Build fresh context for the new session
+      const isReturning = threadHasHistoryRef.current.has(thread.id);
+      const ledgerText = sessionLedgerRef.current.length > 0
+        ? sessionLedgerRef.current.map((e, i) => `${i + 1}. ${e}`).join('\n')
+        : undefined;
+      const newPrompt = buildVoiceAgentPrompt(thread, folder, draftingPreferences, {
+        isReturningToThread: isReturning,
+        userEmail: user?.email,
+        sessionLedger: ledgerText,
+      });
+
+      // Consume the last navigation action for the greeting
+      const lastAction = lastNavigationActionRef.current;
+      lastNavigationActionRef.current = null;
+      const firstMsg = buildDynamicFirstMessage(thread, {
+        isReturningToThread: isReturning,
+        previousAction: lastAction || undefined,
+      });
+
+      // Mark swap in progress and start background session
+      swapInProgressRef.current = true;
+      pendingSwapRef.current = { threadId: thread.id, thread };
+
+      const standbyConv = activeSlotRef.current === 'a' ? conversationBRef.current : conversationARef.current;
+      console.log(`[Voice] Starting background session on standby slot for thread ${thread.id}`);
+      standbyConv?.startSession({
+        agentId,
+        connectionType: 'webrtc',
+        overrides: {
+          agent: {
+            prompt: { prompt: newPrompt },
+            firstMessage: firstMsg,
+          },
+        },
+      }).catch((err: any) => {
+        console.warn('[Voice] Background session failed, falling back to contextual update:', err);
+        swapInProgressRef.current = false;
+        pendingSwapRef.current = null;
+
+        // Fallback: send contextual update on active session (old behavior)
+        if (activeConv?.status === 'connected') {
+          const emailContext = buildEmailContext(thread, folder, user?.email);
+          activeConv.sendContextualUpdate(emailContext);
+          const lastMessage = thread.messages?.[thread.messages.length - 1];
+          const senderName = lastMessage?.from?.name || lastMessage?.from?.email?.split('@')[0] || 'someone';
+          const subject = thread.subject?.replace(/^(Re|Fwd|Fw):\s*/gi, '').trim() || 'no subject';
+          const sysMsg = lastAction
+            ? `[SYSTEM] ${lastAction}. Now viewing email from ${senderName} about "${subject}". Introduce it briefly.`
+            : `[SYSTEM] Now viewing email from ${senderName} about "${subject}". Introduce it briefly.`;
+          activeConv.sendContextualUpdate(sysMsg);
+        }
+      });
+
+      // Set a timeout fallback — if background session doesn't connect in 8s,
+      // cancel the swap and fall back to contextual update
+      const swapTimeoutId = setTimeout(() => {
+        if (swapInProgressRef.current && pendingSwapRef.current?.threadId === thread.id) {
+          console.warn('[Voice] Swap timeout — falling back to contextual update');
+          swapInProgressRef.current = false;
+          const timedOutStandby = activeSlotRef.current === 'a' ? conversationBRef.current : conversationARef.current;
+          try { timedOutStandby?.endSession(); } catch {}
+          pendingSwapRef.current = null;
+
+          if (activeConv?.status === 'connected') {
+            const emailContext = buildEmailContext(thread, folder, user?.email);
+            activeConv.sendContextualUpdate(emailContext);
+          }
+        }
+      }, 8000);
+
+      // Clean up timeout if swap succeeds (checked in onSlotConnect via swapInProgressRef)
+      const origPending = pendingSwapRef.current;
+      const checkSwapComplete = setInterval(() => {
+        if (!swapInProgressRef.current || pendingSwapRef.current !== origPending) {
+          clearTimeout(swapTimeoutId);
+          clearInterval(checkSwapComplete);
+        }
+      }, 500);
+    }
+    // If not connected, just update UI (context will be set on next startSession)
+
+    // Mark the thread as "discussed" for future reference
     if (thread?.id) {
       threadHasHistoryRef.current.add(thread.id);
     }
-  }, [thread?.id, thread?.subject, folder, draftingPreferences, conversation.status]);
+  }, [thread?.id, thread?.subject, folder, draftingPreferences, agentId, user?.email]);
 
   // ============================================================
   // CORRECTIVE CONTEXT UPDATE — metadata-only → full content
@@ -1286,15 +1496,18 @@ export function VoiceModeInterface({
     const tracker = contentUpgradeRef.current;
 
     if (tracker?.threadId === thread.id) {
-      if (hasFull && !tracker.hadFull && conversation.status === 'connected') {
-        const emailContext = buildEmailContext(thread, folder, user?.email);
-        conversation.sendContextualUpdate(emailContext);
+      if (hasFull && !tracker.hadFull) {
+        const activeConv = activeSlotRef.current === 'a' ? conversationARef.current : conversationBRef.current;
+        if (activeConv?.status === 'connected') {
+          const emailContext = buildEmailContext(thread, folder, user?.email);
+          activeConv.sendContextualUpdate(emailContext);
+        }
       }
       tracker.hadFull = hasFull;
     } else {
       contentUpgradeRef.current = { threadId: thread.id, hadFull: hasFull };
     }
-  }, [thread, folder, conversation.status]);
+  }, [thread, folder]);
 
   // ============================================================
   // VOICE CHAT PERSISTENCE — auto-save & load
@@ -1475,8 +1688,9 @@ export function VoiceModeInterface({
         setCurrentDraft(restoredDraft);
         addToolMessage('restore_draft', 'Restored unsent draft from Gmail.');
         // Let the AI know about the restored draft
-        if (conversation.status === 'connected') {
-          conversation.sendContextualUpdate(
+        const activeConv = activeSlotRef.current === 'a' ? conversationARef.current : conversationBRef.current;
+        if (activeConv?.status === 'connected') {
+          activeConv.sendContextualUpdate(
             `[SYSTEM] An unsent draft has been restored from Gmail for this thread. The user can review and send it, or ask you to modify it.`
           );
         }
@@ -1506,8 +1720,9 @@ export function VoiceModeInterface({
   useEffect(() => {
     return () => {
       saveCurrentSessionRef.current();
-      // End WebRTC session if still connected
-      try { conversation.endSession(); } catch {}
+      // End both WebRTC sessions (active + any standby that might be connecting)
+      try { conversationARef.current?.endSession(); } catch {}
+      try { conversationBRef.current?.endSession(); } catch {}
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1530,8 +1745,9 @@ export function VoiceModeInterface({
       setSentDraft(draft);
       setCurrentDraft(null);
       addToolMessage('send_email', `Sent to ${draft.to?.[0] || 'recipient'}.`);
-      if (conversation.status === 'connected') {
-        conversation.sendContextualUpdate('The user just sent the draft email successfully via the UI. Ask what they want to do next.');
+      const activeConv = activeSlotRef.current === 'a' ? conversationARef.current : conversationBRef.current;
+      if (activeConv?.status === 'connected') {
+        activeConv.sendContextualUpdate('The user just sent the draft email successfully via the UI. Ask what they want to do next.');
       }
       // Send in background — don't block the UI
       try {
@@ -1541,7 +1757,7 @@ export function VoiceModeInterface({
         setError(`Send failed: ${err.message}`);
       }
     },
-    [onSendEmail, conversation, addToolMessage]
+    [onSendEmail, addToolMessage]
   );
 
   const handleSaveDraft = useCallback(
@@ -1552,8 +1768,9 @@ export function VoiceModeInterface({
         if (saved) setCurrentDraft(saved);
         // Notify the AI and show in conversation
         addToolMessage('save_draft', 'Draft saved.');
-        if (conversation.status === 'connected') {
-          conversation.sendContextualUpdate('The user saved the draft via the UI.');
+        const activeConv = activeSlotRef.current === 'a' ? conversationARef.current : conversationBRef.current;
+        if (activeConv?.status === 'connected') {
+          activeConv.sendContextualUpdate('The user saved the draft via the UI.');
         }
       } catch (err: any) {
         setError(`Save failed: ${err.message}`);
@@ -1561,7 +1778,7 @@ export function VoiceModeInterface({
         setIsSaving(false);
       }
     },
-    [onSaveDraft, conversation, addToolMessage]
+    [onSaveDraft, addToolMessage]
   );
 
   const handleDiscardDraft = useCallback(
@@ -1574,11 +1791,12 @@ export function VoiceModeInterface({
       setCurrentDraft(null);
       // Notify the AI and show in conversation
       addToolMessage('discard_draft', 'Draft discarded.');
-      if (conversation.status === 'connected') {
-        conversation.sendContextualUpdate('The user discarded the draft via the UI.');
+      const activeConv = activeSlotRef.current === 'a' ? conversationARef.current : conversationBRef.current;
+      if (activeConv?.status === 'connected') {
+        activeConv.sendContextualUpdate('The user discarded the draft via the UI.');
       }
     },
-    [onDeleteDraft, conversation, addToolMessage]
+    [onDeleteDraft, addToolMessage]
   );
 
   const handleDraftChange = useCallback((draft: EmailDraft) => {
